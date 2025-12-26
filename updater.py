@@ -10,6 +10,7 @@ from tkinter import ttk
 from tkinter.font import Font
 import zipfile
 import shutil
+import tempfile
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -101,7 +102,7 @@ class UpdaterApp:
     def _safe_rename(self, src, dst, retries=10, delay=0.5):
         for _ in range(retries):
             try:
-                os.rename(src, dst)
+                shutil.move(src, dst)
                 return True
             except Exception:
                 time.sleep(delay)
@@ -122,10 +123,18 @@ class UpdaterApp:
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
             self.status_label.config(text="กำลังดาวน์โหลดเวอร์ชันใหม่...")
-            parent_dir = os.path.dirname(self.app_dir)
-            zip_path = os.path.join(parent_dir, "Main_Program_update.zip")
+            base_dir = os.path.abspath(self.app_dir)
+            parent_dir = os.path.abspath(os.path.join(base_dir, os.pardir))
+            work_dir = parent_dir if os.path.isdir(parent_dir) else base_dir
+            try:
+                if os.path.commonpath([base_dir, work_dir]) == base_dir:
+                    work_dir = tempfile.gettempdir()
+            except Exception:
+                work_dir = tempfile.gettempdir()
+
+            zip_path = os.path.join(work_dir, "Main_Program_update.zip")
             new_exe_path = None
-            temp_dir = os.path.join(parent_dir, "Main_Program_update_tmp")
+            temp_dir = tempfile.mkdtemp(prefix="Main_Program_update_tmp_", dir=work_dir)
 
             with requests.get(self.update_url, stream=True) as r:
                 r.raise_for_status()
@@ -153,9 +162,6 @@ class UpdaterApp:
             time.sleep(1)
 
             if self.update_url.lower().endswith(".zip"):
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                os.makedirs(temp_dir, exist_ok=True)
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     zf.extractall(temp_dir)
 
