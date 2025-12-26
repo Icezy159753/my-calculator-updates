@@ -29,6 +29,7 @@ class UpdaterApp:
         self.root = root
         self.root.title("กำลังอัปเดต...")
         self._relaunch_in_progress = False
+        self.root.withdraw()
 
         # --- เพิ่มเข้ามา: ตั้งค่าไอคอนของหน้าต่าง ---
         try:
@@ -101,6 +102,7 @@ class UpdaterApp:
         
         self.percent_label = tk.Label(root, text="0%", font=Font(size=9))
         self.percent_label.pack()
+        self.root.deiconify()
         
         # เริ่มกระบวนการอัปเดตใน Thread ใหม่ เพื่อไม่ให้ GUI ค้าง
         self.update_thread = threading.Thread(target=self.run_update_process, daemon=True)
