@@ -60,6 +60,7 @@ class UpdaterApp:
             self.exe_name = sys.argv[3]
             self.update_url = sys.argv[4]
 
+        self.running_from_temp = False
         self._maybe_relaunch_from_temp()
 
         # สร้าง Widgets
@@ -81,6 +82,7 @@ class UpdaterApp:
 
     def _maybe_relaunch_from_temp(self):
         if "--run-from-temp" in sys.argv:
+            self.running_from_temp = True
             return
         if not self.app_dir:
             return
@@ -103,8 +105,13 @@ class UpdaterApp:
             return
 
         args = [temp_exe] + sys.argv[1:] + ["--run-from-temp"]
-        subprocess.Popen(args, close_fds=True)
-        self.root.after(200, self.root.destroy)
+        try:
+            proc = subprocess.Popen(args, close_fds=True)
+            time.sleep(0.3)
+            if psutil.pid_exists(proc.pid):
+                self.root.after(200, self.root.destroy)
+        except Exception:
+            return
 
     def _wait_for_process_exit(self, timeout=30):
         start_time = time.time()
