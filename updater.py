@@ -45,22 +45,48 @@ class UpdaterApp:
         # ... (ส่วนที่เหลือของโค้ดเหมือนเดิมทุกประการ) ...
 
         # รับ arguments จากโปรแกรมหลัก
-        self.parent_pid = int(sys.argv[1])
+        self.running_from_temp = False
+        self.ready_file_path = None
+        if "--run-from-temp" in sys.argv:
+            self.running_from_temp = True
+        if "--ready-file" in sys.argv:
+            try:
+                idx = sys.argv.index("--ready-file")
+                self.ready_file_path = sys.argv[idx + 1]
+            except Exception:
+                self.ready_file_path = None
+
+        clean_args = []
+        skip_next = False
+        for arg in sys.argv[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--run-from-temp":
+                continue
+            if arg == "--ready-file":
+                skip_next = True
+                continue
+            clean_args.append(arg)
+
+        if len(clean_args) not in (3, 4):
+            raise RuntimeError("Invalid updater arguments.")
+
+        self.parent_pid = int(clean_args[0])
         self.app_dir = None
         self.exe_name = None
         self.old_exe_path = None
         self.update_url = None
-        if len(sys.argv) == 4:
-            self.old_exe_path = sys.argv[2]
-            self.update_url = sys.argv[3]
+        if len(clean_args) == 3:
+            self.old_exe_path = clean_args[1]
+            self.update_url = clean_args[2]
             self.app_dir = os.path.dirname(self.old_exe_path)
             self.exe_name = os.path.basename(self.old_exe_path)
         else:
-            self.app_dir = sys.argv[2]
-            self.exe_name = sys.argv[3]
-            self.update_url = sys.argv[4]
+            self.app_dir = clean_args[1]
+            self.exe_name = clean_args[2]
+            self.update_url = clean_args[3]
 
-        self.running_from_temp = False
         self._maybe_relaunch_from_temp()
 
         # สร้าง Widgets
@@ -75,6 +101,12 @@ class UpdaterApp:
         
         # เริ่มกระบวนการอัปเดตใน Thread ใหม่ เพื่อไม่ให้ GUI ค้าง
         self.update_thread = threading.Thread(target=self.run_update_process, daemon=True)
+        if self.running_from_temp and self.ready_file_path:
+            try:
+                with open(self.ready_file_path, "w", encoding="utf-8") as f:
+                    f.write("ready")
+            except Exception:
+                pass
         self.update_thread.start()
 
     def disable_close(self):
@@ -104,15 +136,15 @@ class UpdaterApp:
         except Exception:
             return
 
-        args = [temp_exe] + sys.argv[1:] + ["--run-from-temp"]
+        ready_file = os.path.join(temp_dir, "updater_ready.flag")
+        args = [temp_exe] + sys.argv[1:] + ["--run-from-temp", "--ready-file", ready_file]
         try:
             proc = subprocess.Popen(args, close_fds=True)
             alive = False
-            for _ in range(6):
+            for _ in range(10):
                 time.sleep(0.3)
-                if psutil.pid_exists(proc.pid):
+                if os.path.exists(ready_file):
                     alive = True
-                else:
                     break
             if alive:
                 self.root.after(200, self.root.destroy)
@@ -274,7 +306,21 @@ class UpdaterApp:
 if __name__ == "__main__":
     # --- เพิ่มเข้ามา: ตรวจสอบว่ามี arguments ส่งมาหรือไม่ก่อนรัน ---
     # ป้องกัน Error เวลาเผลอดับเบิ้ลคลิกไฟล์ .py โดยตรง
-    if len(sys.argv) not in (4, 5):
+    raw_args = sys.argv[1:]
+    clean_args = []
+    skip_next = False
+    for arg in raw_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--run-from-temp":
+            continue
+        if arg == "--ready-file":
+            skip_next = True
+            continue
+        clean_args.append(arg)
+
+    if len(clean_args) not in (3, 4):
         print("This script is intended to be run by the main application.")
         print("Usage: updater.py <pid> <exe_path> <download_url>")
         print("   or: updater.py <pid> <app_dir> <exe_name> <download_url>")
