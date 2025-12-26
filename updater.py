@@ -75,14 +75,50 @@ class UpdaterApp:
     def disable_close(self):
         pass
 
+    def _wait_for_process_exit(self, timeout=30):
+        start_time = time.time()
+        while psutil.pid_exists(self.parent_pid):
+            if time.time() - start_time > timeout:
+                return False
+            time.sleep(0.5)
+        return True
+
+    def _kill_process_by_name(self, exe_name):
+        killed = False
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if proc.info['name'] and proc.info['name'].lower() == exe_name.lower():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        proc.kill()
+                    killed = True
+            except Exception:
+                continue
+        return killed
+
+    def _safe_rename(self, src, dst, retries=10, delay=0.5):
+        for _ in range(retries):
+            try:
+                os.rename(src, dst)
+                return True
+            except Exception:
+                time.sleep(delay)
+        return False
+
     def run_update_process(self):
         try:
             # 1. รอให้โปรแกรมหลักปิดตัว
             self.status_label.config(text="กำลังรอให้โปรแกรมหลักปิดตัว...")
             self.root.update_idletasks()
             
-            while psutil.pid_exists(self.parent_pid):
-                time.sleep(0.5)
+            if not self._wait_for_process_exit(timeout=30):
+                self.status_label.config(text="ยังมีโปรแกรมค้างอยู่ กำลังพยายามปิด...", fg="red")
+                self.root.update_idletasks()
+                if self.exe_name:
+                    self._kill_process_by_name(self.exe_name)
+                self._wait_for_process_exit(timeout=10)
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
             self.status_label.config(text="กำลังดาวน์โหลดเวอร์ชันใหม่...")
@@ -132,8 +168,10 @@ class UpdaterApp:
                 backup_dir = self.app_dir + ".old"
                 if os.path.exists(backup_dir):
                     shutil.rmtree(backup_dir, ignore_errors=True)
-                os.rename(self.app_dir, backup_dir)
-                os.rename(new_app_dir, self.app_dir)
+                if not self._safe_rename(self.app_dir, backup_dir):
+                    raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์เดิมได้ (ยังถูกใช้งานอยู่)")
+                if not self._safe_rename(new_app_dir, self.app_dir):
+                    raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์ใหม่ได้")
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 if os.path.exists(zip_path):
@@ -146,7 +184,22 @@ class UpdaterApp:
             
             # 4. เปิดโปรแกรมเวอร์ชันใหม่ขึ้นมา
             new_exe_path = os.path.join(self.app_dir, self.exe_name)
-            os.startfile(new_exe_path)
+            launched = False
+            for _ in range(5):
+                if os.path.exists(new_exe_path):
+                    try:
+                        os.startfile(new_exe_path)
+                        launched = True
+                        break
+                    except Exception:
+                        time.sleep(0.5)
+                else:
+                    time.sleep(0.5)
+
+            if not launched:
+                self.status_label.config(text="อัปเดตเสร็จแล้ว กรุณาเปิดโปรแกรมใหม่อีกครั้ง", fg="red")
+                self.root.after(8000, self.root.quit)
+                return
 
             # 5. ปิดตัวเอง
             self.root.quit()
