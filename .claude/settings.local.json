@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(copy Main_Program_TTK.py Main_Program_TTK_Backup.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,20 @@
+***วิธีฝัง Icon SVG ใน Program Python****
+1.สร้างไฟล์ resources.qrc แล้ววาง Code ตรงนี้ลงไป >Icon คือFolder/yt.svg คือชื่อ SVG
+
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="icons">
+        <file alias="yt.svg">Icon/yt.svg</file>
+	<file alias="yt.svg">Icon/yt.svg</file>
+        
+    </qresource>
+</RCC>
+
+2.รัน Syntax นี้ใน Terminal
+pyside6-rcc resources.qrc -o resources_rc.py
+pyside6-rcc resources.qrc -o All_Programs/resources_rc.py
+จะได้ไฟล์  resources_rc.py มา
+
+3.วิธีเอาไปใช้คือ ในโปรแกรมที่เขียนต้อง import resources_rc เข้ามาในหัวโปรแกรมที่จะแทรกรูป
+Code นี้เอาไปวางที่ปุ่ม เพื่อเพิ่ม SVG ในปุ่ม
+btn.setIcon(QIcon(":/icons/yt.svg"))

@@ -1,0 +1,8 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="icons">
+        <file alias="yt.svg">Icon/yt.svg</file>
+        <file alias="BPI.svg">Icon/BPI.svg</file>
+        
+    </qresource>
+</RCC>

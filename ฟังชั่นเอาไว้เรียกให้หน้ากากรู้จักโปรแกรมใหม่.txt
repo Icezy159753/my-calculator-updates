@@ -1,0 +1,43 @@
+# --- ฟังก์ชัน Entry Point ใหม่ (สำหรับให้ Launcher เรียก) ---
+def run_this_app(working_dir=None): # ชื่อฟังก์ชันนี้จะถูกใช้ใน Launcher
+    """
+    ฟังก์ชันหลักสำหรับสร้างและรัน QuotaSamplerApp.
+    """
+    print(f"--- QUOTA_SAMPLER_INFO: Starting 'QuotaSamplerApp' via run_this_app() ---")
+    try:
+        # --- โค้ดที่ย้ายมาจาก if __name__ == "__main__": เดิมจะมาอยู่ที่นี่ ---วาง Code ตรงนี้
+
+
+
+    #if __name__ == "__main__":
+        app = FileRenamerApp()
+        app.mainloop()       
+
+
+
+       # ------------------------------------------------------------------------------------------------------------------------------
+    except Exception as e:
+        # ดักจับ Error ที่อาจเกิดขึ้นระหว่างการสร้างหรือรัน App
+        print(f"QUOTA_SAMPLER_ERROR: An error occurred during QuotaSamplerApp execution: {e}")
+        # แสดง Popup ถ้ามีปัญหา
+        if 'root' not in locals() or not root.winfo_exists(): # สร้าง root ชั่วคราวถ้ายังไม่มี
+            root_temp = tk.Tk()
+            root_temp.withdraw()
+            messagebox.showerror("Application Error (Quota Sampler)",
+                               f"An unexpected error occurred:\n{e}", parent=root_temp)
+            root_temp.destroy()
+        else:
+            messagebox.showerror("Application Error (Quota Sampler)",
+                               f"An unexpected error occurred:\n{e}", parent=root) # ใช้ root ที่มีอยู่ถ้าเป็นไปได้
+        sys.exit(f"Error running QuotaSamplerApp: {e}") # อาจจะ exit หรือไม่ก็ได้ ขึ้นกับการออกแบบ
+        
+# --- ส่วน Run Application เมื่อรันไฟล์นี้โดยตรง (สำหรับ Test) ---
+if __name__ == "__main__":
+    print("--- Running QuotaSamplerApp.py directly for testing ---")
+    # (ถ้ามีการตั้งค่า DPI ด้านบน มันจะทำงานอัตโนมัติ)
+
+    # เรียกฟังก์ชัน Entry Point ที่เราสร้างขึ้น
+    run_this_app()
+
+    print("--- Finished direct execution of QuotaSamplerApp.py ---")
+# <<< END OF CHANGES >>>
