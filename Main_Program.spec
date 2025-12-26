@@ -67,9 +67,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='Main_Program',
     debug=False,
     bootloader_ignore_signals=False,
@@ -84,4 +83,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['I_Main.ico','Icon\\I_Main.ico'],
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='Main_Program',
 )

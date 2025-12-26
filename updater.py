@@ -8,6 +8,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 from tkinter.font import Font
+import zipfile
+import shutil
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -42,8 +44,19 @@ class UpdaterApp:
 
         # รับ arguments จากโปรแกรมหลัก
         self.parent_pid = int(sys.argv[1])
-        self.old_exe_path = sys.argv[2]
-        self.new_exe_url = sys.argv[3]
+        self.app_dir = None
+        self.exe_name = None
+        self.old_exe_path = None
+        self.update_url = None
+        if len(sys.argv) == 4:
+            self.old_exe_path = sys.argv[2]
+            self.update_url = sys.argv[3]
+            self.app_dir = os.path.dirname(self.old_exe_path)
+            self.exe_name = os.path.basename(self.old_exe_path)
+        else:
+            self.app_dir = sys.argv[2]
+            self.exe_name = sys.argv[3]
+            self.update_url = sys.argv[4]
 
         # สร้าง Widgets
         self.status_label = tk.Label(root, text="กำลังเตรียมอัปเดต...", font=Font(size=10))
@@ -72,35 +85,68 @@ class UpdaterApp:
                 time.sleep(0.5)
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
-            self.status_label.config(text=f"กำลังดาวน์โหลดเวอร์ชันใหม่...")
-            new_exe_path = self.old_exe_path + ".new"
-            
-            with requests.get(self.new_exe_url, stream=True) as r:
+            self.status_label.config(text="กำลังดาวน์โหลดเวอร์ชันใหม่...")
+            parent_dir = os.path.dirname(self.app_dir)
+            zip_path = os.path.join(parent_dir, "Main_Program_update.zip")
+            new_exe_path = None
+            temp_dir = os.path.join(parent_dir, "Main_Program_update_tmp")
+
+            with requests.get(self.update_url, stream=True) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 downloaded_size = 0
-                
-                with open(new_exe_path, 'wb') as f:
+
+                is_zip = self.update_url.lower().endswith(".zip")
+                target_path = zip_path if is_zip else (self.old_exe_path + ".new")
+                new_exe_path = target_path if not is_zip else None
+
+                with open(target_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
                         downloaded_size += len(chunk)
-                        
+
                         progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
                         self.progress['value'] = progress_percent
                         self.percent_label.config(text=f"{progress_percent:.0f}%")
                         self.root.update_idletasks()
             
-            # 3. ลบไฟล์เก่าแล้วแทนที่ด้วยไฟล์ใหม่
+            # 3. ติดตั้งอัปเดต
             self.status_label.config(text="กำลังติดตั้งอัปเดต...")
             self.percent_label.config(text="")
             self.root.update_idletasks()
             time.sleep(1)
 
-            os.remove(self.old_exe_path)
-            os.rename(new_exe_path, self.old_exe_path)
+            if self.update_url.lower().endswith(".zip"):
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                os.makedirs(temp_dir, exist_ok=True)
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    zf.extractall(temp_dir)
+
+                entries = [d for d in os.listdir(temp_dir) if os.path.isdir(os.path.join(temp_dir, d))]
+                if len(entries) == 1:
+                    new_app_dir = os.path.join(temp_dir, entries[0])
+                else:
+                    new_app_dir = temp_dir
+
+                backup_dir = self.app_dir + ".old"
+                if os.path.exists(backup_dir):
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                os.rename(self.app_dir, backup_dir)
+                os.rename(new_app_dir, self.app_dir)
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            else:
+                if self.old_exe_path is None or new_exe_path is None:
+                    raise RuntimeError("Invalid updater arguments for EXE update.")
+                os.remove(self.old_exe_path)
+                os.rename(new_exe_path, self.old_exe_path)
             
             # 4. เปิดโปรแกรมเวอร์ชันใหม่ขึ้นมา
-            os.startfile(self.old_exe_path)
+            new_exe_path = os.path.join(self.app_dir, self.exe_name)
+            os.startfile(new_exe_path)
 
             # 5. ปิดตัวเอง
             self.root.quit()
@@ -112,9 +158,10 @@ class UpdaterApp:
 if __name__ == "__main__":
     # --- เพิ่มเข้ามา: ตรวจสอบว่ามี arguments ส่งมาหรือไม่ก่อนรัน ---
     # ป้องกัน Error เวลาเผลอดับเบิ้ลคลิกไฟล์ .py โดยตรง
-    if len(sys.argv) < 4:
+    if len(sys.argv) not in (4, 5):
         print("This script is intended to be run by the main application.")
         print("Usage: updater.py <pid> <exe_path> <download_url>")
+        print("   or: updater.py <pid> <app_dir> <exe_name> <download_url>")
         sys.exit(1)
     # -----------------------------------------------------------
     

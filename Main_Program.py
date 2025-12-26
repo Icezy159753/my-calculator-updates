@@ -56,7 +56,7 @@ GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzLISY7ormRaB05x3qB
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.62"
+CURRENT_VERSION = "1.0.63"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -99,13 +99,13 @@ def check_for_updates(app_window):
                 except Exception as e:
                     print(f"Could not save changelog file: {e}")
                 # -------------------------
-                # หา URL ของไฟล์ exe ทั้งสองตัวจาก release ล่าสุด
+                # หา URL ของไฟล์ updater.exe และไฟล์ zip จาก release ล่าสุด
                 updater_url = None
                 app_url = None
                 for asset in latest_release['assets']:
                     if asset['name'] == 'updater.exe':
                         updater_url = asset['browser_download_url']
-                    if asset['name'] == 'Main_Program.exe':
+                    if asset['name'] == 'Main_Program.zip':
                         app_url = asset['browser_download_url']
 
                 if not updater_url or not app_url:
@@ -123,7 +123,10 @@ def check_for_updates(app_window):
 
                 # เรียกใช้ updater.exe และส่ง argument ที่จำเป็นไปให้
                 # แล้วปิดโปรแกรมหลักทันที
-                subprocess.Popen([updater_path, str(os.getpid()), get_executable_path(), app_url])
+                app_exe_path = get_executable_path()
+                app_dir = os.path.dirname(app_exe_path)
+                app_exe_name = os.path.basename(app_exe_path)
+                subprocess.Popen([updater_path, str(os.getpid()), app_dir, app_exe_name, app_url])
                 app_window.close() # หรือ sys.exit()
 
         else:
