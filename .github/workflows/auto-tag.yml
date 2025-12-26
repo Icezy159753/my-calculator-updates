@@ -30,13 +30,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version=$(python - <<'PY'
-import re
-with open("Main_Program.py", "r", encoding="utf-8") as f:
-    m = re.search(r'^CURRENT_VERSION\\s*=\\s*\"([^\"]+)\"', f.read(), re.M)
-print(m.group(1) if m else "")
-PY
-)
+          version=$(python -c "import re; f=open('Main_Program.py','r',encoding='utf-8').read(); m=re.search(r'^CURRENT_VERSION\\s*=\\s*\\\"([^\\\"]+)\\\"', f, re.M); print(m.group(1) if m else '')")
           if [ -z "$version" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
