@@ -11,6 +11,7 @@ from tkinter.font import Font
 import zipfile
 import shutil
 import tempfile
+import subprocess
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -59,6 +60,8 @@ class UpdaterApp:
             self.exe_name = sys.argv[3]
             self.update_url = sys.argv[4]
 
+        self._maybe_relaunch_from_temp()
+
         # สร้าง Widgets
         self.status_label = tk.Label(root, text="กำลังเตรียมอัปเดต...", font=Font(size=10))
         self.status_label.pack(pady=10)
@@ -75,6 +78,33 @@ class UpdaterApp:
 
     def disable_close(self):
         pass
+
+    def _maybe_relaunch_from_temp(self):
+        if "--run-from-temp" in sys.argv:
+            return
+        if not self.app_dir:
+            return
+        exe_path = sys.executable
+        if not exe_path.lower().endswith(".exe"):
+            return
+        try:
+            app_dir = os.path.abspath(self.app_dir)
+            exe_path_abs = os.path.abspath(exe_path)
+            if os.path.commonpath([exe_path_abs, app_dir]) != app_dir:
+                return
+        except Exception:
+            return
+
+        temp_dir = tempfile.mkdtemp(prefix="Updater_", dir=tempfile.gettempdir())
+        temp_exe = os.path.join(temp_dir, os.path.basename(exe_path))
+        try:
+            shutil.copy2(exe_path, temp_exe)
+        except Exception:
+            return
+
+        args = [temp_exe] + sys.argv[1:] + ["--run-from-temp"]
+        subprocess.Popen(args, close_fds=True)
+        self.root.after(200, self.root.destroy)
 
     def _wait_for_process_exit(self, timeout=30):
         start_time = time.time()
@@ -109,6 +139,8 @@ class UpdaterApp:
         return False
 
     def run_update_process(self):
+        zip_path = None
+        temp_dir = None
         try:
             # 1. รอให้โปรแกรมหลักปิดตัว
             self.status_label.config(text="กำลังรอให้โปรแกรมหลักปิดตัว...")
@@ -123,18 +155,15 @@ class UpdaterApp:
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
             self.status_label.config(text="กำลังดาวน์โหลดเวอร์ชันใหม่...")
-            base_dir = os.path.abspath(self.app_dir)
-            parent_dir = os.path.abspath(os.path.join(base_dir, os.pardir))
-            work_dir = parent_dir if os.path.isdir(parent_dir) else base_dir
-            try:
-                if os.path.commonpath([base_dir, work_dir]) == base_dir:
-                    work_dir = tempfile.gettempdir()
-            except Exception:
-                work_dir = tempfile.gettempdir()
-
+            work_dir = tempfile.gettempdir()
             zip_path = os.path.join(work_dir, "Main_Program_update.zip")
             new_exe_path = None
             temp_dir = tempfile.mkdtemp(prefix="Main_Program_update_tmp_", dir=work_dir)
+            if os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except Exception:
+                    pass
 
             with requests.get(self.update_url, stream=True) as r:
                 r.raise_for_status()
@@ -212,6 +241,16 @@ class UpdaterApp:
 
         except Exception as e:
             self.status_label.config(text=f"เกิดข้อผิดพลาด: {e}", fg="red")
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+            if zip_path and os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except Exception:
+                    pass
             self.root.after(10000, self.root.quit)
 
 if __name__ == "__main__":
