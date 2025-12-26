@@ -107,9 +107,20 @@ class UpdaterApp:
         args = [temp_exe] + sys.argv[1:] + ["--run-from-temp"]
         try:
             proc = subprocess.Popen(args, close_fds=True)
-            time.sleep(0.3)
-            if psutil.pid_exists(proc.pid):
+            alive = False
+            for _ in range(6):
+                time.sleep(0.3)
+                if psutil.pid_exists(proc.pid):
+                    alive = True
+                else:
+                    break
+            if alive:
                 self.root.after(200, self.root.destroy)
+            else:
+                self.status_label.config(
+                    text="ไม่สามารถเริ่มตัวอัปเดตชั่วคราว กำลังดำเนินการต่อ...",
+                    fg="red"
+                )
         except Exception:
             return
 
