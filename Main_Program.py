@@ -56,7 +56,7 @@ GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzLISY7ormRaB05x3qB
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.61"
+CURRENT_VERSION = "1.0.62"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -639,6 +639,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Program All DP v{CURRENT_VERSION}")
 
+        self._sized_once = False
         window_width = 1120
         window_height = 760
         self.setFixedSize(window_width, window_height)
@@ -1097,6 +1098,23 @@ class AppLauncher(QtWidgets.QMainWindow):
             if new_width != self.last_card_width:
                 self.render_program_cards()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._sized_once:
+            screen = self.screen()
+            if screen:
+                screen_rect = screen.availableGeometry()
+                target_width = min(1120, screen_rect.width())
+                target_height = min(760, screen_rect.height())
+                self.setFixedSize(target_width, target_height)
+                self.move(
+                    (screen_rect.width() - target_width) // 2,
+                    (screen_rect.height() - target_height) // 2
+                )
+            QtCore.QTimer.singleShot(0, self.update_program_grid)
+            QtCore.QTimer.singleShot(50, self.update_program_grid)
+            self._sized_once = True
+
     def get_icon_path(self, icon_name):
         if not icon_name:
             return None
@@ -1482,6 +1500,19 @@ if __name__ == "__main__":
                 f.write(content)
             print(f"LAUNCHER_INFO: Created dummy file '{filepath}' for testing.")
 
+
+    if hasattr(QtCore.Qt.ApplicationAttribute, "AA_EnableHighDpiScaling"):
+        QtCore.QCoreApplication.setAttribute(
+            QtCore.Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True
+        )
+    if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
+        QtCore.QCoreApplication.setAttribute(
+            QtCore.Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True
+        )
+    if hasattr(QtCore.Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
     qt_app = QtWidgets.QApplication(sys.argv)
     qt_app.setFont(QtGui.QFont("Tahoma", 10))
