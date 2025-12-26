@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.ICEZY1234 }}
 
       - name: Detect version change
         id: version
@@ -52,3 +53,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$tag"
           git push origin "$tag"
+        env:
+          GITHUB_TOKEN: ${{ secrets.ICEZY1234 }}
