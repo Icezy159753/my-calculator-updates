@@ -28,6 +28,7 @@ class UpdaterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("กำลังอัปเดต...")
+        self._relaunch_in_progress = False
 
         # --- เพิ่มเข้ามา: ตั้งค่าไอคอนของหน้าต่าง ---
         try:
@@ -88,6 +89,8 @@ class UpdaterApp:
             self.update_url = clean_args[3]
 
         self._maybe_relaunch_from_temp()
+        if self._relaunch_in_progress:
+            return
 
         # สร้าง Widgets
         self.status_label = tk.Label(root, text="กำลังเตรียมอัปเดต...", font=Font(size=10))
@@ -147,6 +150,11 @@ class UpdaterApp:
                     alive = True
                     break
             if alive:
+                self._relaunch_in_progress = True
+                try:
+                    self.root.withdraw()
+                except Exception:
+                    pass
                 self.root.after(200, self.root.destroy)
             else:
                 self.status_label.config(
