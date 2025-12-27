@@ -94,4 +94,5 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='Main_Program',
+    contents_directory='_internal',
 )
