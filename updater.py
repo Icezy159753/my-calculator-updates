@@ -16,6 +16,8 @@ import atexit
 import bsdiff4
 import re
 import json
+import getpass
+import socket
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -27,6 +29,9 @@ def resource_path(relative_path):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 # -------------------------------------------------------------
+
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 
 class UpdaterApp:
     def __init__(self, root):
@@ -67,6 +72,7 @@ class UpdaterApp:
         current_version = None
         new_version = None
         patch_manifest_path = None
+        release_url = None
         clean_args = []
         skip_next = False
         args = sys.argv[1:]
@@ -100,6 +106,10 @@ class UpdaterApp:
                 patch_manifest_path = args[idx + 1]
                 idx += 2
                 continue
+            if arg == "--release-url" and idx + 1 < len(args):
+                release_url = args[idx + 1]
+                idx += 2
+                continue
             clean_args.append(arg)
             idx += 1
 
@@ -115,6 +125,7 @@ class UpdaterApp:
         self.current_version = current_version
         self.new_version = new_version
         self.patch_manifest_path = patch_manifest_path
+        self.release_url = release_url
         if len(clean_args) == 3:
             self.old_exe_path = clean_args[1]
             self.update_url = clean_args[2]
@@ -362,6 +373,48 @@ class UpdaterApp:
         except Exception:
             return "0 MB"
         return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+    def _get_user_machine_info(self):
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = "Unknown"
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = "Unknown"
+        try:
+            ip_address = socket.gethostbyname(hostname)
+        except Exception:
+            ip_address = "IP N/A"
+        return username, hostname, ip_address
+
+    def _send_telegram_update_notice(self):
+        if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
+            return
+        old_version = self.current_version or "N/A"
+        new_version = self.new_version or "N/A"
+        username, hostname, ip_address = self._get_user_machine_info()
+        release_url = self.release_url or ""
+        message_text = (
+            "✅ <b>อัปเดตสำเร็จ</b>\n\n"
+            f"🖥️ <b>เครื่อง:</b> {hostname}\n"
+            f"👤 <b>ผู้ใช้:</b> {username}\n"
+            f"🌐 <b>IP:</b> {ip_address}\n"
+            f"🧩 <b>เวอร์ชัน:</b> {old_version} → {new_version}\n\n"
+            f"🔗 <b>Release:</b>\n{release_url}"
+        )
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        try:
+            requests.post(url, json=payload, timeout=8)
+        except Exception:
+            pass
 
     def _get_updates_dir(self):
         if not self.app_dir:
@@ -646,6 +699,7 @@ class UpdaterApp:
                 self.root.after(8000, self.root.quit)
                 return
 
+            self._send_telegram_update_notice()
             # 5. ปิดตัวเอง
             self.root.quit()
 
@@ -685,7 +739,7 @@ if __name__ == "__main__":
             skip_next = True
             idx += 1
             continue
-        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest"):
+        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest", "--release-url"):
             idx += 2
             continue
         clean_args.append(arg)

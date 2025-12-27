@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.98"
+CURRENT_VERSION = "1.0.99"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -225,6 +225,7 @@ def check_for_updates(app_window):
                         except Exception as e:
                             print(f"PATCH_CHAIN_WARNING: {e}")
 
+                release_url = latest_release.get("html_url")
                 cmd = [
                     updater_path,
                     str(os.getpid()),
@@ -240,6 +241,8 @@ def check_for_updates(app_window):
                 ]
                 if patch_manifest_path:
                     cmd += ["--patch-manifest", patch_manifest_path]
+                if release_url:
+                    cmd += ["--release-url", release_url]
                 subprocess.Popen(cmd)
                 app_window.close() # หรือ sys.exit()
 
