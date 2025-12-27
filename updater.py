@@ -331,6 +331,11 @@ class UpdaterApp:
                         os.remove(dst_path)
                 except Exception:
                     pass
+                shutil.copy2(src_path, dst_path)
+                try:
+                    os.utime(dst_path, None)
+                except Exception:
+                    pass
 
     def _format_bytes(self, num_bytes):
         try:
@@ -338,11 +343,6 @@ class UpdaterApp:
         except Exception:
             return "0 MB"
         return f"{num_bytes / (1024 * 1024):.1f} MB"
-                shutil.copy2(src_path, dst_path)
-                try:
-                    os.utime(dst_path, None)
-                except Exception:
-                    pass
 
     def _get_updates_dir(self):
         if not self.app_dir:
