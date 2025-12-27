@@ -267,6 +267,21 @@ class UpdaterApp:
         except Exception:
             pass
         return False
+    
+    def _copy_tree_overwrite(self, src, dst):
+        for root_dir, dirnames, filenames in os.walk(src):
+            rel_path = os.path.relpath(root_dir, src)
+            target_dir = dst if rel_path == "." else os.path.join(dst, rel_path)
+            os.makedirs(target_dir, exist_ok=True)
+            for filename in filenames:
+                src_path = os.path.join(root_dir, filename)
+                dst_path = os.path.join(target_dir, filename)
+                try:
+                    if os.path.exists(dst_path):
+                        os.remove(dst_path)
+                except Exception:
+                    pass
+                shutil.copy2(src_path, dst_path)
 
     def run_update_process(self):
         zip_path = None
@@ -336,21 +351,13 @@ class UpdaterApp:
                 else:
                     new_app_dir = temp_dir
 
-                backup_dir = self.app_dir + ".old"
-                if os.path.exists(backup_dir):
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-                if os.path.exists(backup_dir):
-                    backup_dir = self.app_dir + ".old_" + time.strftime("%Y%m%d_%H%M%S")
-                if not self._safe_rename(self.app_dir, backup_dir):
-                    self._kill_processes_in_app_dir(self.app_dir)
-                    time.sleep(1.0)
-                    if not self._safe_rename(self.app_dir, backup_dir):
-                        raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์เดิมได้ (ยังถูกใช้งานอยู่)")
-                if os.path.exists(self.app_dir):
-                    if not self._remove_empty_dir(self.app_dir):
-                        raise RuntimeError("โฟลเดอร์ปลายทางยังใช้งานอยู่ หรือไม่ว่างเปล่า")
-                if not self._safe_rename(new_app_dir, self.app_dir):
-                    raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์ใหม่ได้")
+                if not self.app_dir:
+                    raise RuntimeError("ไม่พบโฟลเดอร์ติดตั้งของโปรแกรม")
+                os.makedirs(self.app_dir, exist_ok=True)
+                try:
+                    self._copy_tree_overwrite(new_app_dir, self.app_dir)
+                except Exception as e:
+                    raise RuntimeError(f"ไม่สามารถคัดลอกไฟล์ใหม่ทับของเดิมได้: {e}")
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 if os.path.exists(zip_path):
