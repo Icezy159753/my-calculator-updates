@@ -268,6 +268,29 @@ class UpdaterApp:
             pass
         return False
     
+    def _safe_remove_path(self, path, retries=3, delay=0.3):
+        for _ in range(retries):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                elif os.path.exists(path):
+                    os.remove(path)
+                return True
+            except Exception:
+                time.sleep(delay)
+        return False
+
+    def _clean_install_root(self, keep_names):
+        if not self.app_dir:
+            return
+        try:
+            for name in os.listdir(self.app_dir):
+                if name in keep_names:
+                    continue
+                self._safe_remove_path(os.path.join(self.app_dir, name))
+        except Exception:
+            pass
+
     def _copy_tree_overwrite(self, src, dst):
         for root_dir, dirnames, filenames in os.walk(src):
             rel_path = os.path.relpath(root_dir, src)
@@ -282,6 +305,10 @@ class UpdaterApp:
                 except Exception:
                     pass
                 shutil.copy2(src_path, dst_path)
+                try:
+                    os.utime(dst_path, None)
+                except Exception:
+                    pass
 
     def run_update_process(self):
         zip_path = None
@@ -354,6 +381,9 @@ class UpdaterApp:
                 if not self.app_dir:
                     raise RuntimeError("ไม่พบโฟลเดอร์ติดตั้งของโปรแกรม")
                 os.makedirs(self.app_dir, exist_ok=True)
+                keep_names = {self.exe_name, "_internal", "updater.exe", "updater.lock", "changelog.tmp", "0_Keep"}
+                keep_names = {name for name in keep_names if name}
+                self._clean_install_root(keep_names)
                 try:
                     self._copy_tree_overwrite(new_app_dir, self.app_dir)
                 except Exception as e:
