@@ -11,6 +11,7 @@ import threading
 from datetime import datetime
 import socket # เพิ่มเข้ามาเพื่อดึง IP Address (ถ้าต้องการ)
 import ctypes
+import time
 
 
 class Spinner(QtWidgets.QWidget):
@@ -49,14 +50,20 @@ class Spinner(QtWidgets.QWidget):
 
 # --- เพิ่มค่าคงที่นี้ไว้ใกล้ๆกับค่าคงที่อื่นๆ ด้านบน ---
 # !!! สำคัญ: ให้เปลี่ยน URL นี้เป็น URL ของ Web App ที่ได้จากการ Deploy บน Google Apps Script ของคุณ
-GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzLISY7ormRaB05x3qBD41apZ8zVMx2_-nNrlSz1RP26DCXXQgfpfESxS6ppgxkyOSm/exec" # <--- ใส่ URL ของคุณที่นี่
+GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5xJK1yvWOVYXhk1LXKVmQAofqzWV7keKywzdcnMQZmTMBIJ4fo_V92vQ/exec" # <--- ใส่ URL ของคุณที่นี่
+TELEGRAM_BOT_TOKEN = "8572127506:AAGLyBZxyjSnlENBVVcBux9i3Mi0GoIf9Y0"
+TELEGRAM_CHAT_ID = "8556512706"
+TELEGRAM_DASHBOARD_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5xJK1yvWOVYXhk1LXKVmQAofqzWV7keKywzdcnMQZmTMBIJ4fo_V92vQ/exec"
+TELEGRAM_MIN_INTERVAL_SECONDS = 10
+TELEGRAM_RETRY_MAX_ATTEMPTS = 2
+TELEGRAM_RETRY_FALLBACK_WAIT = 5
 
 
 # --- ค่าคงที่สำหรับชื่อโฟลเดอร์ ---
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.88"
+CURRENT_VERSION = "1.0.89"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -677,6 +684,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.launch_dialog = None
         self.launch_handle = None
         self.launch_wait_started = None
+        self.monitor_threads = []
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -1359,14 +1367,75 @@ class AppLauncher(QtWidgets.QMainWindow):
             }
 
             print(f"LOGGING: กำลังส่งข้อมูลเซสชัน: {payload}")
-            response = requests.post(GOOGLE_SCRIPT_URL, data=payload, timeout=15)
+            response = requests.post(GOOGLE_SCRIPT_URL, data=payload, timeout=(5, 10))
+            print(f"LOGGING_STATUS: {response.status_code}")
+            print(f"LOGGING_BODY: {response.text}")
             response.raise_for_status()
-            print(f"LOGGING: บันทึกข้อมูลเซสชันสำเร็จ. Response: {response.text}")
+            print("LOGGING: บันทึกข้อมูลเซสชันสำเร็จ.")
 
         except requests.exceptions.RequestException as e:
             print(f"LOGGING_ERROR: ไม่สามารถเชื่อมต่อเพื่อบันทึกข้อมูลเซสชันได้: {e}")
         except Exception as e:
             print(f"LOGGING_ERROR: เกิดข้อผิดพลาดที่ไม่คาดคิดระหว่างการบันทึกเซสชัน: {e}")
+        finally:
+            self.send_telegram_notification(program_name, user_info, start_time, end_time, duration_formatted)
+
+    def send_telegram_notification(self, program_name, user_info, start_time, end_time, duration_formatted):
+        if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
+            print("TELEGRAM_WARNING: กรุณาใส่ TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID")
+            return
+        now = datetime.now()
+        if hasattr(self, "last_telegram_sent_at") and self.last_telegram_sent_at:
+            elapsed = (now - self.last_telegram_sent_at).total_seconds()
+            if elapsed < TELEGRAM_MIN_INTERVAL_SECONDS:
+                print(f"TELEGRAM_SKIP: ส่งถี่เกินไป ({elapsed:.1f}s < {TELEGRAM_MIN_INTERVAL_SECONDS}s)")
+                return
+
+        message_text = (
+            "🔔 <b>มีการใช้งานโปรแกรมใหม่!</b>\n\n"
+            f"🧰 <b>โปรแกรม:</b> {program_name}\n"
+            f"👤 <b>ผู้ใช้:</b> {user_info}\n"
+            f"📅 <b>วันที่:</b> {start_time.strftime('%Y-%m-%d')}\n"
+            f"⏰ <b>เวลา:</b> {start_time.strftime('%H:%M:%S')} - {end_time.strftime('%H:%M:%S')}\n"
+            f"⏱️ <b>รวม:</b> {duration_formatted}\n\n"
+            f"🔗 <b>ดู Dashboard:</b>\n{TELEGRAM_DASHBOARD_URL}"
+        )
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+
+        print("TELEGRAM_INFO: เริ่มส่งแจ้งเตือน")
+        attempt = 0
+        while attempt < TELEGRAM_RETRY_MAX_ATTEMPTS:
+            attempt += 1
+            try:
+                print("TELEGRAM_REQUEST: กำลังส่งไป Telegram API...")
+                response = requests.post(url, json=payload, timeout=10)
+                print(f"TELEGRAM_STATUS: {response.status_code}")
+                print(f"TELEGRAM_BODY: {response.text}")
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    wait_seconds = TELEGRAM_RETRY_FALLBACK_WAIT
+                    if retry_after:
+                        try:
+                            wait_seconds = int(retry_after)
+                        except ValueError:
+                            wait_seconds = TELEGRAM_RETRY_FALLBACK_WAIT
+                    print(f"TELEGRAM_RETRY: รอ {wait_seconds}s แล้วลองส่งใหม่ (ครั้งที่ {attempt})")
+                    time.sleep(wait_seconds)
+                    continue
+                response.raise_for_status()
+                self.last_telegram_sent_at = now
+                print("TELEGRAM: แจ้งเตือนสำเร็จ")
+                return
+            except requests.exceptions.RequestException as e:
+                print(f"TELEGRAM_ERROR: ไม่สามารถส่งแจ้งเตือนได้: {e}")
+                return
 
     def _wait_and_log_session(self, process_to_watch, program_info):
         """
@@ -1453,8 +1522,9 @@ class AppLauncher(QtWidgets.QMainWindow):
                 target=self._wait_and_log_session,
                 args=(process, program_info)
             )
-            monitor_thread.daemon = True
+            monitor_thread.daemon = False
             monitor_thread.start()
+            self.monitor_threads.append(monitor_thread)
         else:
             print(f"LAUNCHER_WARNING: ไม่สามารถเริ่มเฝ้าดู '{program_name}' ได้เนื่องจาก process ไม่ทำงาน")
 
