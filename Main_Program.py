@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.96"
+CURRENT_VERSION = "1.0.97"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -85,6 +85,46 @@ def get_cached_package_path(app_dir, version):
         return None
     return os.path.join(get_updates_dir(app_dir), f"package_{version}.zip")
 
+def _normalize_tag_version(tag):
+    if not tag:
+        return ""
+    return tag.lstrip("v")
+
+def _extract_release_assets_by_version(releases):
+    assets_by_version = {}
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        version = _normalize_tag_version(tag)
+        if not version:
+            continue
+        assets_by_version[version] = rel.get("assets", [])
+    return assets_by_version
+
+def _build_patch_chain(assets_by_version, current_version, latest_version):
+    versions = sorted(assets_by_version.keys(), key=parse_version)
+    try:
+        start_idx = versions.index(current_version)
+        end_idx = versions.index(latest_version)
+    except ValueError:
+        return []
+    if end_idx <= start_idx:
+        return []
+
+    chain = []
+    for idx in range(start_idx, end_idx):
+        from_v = versions[idx]
+        to_v = versions[idx + 1]
+        patch_name = f"Main_Program_patch_{from_v}_to_{to_v}.bsdiff"
+        patch_url = None
+        for asset in assets_by_version.get(to_v, []):
+            if asset.get("name") == patch_name:
+                patch_url = asset.get("browser_download_url")
+                break
+        if not patch_url:
+            return []
+        chain.append({"from": from_v, "to": to_v, "url": patch_url})
+    return chain
+
 def check_for_updates(app_window):
     """ตรวจสอบอัปเดตและเรียกใช้ updater"""
     print("Checking for updates...")
@@ -95,7 +135,7 @@ def check_for_updates(app_window):
 
         latest_release = response.json()
         latest_tag = latest_release["tag_name"]
-        latest_version = latest_tag.lstrip("v")
+        latest_version = _normalize_tag_version(latest_tag)
 
         if parse_version(latest_version) > parse_version(CURRENT_VERSION):
             print(f"New version found: {latest_version}")
@@ -153,12 +193,39 @@ def check_for_updates(app_window):
                 app_exe_name = os.path.basename(app_exe_path)
                 update_kind = "full"
                 update_url = app_url
+                patch_manifest_path = None
                 cached_package = get_cached_package_path(app_dir, CURRENT_VERSION)
-                if patch_url and cached_package and os.path.exists(cached_package):
-                    update_kind = "patch"
-                    update_url = patch_url
+                if cached_package and os.path.exists(cached_package):
+                    if patch_url:
+                        update_kind = "patch"
+                        update_url = patch_url
+                    else:
+                        try:
+                            releases_resp = requests.get(
+                                f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases?per_page=100",
+                                timeout=8
+                            )
+                            releases_resp.raise_for_status()
+                            releases = releases_resp.json()
+                            assets_by_version = _extract_release_assets_by_version(releases)
+                            if CURRENT_VERSION in assets_by_version and latest_version in assets_by_version:
+                                chain = _build_patch_chain(assets_by_version, CURRENT_VERSION, latest_version)
+                                if chain:
+                                    manifest = {
+                                        "current_version": CURRENT_VERSION,
+                                        "target_version": latest_version,
+                                        "patches": chain
+                                    }
+                                    patch_manifest_path = os.path.join(get_updates_dir(app_dir), "patch_manifest.json")
+                                    with open(patch_manifest_path, "w", encoding="utf-8") as f:
+                                        import json
+                                        json.dump(manifest, f)
+                                    update_kind = "patch-chain"
+                                    update_url = app_url
+                        except Exception as e:
+                            print(f"PATCH_CHAIN_WARNING: {e}")
 
-                subprocess.Popen([
+                cmd = [
                     updater_path,
                     str(os.getpid()),
                     app_dir,
@@ -170,7 +237,10 @@ def check_for_updates(app_window):
                     CURRENT_VERSION,
                     "--new-version",
                     latest_version
-                ])
+                ]
+                if patch_manifest_path:
+                    cmd += ["--patch-manifest", patch_manifest_path]
+                subprocess.Popen(cmd)
                 app_window.close() # หรือ sys.exit()
 
         else:

@@ -15,6 +15,7 @@ import subprocess
 import atexit
 import bsdiff4
 import re
+import json
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -65,6 +66,7 @@ class UpdaterApp:
         update_kind = "full"
         current_version = None
         new_version = None
+        patch_manifest_path = None
         clean_args = []
         skip_next = False
         args = sys.argv[1:]
@@ -94,6 +96,10 @@ class UpdaterApp:
                 new_version = args[idx + 1]
                 idx += 2
                 continue
+            if arg == "--patch-manifest" and idx + 1 < len(args):
+                patch_manifest_path = args[idx + 1]
+                idx += 2
+                continue
             clean_args.append(arg)
             idx += 1
 
@@ -108,6 +114,7 @@ class UpdaterApp:
         self.update_kind = update_kind
         self.current_version = current_version
         self.new_version = new_version
+        self.patch_manifest_path = patch_manifest_path
         if len(clean_args) == 3:
             self.old_exe_path = clean_args[1]
             self.update_url = clean_args[2]
@@ -368,6 +375,17 @@ class UpdaterApp:
             return None
         return os.path.join(updates_dir, f"package_{version}.zip")
 
+    def _load_patch_manifest(self):
+        if not self.patch_manifest_path:
+            return None
+        if not os.path.exists(self.patch_manifest_path):
+            return None
+        try:
+            with open(self.patch_manifest_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
     def run_update_process(self):
         zip_path = None
         temp_dir = None
@@ -395,9 +413,75 @@ class UpdaterApp:
                 except Exception:
                     pass
 
-            is_patch = (self.update_kind or "").lower() == "patch" or self.update_url.lower().endswith(".bsdiff")
+            kind = (self.update_kind or "").lower()
+            is_patch = kind == "patch" or self.update_url.lower().endswith(".bsdiff")
+            is_patch_chain = kind == "patch-chain"
             is_zip = self.update_url.lower().endswith(".zip") or is_patch
-            if is_patch:
+            patch_chain_failed = False
+            if is_patch_chain:
+                try:
+                    self.status_label.config(text="กำลังดาวน์โหลด Patch แบบต่อเนื่อง...")
+                    self.root.update_idletasks()
+                    manifest = self._load_patch_manifest()
+                    if not manifest:
+                        raise RuntimeError("Missing patch manifest.")
+                    chain = manifest.get("patches", [])
+                    if not chain:
+                        raise RuntimeError("Patch chain empty.")
+                    cached_zip_path = self._get_cached_zip_path(self.current_version)
+                    if not cached_zip_path or not os.path.exists(cached_zip_path):
+                        raise RuntimeError("Missing cached package for patch chain.")
+
+                    current_zip_path = cached_zip_path
+                    for idx, entry in enumerate(chain, start=1):
+                        patch_url = entry.get("url")
+                        to_version = entry.get("to")
+                        if not patch_url or not to_version:
+                            raise RuntimeError("Invalid patch entry.")
+                        patch_path = os.path.join(work_dir, f"Main_Program_patch_{idx}.bsdiff")
+                        if os.path.exists(patch_path):
+                            try:
+                                os.remove(patch_path)
+                            except Exception:
+                                pass
+                        self.status_label.config(text=f"ดาวน์โหลด Patch {idx}/{len(chain)}...")
+                        self.root.update_idletasks()
+                        with requests.get(patch_url, stream=True) as r:
+                            r.raise_for_status()
+                            total_size = int(r.headers.get('content-length', 0))
+                            downloaded_size = 0
+                            with open(patch_path, 'wb') as f:
+                                for chunk in r.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
+                                    self.progress['value'] = progress_percent
+                                    size_text = f"{self._format_bytes(downloaded_size)} / {self._format_bytes(total_size)}"
+                                    self.percent_label.config(text=f"{progress_percent:.0f}% ({size_text})")
+                                    self.root.update_idletasks()
+                        self.status_label.config(text=f"กำลังสร้างไฟล์อัปเดต {idx}/{len(chain)}...")
+                        self.percent_label.config(text="")
+                        self.root.update_idletasks()
+                        next_zip_path = os.path.join(work_dir, f"Main_Program_update_{to_version}.zip")
+                        if os.path.exists(next_zip_path):
+                            try:
+                                os.remove(next_zip_path)
+                            except Exception:
+                                pass
+                        bsdiff4.file_patch(current_zip_path, next_zip_path, patch_path)
+                        current_zip_path = next_zip_path
+                    zip_path = current_zip_path
+                    is_zip = True
+                    self.new_version = manifest.get("target_version", self.new_version)
+                except Exception as e:
+                    patch_chain_failed = True
+                    self.status_label.config(text=f"Patch ล้มเหลว กำลังดาวน์โหลดไฟล์เต็ม... ({e})", fg="red")
+                    self.root.update_idletasks()
+                    is_patch_chain = False
+                    is_patch = False
+                    kind = "full"
+
+            if (not is_patch_chain) and is_patch:
                 self.status_label.config(text="กำลังดาวน์โหลด Patch (ขนาดเล็ก)...")
                 self.root.update_idletasks()
                 if not self.current_version or not self.new_version:
@@ -589,7 +673,7 @@ if __name__ == "__main__":
             skip_next = True
             idx += 1
             continue
-        if arg in ("--update-kind", "--current-version", "--new-version"):
+        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest"):
             idx += 2
             continue
         clean_args.append(arg)

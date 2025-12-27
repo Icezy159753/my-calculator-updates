@@ -7,7 +7,8 @@ git status
 
 git add -A
 git add Main_Program.py
-git commit -m "Bump version to 1.0.92"
+git add -A
+git commit -m "Bump version to 1.0.97"
 git push origin main
 
 
