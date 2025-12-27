@@ -329,6 +329,8 @@ class UpdaterApp:
                 backup_dir = self.app_dir + ".old"
                 if os.path.exists(backup_dir):
                     shutil.rmtree(backup_dir, ignore_errors=True)
+                if os.path.exists(backup_dir):
+                    backup_dir = self.app_dir + ".old_" + time.strftime("%Y%m%d_%H%M%S")
                 if not self._safe_rename(self.app_dir, backup_dir):
                     self._kill_processes_in_app_dir(self.app_dir)
                     time.sleep(1.0)
