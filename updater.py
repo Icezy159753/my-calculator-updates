@@ -373,7 +373,9 @@ class UpdaterApp:
                     zf.extractall(temp_dir)
 
                 entries = [d for d in os.listdir(temp_dir) if os.path.isdir(os.path.join(temp_dir, d))]
-                if len(entries) == 1:
+                if self.exe_name and os.path.exists(os.path.join(temp_dir, self.exe_name)):
+                    new_app_dir = temp_dir
+                elif len(entries) == 1:
                     new_app_dir = os.path.join(temp_dir, entries[0])
                 else:
                     new_app_dir = temp_dir
