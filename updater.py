@@ -189,6 +189,31 @@ class UpdaterApp:
                 continue
         return killed
 
+    def _kill_processes_in_app_dir(self, app_dir):
+        killed = 0
+        try:
+            app_dir_norm = os.path.normcase(os.path.abspath(app_dir)) + os.sep
+        except Exception:
+            return killed
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                if proc.pid == os.getpid():
+                    continue
+                exe_path = proc.info.get('exe')
+                if not exe_path:
+                    continue
+                exe_norm = os.path.normcase(os.path.abspath(exe_path))
+                if exe_norm.startswith(app_dir_norm):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        proc.kill()
+                    killed += 1
+            except Exception:
+                continue
+        return killed
+
     def _safe_rename(self, src, dst, retries=10, delay=0.5):
         for _ in range(retries):
             try:
@@ -252,6 +277,8 @@ class UpdaterApp:
             
             if self.exe_name:
                 self._kill_process_by_name(self.exe_name)
+            if self.app_dir:
+                self._kill_processes_in_app_dir(self.app_dir)
                 time.sleep(0.5)
 
             if self.update_url.lower().endswith(".zip"):
@@ -268,7 +295,10 @@ class UpdaterApp:
                 if os.path.exists(backup_dir):
                     shutil.rmtree(backup_dir, ignore_errors=True)
                 if not self._safe_rename(self.app_dir, backup_dir):
-                    raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์เดิมได้ (ยังถูกใช้งานอยู่)")
+                    self._kill_processes_in_app_dir(self.app_dir)
+                    time.sleep(1.0)
+                    if not self._safe_rename(self.app_dir, backup_dir):
+                        raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์เดิมได้ (ยังถูกใช้งานอยู่)")
                 if not self._safe_rename(new_app_dir, self.app_dir):
                     raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์ใหม่ได้")
                 if os.path.exists(temp_dir):
@@ -278,6 +308,8 @@ class UpdaterApp:
             else:
                 if self.old_exe_path is None or new_exe_path is None:
                     raise RuntimeError("Invalid updater arguments for EXE update.")
+                if self.app_dir:
+                    self._kill_processes_in_app_dir(self.app_dir)
                 os.remove(self.old_exe_path)
                 os.rename(new_exe_path, self.old_exe_path)
             
