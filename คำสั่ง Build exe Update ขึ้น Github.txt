@@ -1,0 +1,16 @@
+
+
+****สร้างBuild Update Version****
+git add Main_Program.py
+git commit -m "Bump version to 1.0.62"
+git push origin main
+
+
+****Update ไฟล์ Spec ใหม่กรณีเพิ่ม Hidden****
+git add Main_Program.spec
+git commit -m "Update spec for customtkinter"
+git push origin main
+
+
+***คือการส่งไป Buid ใน GitHub แต่ถ้าเวอรชั่นไม่เปลี่ยนก็จะไม่ Build เป็น exe แค่อัพเดทไฟล์****
+git push origin main

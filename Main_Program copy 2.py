@@ -230,17 +230,17 @@ THEME_LIGHT = {
 }
 
 THEME_DARK = {
-    "app_bg": "#1E2126",
-    "sidebar_bg": "#15181C",
-    "content_bg": "#1E2126",
-    "card_bg": "#2A2E35",
-    "card_border": "#343941",
-    "text_primary": "#E6ECF2",
-    "text_muted": "#A6B0BB",
-    "accent": "#3FA892",
-    "accent_hover": "#369B87",
-    "search_bg": "#262B32",
-    "search_border": "#3B414A"
+    "app_bg": "#171A1F",
+    "sidebar_bg": "#12161B",
+    "content_bg": "#1A1F25",
+    "card_bg": "#232A32",
+    "card_border": "#2F3742",
+    "text_primary": "#F4EDE7",
+    "text_muted": "#FFFFFF",
+    "accent": "#3BA88F",
+    "accent_hover": "#32947E",
+    "search_bg": "#1F262E",
+    "search_border": "#303845"
 }
 
 DEFAULT_APPEARANCE_MODE = "Light"
@@ -639,8 +639,8 @@ class AppLauncher(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Program All DP v{CURRENT_VERSION}")
 
-        window_width = 1200
-        window_height = 800
+        window_width = 1120
+        window_height = 760
         self.setFixedSize(window_width, window_height)
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
@@ -784,9 +784,9 @@ class AppLauncher(QtWidgets.QMainWindow):
         version_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
 
-        exit_button = QtWidgets.QPushButton("Exit Launcher")
+        exit_button = QtWidgets.QPushButton("ปิดProgram")
         exit_button.setObjectName("ExitButton")
-        exit_button.setFont(self.font_body)
+        exit_button.setFont(QtGui.QFont("Tahoma", 12, QtGui.QFont.Weight.Bold))
         exit_button.clicked.connect(self.quit_app)
         layout.addWidget(exit_button)
 
@@ -852,7 +852,16 @@ class AppLauncher(QtWidgets.QMainWindow):
             QMainWindow {{ background: {theme['app_bg']}; }}
             QFrame#Sidebar {{ background: {theme['sidebar_bg']}; }}
             QFrame#Content {{ background: {theme['content_bg']}; }}
-            QLabel {{ color: {theme['text_primary']}; }}
+            QScrollArea {{
+                background: {theme['content_bg']};
+            }}
+            QScrollArea > QWidget {{
+                background: {theme['content_bg']};
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background: transparent;
+            }}
+            QLabel {{ color: {theme['text_primary']}; background: transparent; }}
             QLabel#Muted {{ color: {theme['text_muted']}; }}
             QLineEdit {{
                 background: {theme['search_bg']};
@@ -885,11 +894,14 @@ class AppLauncher(QtWidgets.QMainWindow):
                 background: {theme['accent_hover']};
             }}
             QPushButton#ExitButton {{
-                background: transparent;
-                border: 1px solid {theme['search_border']};
+                background: #8B1E1E;
+                border: 1px solid #701919;
                 border-radius: 10px;
                 padding: 6px 12px;
-                color: {theme['text_primary']};
+                color: white;
+            }}
+            QPushButton#ExitButton:hover {{
+                background: #701919;
             }}
             QFrame#Card {{
                 background: {theme['card_bg']};

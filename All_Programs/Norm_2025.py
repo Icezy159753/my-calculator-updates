@@ -25,6 +25,23 @@ from google.oauth2.service_account import Credentials # Recommended for google-a
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
+def get_app_base_dir():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+def get_service_account_path(filename):
+    candidates = []
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, filename))
+        candidates.append(os.path.join(os.path.dirname(sys.executable), filename))
+    candidates.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", filename)))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[-1]
+
 class SpssExporterApp(ctk.CTk):
     MAX_DISPLAY_ITEMS_IN_DIALOG = 100 # Max items to display in dialog lists
 
@@ -67,7 +84,7 @@ class SpssExporterApp(ctk.CTk):
 
         # --- Google Sheet URL and Settings ---
         self.TARGET_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1CU0KjP3eAYRuJk7uz5rBR0GQ8uDUH4zuYnr6rnSKMwU/edit?gid=106958934#gid=106958934"
-        self.SERVICE_ACCOUNT_FILE_PATH = 'Test3.json' 
+        self.SERVICE_ACCOUNT_FILE_PATH = get_service_account_path("Test3.json")
         self.INDEX_SHEET_NAME_FOR_COUNT = "Index"
         self.UNIQUE_JOB_IDENTIFIER_COLUMN = "Project #"
         self.TARGET_Norm_URL = "https://script.google.com/macros/s/AKfycbxv0suQxHaDNttsaHpBIo2zqf-QY8IjaXKloqYoKmKSSbOUmwLeNUxZdH7-bxQr8dOz/exec"
