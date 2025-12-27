@@ -144,6 +144,7 @@ class UpdaterApp:
         
         self.percent_label = tk.Label(root, text="0%", font=Font(size=9))
         self.percent_label.pack()
+        self._center_window(400, 120)
         self.root.deiconify()
         
         # เริ่มกระบวนการอัปเดตใน Thread ใหม่ เพื่อไม่ให้ GUI ค้าง
@@ -158,6 +159,17 @@ class UpdaterApp:
 
     def disable_close(self):
         pass
+
+    def _center_window(self, width, height):
+        try:
+            self.root.update_idletasks()
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            x = int((screen_width - width) / 2)
+            y = int((screen_height - height) / 2)
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
 
     def _maybe_relaunch_from_temp(self):
         if "--run-from-temp" in sys.argv:

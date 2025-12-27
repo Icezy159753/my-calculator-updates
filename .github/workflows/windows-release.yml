@@ -90,3 +90,22 @@ jobs:
             dist/Main_Program_full_*.zip
             dist/Main_Program_patch_*.bsdiff
             dist/updater.exe
+
+      - name: Notify Telegram
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: pwsh
+        run: |
+          if (-not $env:TELEGRAM_BOT_TOKEN -or -not $env:TELEGRAM_CHAT_ID) {
+            Write-Host "Telegram secrets missing; skipping notification."
+            exit 0
+          }
+          $tag = "${{ github.ref_name }}"
+          $msg = "✅ Build สำเร็จ: $tag พร้อมใช้งานแล้ว อัปเดตได้เลย"
+          $body = @{
+            chat_id = $env:TELEGRAM_CHAT_ID
+            text = $msg
+          } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -ContentType "application/json" -Body $body
