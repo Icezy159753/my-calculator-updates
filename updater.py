@@ -331,6 +331,13 @@ class UpdaterApp:
                         os.remove(dst_path)
                 except Exception:
                     pass
+
+    def _format_bytes(self, num_bytes):
+        try:
+            num_bytes = float(num_bytes)
+        except Exception:
+            return "0 MB"
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
                 shutil.copy2(src_path, dst_path)
                 try:
                     os.utime(dst_path, None)
@@ -377,7 +384,7 @@ class UpdaterApp:
                 self._wait_for_process_exit(timeout=10)
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
-            self.status_label.config(text="กำลังดาวน์โหลดเวอร์ชันใหม่...")
+            self.status_label.config(text="กำลังเตรียมดาวน์โหลดเวอร์ชันใหม่...")
             work_dir = tempfile.gettempdir()
             zip_path = os.path.join(work_dir, "Main_Program_update.zip")
             new_exe_path = None
@@ -391,6 +398,8 @@ class UpdaterApp:
             is_patch = (self.update_kind or "").lower() == "patch" or self.update_url.lower().endswith(".bsdiff")
             is_zip = self.update_url.lower().endswith(".zip") or is_patch
             if is_patch:
+                self.status_label.config(text="กำลังดาวน์โหลด Patch (ขนาดเล็ก)...")
+                self.root.update_idletasks()
                 if not self.current_version or not self.new_version:
                     raise RuntimeError("Missing version info for patch update.")
                 cached_zip_path = self._get_cached_zip_path(self.current_version)
@@ -414,7 +423,8 @@ class UpdaterApp:
                             downloaded_size += len(chunk)
                             progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
                             self.progress['value'] = progress_percent
-                            self.percent_label.config(text=f"{progress_percent:.0f}%")
+                            size_text = f"{self._format_bytes(downloaded_size)} / {self._format_bytes(total_size)}"
+                            self.percent_label.config(text=f"{progress_percent:.0f}% ({size_text})")
                             self.root.update_idletasks()
 
                 self.status_label.config(text="กำลังสร้างไฟล์อัปเดตจาก Patch...")
@@ -437,6 +447,8 @@ class UpdaterApp:
                     with open(zip_path, "wb") as new_f:
                         new_f.write(new_data)
             else:
+                self.status_label.config(text="กำลังดาวน์โหลดไฟล์เต็ม (Full package)...")
+                self.root.update_idletasks()
                 with requests.get(self.update_url, stream=True) as r:
                     r.raise_for_status()
                     total_size = int(r.headers.get('content-length', 0))
@@ -452,7 +464,8 @@ class UpdaterApp:
 
                             progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
                             self.progress['value'] = progress_percent
-                            self.percent_label.config(text=f"{progress_percent:.0f}%")
+                            size_text = f"{self._format_bytes(downloaded_size)} / {self._format_bytes(total_size)}"
+                            self.percent_label.config(text=f"{progress_percent:.0f}% ({size_text})")
                             self.root.update_idletasks()
             
             # 3. ติดตั้งอัปเดต
