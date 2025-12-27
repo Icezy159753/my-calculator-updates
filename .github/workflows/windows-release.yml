@@ -40,7 +40,7 @@ jobs:
       - name: Package onedir
         run: |
           if (Test-Path dist\\Main_Program.zip) { Remove-Item dist\\Main_Program.zip }
-          Compress-Archive -Path dist\\Main_Program -DestinationPath dist\\Main_Program.zip
+          Compress-Archive -Path dist\\Main_Program\\* -DestinationPath dist\\Main_Program.zip
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2

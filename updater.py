@@ -249,6 +249,10 @@ class UpdaterApp:
             self.percent_label.config(text="")
             self.root.update_idletasks()
             time.sleep(1)
+            
+            if self.exe_name:
+                self._kill_process_by_name(self.exe_name)
+                time.sleep(0.5)
 
             if self.update_url.lower().endswith(".zip"):
                 with zipfile.ZipFile(zip_path, 'r') as zf:
