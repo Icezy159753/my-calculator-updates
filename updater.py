@@ -234,7 +234,8 @@ class UpdaterApp:
     def _acquire_lock(self):
         if not self.app_dir:
             return True
-        self._lock_path = os.path.join(self.app_dir, "updater.lock")
+        lock_dir = os.path.dirname(os.path.abspath(self.app_dir))
+        self._lock_path = os.path.join(lock_dir, "updater.lock")
         try:
             if os.path.exists(self._lock_path):
                 try:
@@ -257,6 +258,15 @@ class UpdaterApp:
                 os.remove(self._lock_path)
         except Exception:
             pass
+    
+    def _remove_empty_dir(self, path):
+        try:
+            if os.path.isdir(path) and not os.listdir(path):
+                os.rmdir(path)
+                return True
+        except Exception:
+            pass
+        return False
 
     def run_update_process(self):
         zip_path = None
@@ -336,6 +346,9 @@ class UpdaterApp:
                     time.sleep(1.0)
                     if not self._safe_rename(self.app_dir, backup_dir):
                         raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์เดิมได้ (ยังถูกใช้งานอยู่)")
+                if os.path.exists(self.app_dir):
+                    if not self._remove_empty_dir(self.app_dir):
+                        raise RuntimeError("โฟลเดอร์ปลายทางยังใช้งานอยู่ หรือไม่ว่างเปล่า")
                 if not self._safe_rename(new_app_dir, self.app_dir):
                     raise RuntimeError("ไม่สามารถย้ายโฟลเดอร์ใหม่ได้")
                 if os.path.exists(temp_dir):
