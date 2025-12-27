@@ -30,8 +30,8 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 # -------------------------------------------------------------
 
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+TELEGRAM_BOT_TOKEN = "8207273310:AAEwpcDWP8yRP5Q74R3ic5jpZ_BOPQwJ_PQ"
+TELEGRAM_CHAT_ID = "8556512706"
 
 class UpdaterApp:
     def __init__(self, root):
@@ -390,7 +390,7 @@ class UpdaterApp:
         return username, hostname, ip_address
 
     def _send_telegram_update_notice(self):
-        if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
+        if "TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
             return
         old_version = self.current_version or "N/A"
         new_version = self.new_version or "N/A"
@@ -739,7 +739,7 @@ if __name__ == "__main__":
             skip_next = True
             idx += 1
             continue
-        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest", "--release-url"):
+        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest"):
             idx += 2
             continue
         clean_args.append(arg)
