@@ -12,6 +12,7 @@ import zipfile
 import shutil
 import tempfile
 import subprocess
+import atexit
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -29,6 +30,7 @@ class UpdaterApp:
         self.root = root
         self.root.title("กำลังอัปเดต...")
         self._relaunch_in_progress = False
+        self._lock_path = None
         self.root.withdraw()
 
         # --- เพิ่มเข้ามา: ตั้งค่าไอคอนของหน้าต่าง ---
@@ -91,6 +93,12 @@ class UpdaterApp:
 
         self._maybe_relaunch_from_temp()
         if self._relaunch_in_progress:
+            return
+        if not self._acquire_lock():
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
             return
 
         # สร้าง Widgets
@@ -222,6 +230,33 @@ class UpdaterApp:
             except Exception:
                 time.sleep(delay)
         return False
+    
+    def _acquire_lock(self):
+        if not self.app_dir:
+            return True
+        self._lock_path = os.path.join(self.app_dir, "updater.lock")
+        try:
+            if os.path.exists(self._lock_path):
+                try:
+                    with open(self._lock_path, "r", encoding="utf-8") as f:
+                        existing_pid = int(f.read().strip() or "0")
+                except Exception:
+                    existing_pid = 0
+                if existing_pid and psutil.pid_exists(existing_pid):
+                    return False
+            with open(self._lock_path, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+            atexit.register(self._release_lock)
+            return True
+        except Exception:
+            return True
+    
+    def _release_lock(self):
+        try:
+            if self._lock_path and os.path.exists(self._lock_path):
+                os.remove(self._lock_path)
+        except Exception:
+            pass
 
     def run_update_process(self):
         zip_path = None
@@ -348,6 +383,8 @@ class UpdaterApp:
                 except Exception:
                     pass
             self.root.after(10000, self.root.quit)
+        finally:
+            self._release_lock()
 
 if __name__ == "__main__":
     # --- เพิ่มเข้ามา: ตรวจสอบว่ามี arguments ส่งมาหรือไม่ก่อนรัน ---
