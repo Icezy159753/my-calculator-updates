@@ -13,6 +13,8 @@ import shutil
 import tempfile
 import subprocess
 import atexit
+import bsdiff4
+import re
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -60,18 +62,40 @@ class UpdaterApp:
             except Exception:
                 self.ready_file_path = None
 
+        update_kind = "full"
+        current_version = None
+        new_version = None
         clean_args = []
         skip_next = False
-        for arg in sys.argv[1:]:
+        args = sys.argv[1:]
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
             if skip_next:
                 skip_next = False
+                idx += 1
                 continue
             if arg == "--run-from-temp":
+                idx += 1
                 continue
             if arg == "--ready-file":
                 skip_next = True
+                idx += 1
+                continue
+            if arg == "--update-kind" and idx + 1 < len(args):
+                update_kind = args[idx + 1]
+                idx += 2
+                continue
+            if arg == "--current-version" and idx + 1 < len(args):
+                current_version = args[idx + 1]
+                idx += 2
+                continue
+            if arg == "--new-version" and idx + 1 < len(args):
+                new_version = args[idx + 1]
+                idx += 2
                 continue
             clean_args.append(arg)
+            idx += 1
 
         if len(clean_args) not in (3, 4):
             raise RuntimeError("Invalid updater arguments.")
@@ -81,6 +105,9 @@ class UpdaterApp:
         self.exe_name = None
         self.old_exe_path = None
         self.update_url = None
+        self.update_kind = update_kind
+        self.current_version = current_version
+        self.new_version = new_version
         if len(clean_args) == 3:
             self.old_exe_path = clean_args[1]
             self.update_url = clean_args[2]
@@ -310,6 +337,30 @@ class UpdaterApp:
                 except Exception:
                     pass
 
+    def _get_updates_dir(self):
+        if not self.app_dir:
+            return None
+        updates_dir = os.path.join(self.app_dir, "_internal", "updates")
+        os.makedirs(updates_dir, exist_ok=True)
+        return updates_dir
+
+    def _extract_version_from_filename(self, path_or_url):
+        if not path_or_url:
+            return None
+        filename = os.path.basename(path_or_url)
+        match = re.search(r"(\d+\.\d+\.\d+)", filename)
+        if match:
+            return match.group(1)
+        return None
+
+    def _get_cached_zip_path(self, version):
+        if not version:
+            return None
+        updates_dir = self._get_updates_dir()
+        if not updates_dir:
+            return None
+        return os.path.join(updates_dir, f"package_{version}.zip")
+
     def run_update_process(self):
         zip_path = None
         temp_dir = None
@@ -337,24 +388,72 @@ class UpdaterApp:
                 except Exception:
                     pass
 
-            with requests.get(self.update_url, stream=True) as r:
-                r.raise_for_status()
-                total_size = int(r.headers.get('content-length', 0))
-                downloaded_size = 0
+            is_patch = (self.update_kind or "").lower() == "patch" or self.update_url.lower().endswith(".bsdiff")
+            is_zip = self.update_url.lower().endswith(".zip") or is_patch
+            if is_patch:
+                if not self.current_version or not self.new_version:
+                    raise RuntimeError("Missing version info for patch update.")
+                cached_zip_path = self._get_cached_zip_path(self.current_version)
+                if not cached_zip_path or not os.path.exists(cached_zip_path):
+                    raise RuntimeError("Missing cached package for patch update.")
 
-                is_zip = self.update_url.lower().endswith(".zip")
-                target_path = zip_path if is_zip else (self.old_exe_path + ".new")
-                new_exe_path = target_path if not is_zip else None
+                patch_path = os.path.join(work_dir, "Main_Program_update.bsdiff")
+                if os.path.exists(patch_path):
+                    try:
+                        os.remove(patch_path)
+                    except Exception:
+                        pass
 
-                with open(target_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
+                with requests.get(self.update_url, stream=True) as r:
+                    r.raise_for_status()
+                    total_size = int(r.headers.get('content-length', 0))
+                    downloaded_size = 0
+                    with open(patch_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
+                            self.progress['value'] = progress_percent
+                            self.percent_label.config(text=f"{progress_percent:.0f}%")
+                            self.root.update_idletasks()
 
-                        progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
-                        self.progress['value'] = progress_percent
-                        self.percent_label.config(text=f"{progress_percent:.0f}%")
-                        self.root.update_idletasks()
+                self.status_label.config(text="กำลังสร้างไฟล์อัปเดตจาก Patch...")
+                self.percent_label.config(text="")
+                self.root.update_idletasks()
+                zip_path = os.path.join(work_dir, f"Main_Program_update_{self.new_version}.zip")
+                if os.path.exists(zip_path):
+                    try:
+                        os.remove(zip_path)
+                    except Exception:
+                        pass
+                try:
+                    bsdiff4.file_patch(cached_zip_path, zip_path, patch_path)
+                except Exception:
+                    with open(cached_zip_path, "rb") as old_f:
+                        old_data = old_f.read()
+                    with open(patch_path, "rb") as patch_f:
+                        patch_data = patch_f.read()
+                    new_data = bsdiff4.patch(old_data, patch_data)
+                    with open(zip_path, "wb") as new_f:
+                        new_f.write(new_data)
+            else:
+                with requests.get(self.update_url, stream=True) as r:
+                    r.raise_for_status()
+                    total_size = int(r.headers.get('content-length', 0))
+                    downloaded_size = 0
+
+                    target_path = zip_path if is_zip else (self.old_exe_path + ".new")
+                    new_exe_path = target_path if not is_zip else None
+
+                    with open(target_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+
+                            progress_percent = (downloaded_size / total_size) * 100 if total_size > 0 else 0
+                            self.progress['value'] = progress_percent
+                            self.percent_label.config(text=f"{progress_percent:.0f}%")
+                            self.root.update_idletasks()
             
             # 3. ติดตั้งอัปเดต
             self.status_label.config(text="กำลังติดตั้งอัปเดต...")
@@ -368,7 +467,7 @@ class UpdaterApp:
                 self._kill_processes_in_app_dir(self.app_dir)
                 time.sleep(0.5)
 
-            if self.update_url.lower().endswith(".zip"):
+            if is_zip:
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     zf.extractall(temp_dir)
 
@@ -390,10 +489,27 @@ class UpdaterApp:
                     self._copy_tree_overwrite(new_app_dir, self.app_dir)
                 except Exception as e:
                     raise RuntimeError(f"ไม่สามารถคัดลอกไฟล์ใหม่ทับของเดิมได้: {e}")
+                if self.new_version:
+                    cached_new_zip = self._get_cached_zip_path(self.new_version)
+                else:
+                    cached_new_zip = self._get_cached_zip_path(self._extract_version_from_filename(self.update_url))
+                if cached_new_zip and os.path.exists(cached_new_zip):
+                    try:
+                        os.remove(cached_new_zip)
+                    except Exception:
+                        pass
+                if cached_new_zip and zip_path and os.path.exists(zip_path):
+                    try:
+                        shutil.copy2(zip_path, cached_new_zip)
+                    except Exception:
+                        pass
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
-                if os.path.exists(zip_path):
-                    os.remove(zip_path)
+                if zip_path and os.path.exists(zip_path):
+                    try:
+                        os.remove(zip_path)
+                    except Exception:
+                        pass
             else:
                 if self.old_exe_path is None or new_exe_path is None:
                     raise RuntimeError("Invalid updater arguments for EXE update.")
@@ -446,16 +562,25 @@ if __name__ == "__main__":
     raw_args = sys.argv[1:]
     clean_args = []
     skip_next = False
-    for arg in raw_args:
+    idx = 0
+    while idx < len(raw_args):
+        arg = raw_args[idx]
         if skip_next:
             skip_next = False
+            idx += 1
             continue
         if arg == "--run-from-temp":
+            idx += 1
             continue
         if arg == "--ready-file":
             skip_next = True
+            idx += 1
+            continue
+        if arg in ("--update-kind", "--current-version", "--new-version"):
+            idx += 2
             continue
         clean_args.append(arg)
+        idx += 1
 
     if len(clean_args) not in (3, 4):
         print("This script is intended to be run by the main application.")

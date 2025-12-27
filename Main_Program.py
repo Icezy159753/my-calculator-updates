@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.91"
+CURRENT_VERSION = "1.0.92"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -75,6 +75,16 @@ def get_executable_path():
     else:
         return os.path.abspath(__file__)
 
+def get_updates_dir(app_dir):
+    updates_dir = os.path.join(app_dir, "_internal", "updates")
+    os.makedirs(updates_dir, exist_ok=True)
+    return updates_dir
+
+def get_cached_package_path(app_dir, version):
+    if not version:
+        return None
+    return os.path.join(get_updates_dir(app_dir), f"package_{version}.zip")
+
 def check_for_updates(app_window):
     """ตรวจสอบอัปเดตและเรียกใช้ updater"""
     print("Checking for updates...")
@@ -84,7 +94,8 @@ def check_for_updates(app_window):
         response.raise_for_status()
 
         latest_release = response.json()
-        latest_version = latest_release["tag_name"]
+        latest_tag = latest_release["tag_name"]
+        latest_version = latest_tag.lstrip("v")
 
         if parse_version(latest_version) > parse_version(CURRENT_VERSION):
             print(f"New version found: {latest_version}")
@@ -106,13 +117,20 @@ def check_for_updates(app_window):
                 except Exception as e:
                     print(f"Could not save changelog file: {e}")
                 # -------------------------
-                # หา URL ของไฟล์ updater.exe และไฟล์ zip จาก release ล่าสุด
+                # หา URL ของไฟล์ updater.exe, patch และไฟล์ zip จาก release ล่าสุด
                 updater_url = None
                 app_url = None
+                patch_url = None
+                patch_name = f"Main_Program_patch_{CURRENT_VERSION}_to_{latest_version}.bsdiff"
+                full_name = f"Main_Program_full_{latest_version}.zip"
                 for asset in latest_release['assets']:
                     if asset['name'] == 'updater.exe':
                         updater_url = asset['browser_download_url']
-                    if asset['name'] == 'Main_Program.zip':
+                    if asset['name'] == patch_name:
+                        patch_url = asset['browser_download_url']
+                    if asset['name'] == full_name:
+                        app_url = asset['browser_download_url']
+                    if asset['name'] == 'Main_Program.zip' and app_url is None:
                         app_url = asset['browser_download_url']
 
                 if not updater_url or not app_url:
@@ -133,7 +151,26 @@ def check_for_updates(app_window):
                 app_exe_path = get_executable_path()
                 app_dir = os.path.dirname(app_exe_path)
                 app_exe_name = os.path.basename(app_exe_path)
-                subprocess.Popen([updater_path, str(os.getpid()), app_dir, app_exe_name, app_url])
+                update_kind = "full"
+                update_url = app_url
+                cached_package = get_cached_package_path(app_dir, CURRENT_VERSION)
+                if patch_url and cached_package and os.path.exists(cached_package):
+                    update_kind = "patch"
+                    update_url = patch_url
+
+                subprocess.Popen([
+                    updater_path,
+                    str(os.getpid()),
+                    app_dir,
+                    app_exe_name,
+                    update_url,
+                    "--update-kind",
+                    update_kind,
+                    "--current-version",
+                    CURRENT_VERSION,
+                    "--new-version",
+                    latest_version
+                ])
                 app_window.close() # หรือ sys.exit()
 
         else:

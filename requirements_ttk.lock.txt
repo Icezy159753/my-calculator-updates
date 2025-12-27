@@ -2,6 +2,7 @@ altair==5.5.0
 altgraph==0.17.4
 annotated-types==0.7.0
 attrs==25.3.0
+bsdiff4==1.2.6
 cachetools==5.5.2
 certifi==2025.4.26
 charset-normalizer==3.4.2

@@ -39,8 +39,47 @@ jobs:
 
       - name: Package onedir
         run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart("v")
           if (Test-Path dist\\Main_Program.zip) { Remove-Item dist\\Main_Program.zip }
-          Compress-Archive -Path dist\\Main_Program\\* -DestinationPath dist\\Main_Program.zip
+          if (Test-Path "dist\\Main_Program_full_$ver.zip") { Remove-Item "dist\\Main_Program_full_$ver.zip" }
+          Compress-Archive -Path dist\\Main_Program\\* -DestinationPath "dist\\Main_Program_full_$ver.zip"
+          Copy-Item "dist\\Main_Program_full_$ver.zip" "dist\\Main_Program.zip"
+
+      - name: Build delta patch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart("v")
+          $latest = Invoke-RestMethod -Headers @{Authorization = "Bearer $env:GITHUB_TOKEN"} -Uri "https://api.github.com/repos/$repo/releases/latest"
+          $prevTag = $latest.tag_name
+          if (-not $prevTag) { Write-Host "No previous release. Skipping patch."; exit 0 }
+          $prevVer = $prevTag.TrimStart("v")
+          if ($prevVer -eq $ver) { Write-Host "Same version. Skipping patch."; exit 0 }
+          $prevAsset = $latest.assets | Where-Object { $_.name -eq "Main_Program_full_$prevVer.zip" } | Select-Object -First 1
+          if (-not $prevAsset) { $prevAsset = $latest.assets | Where-Object { $_.name -eq "Main_Program.zip" } | Select-Object -First 1 }
+          if (-not $prevAsset) { Write-Host "Previous full zip not found. Skipping patch."; exit 0 }
+          $prevZip = "dist\\Main_Program_full_$prevVer.zip"
+          Invoke-WebRequest -Uri $prevAsset.browser_download_url -OutFile $prevZip
+          $newZip = "dist\\Main_Program_full_$ver.zip"
+          $patchPath = "dist\\Main_Program_patch_${prevVer}_to_${ver}.bsdiff"
+          $env:PREV_ZIP = $prevZip
+          $env:NEW_ZIP = $newZip
+          $env:PATCH_PATH = $patchPath
+          @'
+          import bsdiff4
+          import os
+          prev_zip = os.environ.get("PREV_ZIP")
+          new_zip = os.environ.get("NEW_ZIP")
+          patch_path = os.environ.get("PATCH_PATH")
+          if not all([prev_zip, new_zip, patch_path]):
+              raise SystemExit("Missing env vars for patch build.")
+          bsdiff4.file_diff(prev_zip, new_zip, patch_path)
+          print(f"Patch created: {patch_path}")
+          '@ | python -
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -48,4 +87,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/Main_Program.zip
+            dist/Main_Program_full_*.zip
+            dist/Main_Program_patch_*.bsdiff
             dist/updater.exe
