@@ -6,12 +6,15 @@ import os
 
 # ตรวจสอบว่าโปรแกรมกำลังรันในรูปแบบ "frozen" (ไฟล์ .exe) หรือไม่
 if getattr(sys, 'frozen', False):
-    # ถ้าใช่, ให้หาพาธของโฟลเดอร์ชั่วคราวที่ PyInstaller สร้างขึ้น (_MEIPASS)
-    # แล้วสร้างพาธไปยังโฟลเดอร์ spssio ที่เราแพ็คเข้ามา
-    spss_home_path = os.path.join(sys._MEIPASS, 'savReaderWriter', 'spssio')
-    
-    # ตั้งค่า Environment Variable 'SPSS_HOME' เพื่อบอกให้ไลบรารีรู้ว่าไฟล์อยู่ที่ไหน
-    os.environ['SPSS_HOME'] = spss_home_path
+    base_dirs = []
+    if hasattr(sys, "_MEIPASS"):
+        base_dirs.append(sys._MEIPASS)
+    base_dirs.append(os.path.dirname(sys.executable))
+    for base_dir in base_dirs:
+        spss_home_path = os.path.join(base_dir, 'savReaderWriter', 'spssio')
+        if os.path.isdir(spss_home_path):
+            os.environ['SPSS_HOME'] = spss_home_path
+            break
 # =============================================================================
 
 

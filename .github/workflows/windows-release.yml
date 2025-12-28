@@ -29,6 +29,18 @@ jobs:
           python -m pip install pyinstaller
           python -c "import PyQt6; import PyQt6.QtCore; print('PyQt6 OK')"
 
+      - name: Restore Test3.json from secret
+        shell: pwsh
+        env:
+          TEST3_JSON_B64: ${{ secrets.TEST3_JSON_B64 }}
+        run: |
+          if (-not $env:TEST3_JSON_B64) {
+            Write-Error "Missing secret TEST3_JSON_B64"
+            exit 1
+          }
+          $bytes = [System.Convert]::FromBase64String($env:TEST3_JSON_B64)
+          [System.IO.File]::WriteAllBytes("Test3.json", $bytes)
+
       - name: Build EXE
         run: |
           pyinstaller Main_Program.spec

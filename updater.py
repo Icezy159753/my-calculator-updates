@@ -421,11 +421,19 @@ class UpdaterApp:
             return
         seed_file = "Itemdef - Format.xlsx"
         seed_dir = "savReaderWriter"
+        seed_key_file = "Test3.json"
         dest_file = os.path.join(self.app_dir, seed_file)
         src_file = os.path.join(internal_dir, seed_file)
         if not os.path.exists(dest_file) and os.path.exists(src_file):
             try:
                 shutil.copy2(src_file, dest_file)
+            except Exception:
+                pass
+        dest_key_file = os.path.join(self.app_dir, seed_key_file)
+        src_key_file = os.path.join(internal_dir, seed_key_file)
+        if not os.path.exists(dest_key_file) and os.path.exists(src_key_file):
+            try:
+                shutil.copy2(src_key_file, dest_key_file)
             except Exception:
                 pass
         dest_dir = os.path.join(self.app_dir, seed_dir)
@@ -736,6 +744,7 @@ class UpdaterApp:
                     "0_Keep",
                     "Itemdef - Format.xlsx",
                     "savReaderWriter",
+                    "Test3.json",
                 }
                 keep_names = {name for name in keep_names if name}
                 self._clean_install_root(keep_names)
@@ -743,7 +752,7 @@ class UpdaterApp:
                     self._copy_tree_overwrite(
                         new_app_dir,
                         self.app_dir,
-                        preserve_files={"Itemdef - Format.xlsx"},
+                        preserve_files={"Itemdef - Format.xlsx", "Test3.json"},
                         preserve_dirs={"savReaderWriter"},
                     )
                 except Exception as e:
