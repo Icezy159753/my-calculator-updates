@@ -391,6 +391,7 @@ class UpdaterApp:
 
     def _send_telegram_update_notice(self):
         if "TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
+            print("TELEGRAM_SKIP: Missing token or chat id.")
             return
         old_version = self.current_version or "N/A"
         new_version = self.new_version or "N/A"
@@ -412,9 +413,11 @@ class UpdaterApp:
             "disable_web_page_preview": False
         }
         try:
-            requests.post(url, json=payload, timeout=8)
-        except Exception:
-            pass
+            response = requests.post(url, json=payload, timeout=8)
+            print(f"TELEGRAM_STATUS: {response.status_code}")
+            print(f"TELEGRAM_BODY: {response.text}")
+        except Exception as e:
+            print(f"TELEGRAM_ERROR: {e}")
 
     def _get_updates_dir(self):
         if not self.app_dir:
