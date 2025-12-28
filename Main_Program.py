@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.12"
+CURRENT_VERSION = "1.1.13"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -260,17 +260,28 @@ def check_for_updates(app_window):
                 try:
                     env = os.environ.copy()
                     env["UPDATER_LOG_DIR"] = app_dir
-                    proc = subprocess.Popen(cmd, env=env)
+                    proc = subprocess.Popen(
+                        cmd,
+                        env=env,
+                        cwd=app_dir,
+                        close_fds=True,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                    )
                 except Exception as e:
                     log_update_event(f"Updater launch failed: {e}")
                     show_message(app_window, "Error", f"ไม่สามารถเปิด updater ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
                     return
-                QtCore.QTimer.singleShot(
-                    600,
-                    lambda: log_update_event(
-                        f"Updater exited early with code {proc.poll()}"
-                    ) if proc.poll() is not None else None
-                )
+                def _check_updater_start():
+                    exit_code = proc.poll()
+                    if exit_code is not None:
+                        log_update_event(f"Updater exited early with code {exit_code}")
+                        show_message(
+                            app_window,
+                            "Updater ไม่ทำงาน",
+                            "เปิดตัวอัปเดตไม่สำเร็จ กรุณาเปิดโปรแกรมใหม่และลองอีกครั้ง",
+                            QtWidgets.QMessageBox.Icon.Warning
+                        )
+                QtCore.QTimer.singleShot(1200, _check_updater_start)
                 app_window.close() # หรือ sys.exit()
 
         else:
