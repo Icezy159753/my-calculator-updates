@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.13"
+CURRENT_VERSION = "1.1.14"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -260,12 +260,13 @@ def check_for_updates(app_window):
                 try:
                     env = os.environ.copy()
                     env["UPDATER_LOG_DIR"] = app_dir
+                    start_cmd = ["cmd", "/c", "start", '""', updater_path] + cmd[1:]
                     proc = subprocess.Popen(
-                        cmd,
+                        start_cmd,
                         env=env,
                         cwd=app_dir,
                         close_fds=True,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                     )
                 except Exception as e:
                     log_update_event(f"Updater launch failed: {e}")
