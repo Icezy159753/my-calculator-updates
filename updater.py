@@ -13,7 +13,6 @@ import shutil
 import tempfile
 import subprocess
 import atexit
-import bsdiff4
 import re
 import json
 import getpass
@@ -39,6 +38,14 @@ def _log_update_event(message):
             f.write(f"[{timestamp}] {message}\n")
     except Exception:
         pass
+
+def _get_bsdiff4():
+    try:
+        import bsdiff4  # type: ignore
+        return bsdiff4
+    except Exception as e:
+        _log_update_event(f"bsdiff4 import failed: {e}")
+        return None
 
 TELEGRAM_BOT_TOKEN = "8207273310:AAEwpcDWP8yRP5Q74R3ic5jpZ_BOPQwJ_PQ"
 TELEGRAM_CHAT_ID = "8556512706"
@@ -562,7 +569,10 @@ class UpdaterApp:
                                 os.remove(next_zip_path)
                             except Exception:
                                 pass
-                        bsdiff4.file_patch(current_zip_path, next_zip_path, patch_path)
+                    bsdiff4 = _get_bsdiff4()
+                    if not bsdiff4:
+                        raise RuntimeError("bsdiff4 not available.")
+                    bsdiff4.file_patch(current_zip_path, next_zip_path, patch_path)
                         current_zip_path = next_zip_path
                     zip_path = current_zip_path
                     is_zip = True
@@ -615,8 +625,14 @@ class UpdaterApp:
                     except Exception:
                         pass
                 try:
+                    bsdiff4 = _get_bsdiff4()
+                    if not bsdiff4:
+                        raise RuntimeError("bsdiff4 not available.")
                     bsdiff4.file_patch(cached_zip_path, zip_path, patch_path)
                 except Exception:
+                    bsdiff4 = _get_bsdiff4()
+                    if not bsdiff4:
+                        raise RuntimeError("bsdiff4 not available.")
                     with open(cached_zip_path, "rb") as old_f:
                         old_data = old_f.read()
                     with open(patch_path, "rb") as patch_f:
