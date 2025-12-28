@@ -413,6 +413,29 @@ class UpdaterApp:
                 except Exception:
                     pass
 
+    def _ensure_seed_assets(self):
+        if not self.app_dir:
+            return
+        internal_dir = os.path.join(self.app_dir, "_internal")
+        if not os.path.isdir(internal_dir):
+            return
+        seed_file = "Itemdef - Format.xlsx"
+        seed_dir = "savReaderWriter"
+        dest_file = os.path.join(self.app_dir, seed_file)
+        src_file = os.path.join(internal_dir, seed_file)
+        if not os.path.exists(dest_file) and os.path.exists(src_file):
+            try:
+                shutil.copy2(src_file, dest_file)
+            except Exception:
+                pass
+        dest_dir = os.path.join(self.app_dir, seed_dir)
+        src_dir = os.path.join(internal_dir, seed_dir)
+        if not os.path.exists(dest_dir) and os.path.isdir(src_dir):
+            try:
+                shutil.copytree(src_dir, dest_dir)
+            except Exception:
+                pass
+
     def _format_bytes(self, num_bytes):
         try:
             num_bytes = float(num_bytes)
@@ -725,6 +748,7 @@ class UpdaterApp:
                     )
                 except Exception as e:
                     raise RuntimeError(f"ไม่สามารถคัดลอกไฟล์ใหม่ทับของเดิมได้: {e}")
+                self._ensure_seed_assets()
                 if self.new_version:
                     cached_new_zip = self._get_cached_zip_path(self.new_version)
                 else:

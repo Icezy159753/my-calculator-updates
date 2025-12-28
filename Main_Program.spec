@@ -14,6 +14,8 @@ datas = [
     ("All_Programs", "All_Programs"),
     ("template.xlsx", "."),
     ("Test3.json", "."),
+    ("Itemdef - Format.xlsx", "."),
+    ("savReaderWriter", "savReaderWriter"),
 ]
 
 try:
