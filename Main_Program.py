@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.04"
+CURRENT_VERSION = "1.1.05"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -142,6 +142,15 @@ def check_for_updates(app_window):
 
             # ถามผู้ใช้ก่อนอัปเดต
             if ask_yes_no(app_window, "Update Available", f"มีเวอร์ชันใหม่ ({latest_version})!\nต้องการอัปเดตตอนนี้เลยหรือไม่?"):
+                def log_update_event(message):
+                    try:
+                        log_path = os.path.join(os.path.dirname(get_executable_path()), "update_debug.log")
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            f.write(f"[{timestamp}] {message}\n")
+                    except Exception:
+                        pass
+
                 # --- เพิ่มส่วนนี้เข้าไป ---
                 # ดึงรายละเอียดการอัปเดตจาก "body" ของ release
                 changelog_text = latest_release.get("body", "ไม่มีรายละเอียดการอัปเดต")
@@ -185,6 +194,10 @@ def check_for_updates(app_window):
                     with open(updater_path, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
+                if not os.path.exists(updater_path) or os.path.getsize(updater_path) == 0:
+                    log_update_event("Updater download failed or zero-size file.")
+                    show_message(app_window, "Error", "ดาวน์โหลด updater ไม่สำเร็จ", QtWidgets.QMessageBox.Icon.Critical)
+                    return
 
                 # เรียกใช้ updater.exe และส่ง argument ที่จำเป็นไปให้
                 # แล้วปิดโปรแกรมหลักทันที
@@ -243,7 +256,19 @@ def check_for_updates(app_window):
                     cmd += ["--patch-manifest", patch_manifest_path]
                 if release_url:
                     cmd += ["--release-url", release_url]
-                subprocess.Popen(cmd)
+                log_update_event(f"Launching updater: {cmd}")
+                try:
+                    proc = subprocess.Popen(cmd)
+                except Exception as e:
+                    log_update_event(f"Updater launch failed: {e}")
+                    show_message(app_window, "Error", f"ไม่สามารถเปิด updater ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
+                    return
+                QtCore.QTimer.singleShot(
+                    600,
+                    lambda: log_update_event(
+                        f"Updater exited early with code {proc.poll()}"
+                    ) if proc.poll() is not None else None
+                )
                 app_window.close() # หรือ sys.exit()
 
         else:
