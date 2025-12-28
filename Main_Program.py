@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.15"
+CURRENT_VERSION = "1.1.16"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -125,6 +125,13 @@ def _build_patch_chain(assets_by_version, current_version, latest_version):
         chain.append({"from": from_v, "to": to_v, "url": patch_url})
     return chain
 
+def _normalize_download_url(url):
+    if not url:
+        return url
+    if url.startswith("https://github./"):
+        return url.replace("https://github./", "https://github.com/", 1)
+    return url
+
 def check_for_updates(app_window):
     """ตรวจสอบอัปเดตและเรียกใช้ updater"""
     print("Checking for updates...")
@@ -182,8 +189,15 @@ def check_for_updates(app_window):
                     if asset['name'] == 'Main_Program.zip' and app_url is None:
                         app_url = asset['browser_download_url']
 
+                updater_url = _normalize_download_url(updater_url)
+                app_url = _normalize_download_url(app_url)
+                patch_url = _normalize_download_url(patch_url)
+
                 if not updater_url or not app_url:
                     show_message(app_window, "Error", "ไม่พบไฟล์สำหรับอัปเดตใน Release ล่าสุด", QtWidgets.QMessageBox.Icon.Critical)
+                    return
+                if "github.com" not in updater_url or "github.com" not in app_url:
+                    show_message(app_window, "Error", "ลิงก์อัปเดตไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง", QtWidgets.QMessageBox.Icon.Critical)
                     return
 
                 # ดาวน์โหลด updater.exe
@@ -252,7 +266,7 @@ def check_for_updates(app_window):
                     "--new-version",
                     latest_version
                 ]
-                if patch_manifest_path:
+                if patch_manifest_path and os.path.exists(patch_manifest_path):
                     cmd += ["--patch-manifest", patch_manifest_path]
                 if release_url:
                     cmd += ["--release-url", release_url]
