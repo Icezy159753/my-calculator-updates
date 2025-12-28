@@ -385,14 +385,23 @@ class UpdaterApp:
         except Exception:
             pass
 
-    def _copy_tree_overwrite(self, src, dst):
+    def _copy_tree_overwrite(self, src, dst, preserve_files=None, preserve_dirs=None):
+        preserve_files = set(preserve_files or [])
+        preserve_dirs = set(preserve_dirs or [])
         for root_dir, dirnames, filenames in os.walk(src):
             rel_path = os.path.relpath(root_dir, src)
             target_dir = dst if rel_path == "." else os.path.join(dst, rel_path)
+            if rel_path == "." and preserve_dirs:
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not (d in preserve_dirs and os.path.exists(os.path.join(target_dir, d)))
+                ]
             os.makedirs(target_dir, exist_ok=True)
             for filename in filenames:
                 src_path = os.path.join(root_dir, filename)
                 dst_path = os.path.join(target_dir, filename)
+                if rel_path == "." and filename in preserve_files and os.path.exists(dst_path):
+                    continue
                 try:
                     if os.path.exists(dst_path):
                         os.remove(dst_path)
@@ -695,11 +704,25 @@ class UpdaterApp:
                 if not self.app_dir:
                     raise RuntimeError("ไม่พบโฟลเดอร์ติดตั้งของโปรแกรม")
                 os.makedirs(self.app_dir, exist_ok=True)
-                keep_names = {self.exe_name, "_internal", "updater.exe", "updater.lock", "changelog.tmp", "0_Keep"}
+                keep_names = {
+                    self.exe_name,
+                    "_internal",
+                    "updater.exe",
+                    "updater.lock",
+                    "changelog.tmp",
+                    "0_Keep",
+                    "Itemdef - Format.xlsx",
+                    "savReaderWriter",
+                }
                 keep_names = {name for name in keep_names if name}
                 self._clean_install_root(keep_names)
                 try:
-                    self._copy_tree_overwrite(new_app_dir, self.app_dir)
+                    self._copy_tree_overwrite(
+                        new_app_dir,
+                        self.app_dir,
+                        preserve_files={"Itemdef - Format.xlsx"},
+                        preserve_dirs={"savReaderWriter"},
+                    )
                 except Exception as e:
                     raise RuntimeError(f"ไม่สามารถคัดลอกไฟล์ใหม่ทับของเดิมได้: {e}")
                 if self.new_version:
