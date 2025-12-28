@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.09"
+CURRENT_VERSION = "1.1.10"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -258,7 +258,9 @@ def check_for_updates(app_window):
                     cmd += ["--release-url", release_url]
                 log_update_event(f"Launching updater: {cmd}")
                 try:
-                    proc = subprocess.Popen(cmd)
+                    env = os.environ.copy()
+                    env["UPDATER_LOG_DIR"] = app_dir
+                    proc = subprocess.Popen(cmd, env=env)
                 except Exception as e:
                     log_update_event(f"Updater launch failed: {e}")
                     show_message(app_window, "Error", f"ไม่สามารถเปิด updater ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)

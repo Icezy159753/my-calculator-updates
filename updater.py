@@ -31,7 +31,9 @@ def resource_path(relative_path):
 
 def _log_update_event(message):
     try:
-        base_dir = os.path.dirname(sys.executable) if sys.executable else os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.environ.get("UPDATER_LOG_DIR")
+        if not base_dir:
+            base_dir = os.path.dirname(sys.executable) if sys.executable else os.path.dirname(os.path.abspath(__file__))
         log_path = os.path.join(base_dir, "updater_debug.log")
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(log_path, "a", encoding="utf-8") as f:
