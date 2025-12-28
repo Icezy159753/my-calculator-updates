@@ -25,7 +25,7 @@ def resource_path(relative_path):
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.dirname(os.path.abspath(__file__))
+        base_path = os.path.dirname(os.path.abspath(__file__)) 
     return os.path.join(base_path, relative_path)
 # -------------------------------------------------------------
 
@@ -569,10 +569,10 @@ class UpdaterApp:
                                 os.remove(next_zip_path)
                             except Exception:
                                 pass
-                    bsdiff4 = _get_bsdiff4()
-                    if not bsdiff4:
-                        raise RuntimeError("bsdiff4 not available.")
-                    bsdiff4.file_patch(current_zip_path, next_zip_path, patch_path)
+                        bsdiff4 = _get_bsdiff4()
+                        if not bsdiff4:
+                            raise RuntimeError("bsdiff4 not available.")
+                        bsdiff4.file_patch(current_zip_path, next_zip_path, patch_path)
                         current_zip_path = next_zip_path
                     zip_path = current_zip_path
                     is_zip = True
