@@ -30,11 +30,22 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 # -------------------------------------------------------------
 
+def _log_update_event(message):
+    try:
+        base_dir = os.path.dirname(sys.executable) if sys.executable else os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(base_dir, "updater_debug.log")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        pass
+
 TELEGRAM_BOT_TOKEN = "8207273310:AAEwpcDWP8yRP5Q74R3ic5jpZ_BOPQwJ_PQ"
 TELEGRAM_CHAT_ID = "8556512706"
 
 class UpdaterApp:
     def __init__(self, root):
+        _log_update_event(f"Updater start argv={sys.argv}")
         self.root = root
         self.root.title("กำลังอัปเดต...")
         self._relaunch_in_progress = False
@@ -114,6 +125,7 @@ class UpdaterApp:
             idx += 1
 
         if len(clean_args) not in (3, 4):
+            _log_update_event(f"Invalid updater arguments: {clean_args}")
             raise RuntimeError("Invalid updater arguments.")
 
         self.parent_pid = int(clean_args[0])
@@ -126,6 +138,11 @@ class UpdaterApp:
         self.new_version = new_version
         self.patch_manifest_path = patch_manifest_path
         self.release_url = release_url
+        _log_update_event(
+            f"Parsed args: kind={self.update_kind}, current={self.current_version}, "
+            f"new={self.new_version}, update_url={self.update_url}, patch_manifest={self.patch_manifest_path}, "
+            f"release_url={self.release_url}"
+        )
         if len(clean_args) == 3:
             self.old_exe_path = clean_args[1]
             self.update_url = clean_args[2]
@@ -138,8 +155,10 @@ class UpdaterApp:
 
         self._maybe_relaunch_from_temp()
         if self._relaunch_in_progress:
+            _log_update_event("Relaunching from temp; exiting original updater.")
             return
         if not self._acquire_lock():
+            _log_update_event("Updater lock already held; exiting.")
             try:
                 self.root.destroy()
             except Exception:
@@ -204,6 +223,7 @@ class UpdaterApp:
         try:
             shutil.copy2(exe_path, temp_exe)
         except Exception:
+            _log_update_event("Failed to copy updater to temp.")
             return
 
         ready_file = os.path.join(temp_dir, "updater_ready.flag")
@@ -217,6 +237,7 @@ class UpdaterApp:
                     alive = True
                     break
             if alive:
+                _log_update_event("Temp updater started successfully.")
                 self._relaunch_in_progress = True
                 try:
                     self.root.withdraw()
@@ -224,11 +245,13 @@ class UpdaterApp:
                     pass
                 self.root.after(200, self.root.destroy)
             else:
+                _log_update_event("Temp updater did not signal readiness.")
                 self.status_label.config(
                     text="ไม่สามารถเริ่มตัวอัปเดตชั่วคราว กำลังดำเนินการต่อ...",
                     fg="red"
                 )
         except Exception:
+            _log_update_event("Failed to launch temp updater.")
             return
 
     def _wait_for_process_exit(self, timeout=30):
@@ -301,6 +324,7 @@ class UpdaterApp:
                 except Exception:
                     existing_pid = 0
                 if existing_pid and psutil.pid_exists(existing_pid):
+                    _log_update_event(f"Updater lock held by pid {existing_pid}.")
                     return False
             with open(self._lock_path, "w", encoding="utf-8") as f:
                 f.write(str(os.getpid()))
@@ -458,6 +482,7 @@ class UpdaterApp:
         zip_path = None
         temp_dir = None
         try:
+            _log_update_event("Update process started.")
             # 1. รอให้โปรแกรมหลักปิดตัว
             self.status_label.config(text="กำลังรอให้โปรแกรมหลักปิดตัว...")
             self.root.update_idletasks()
@@ -482,6 +507,7 @@ class UpdaterApp:
                     pass
 
             kind = (self.update_kind or "").lower()
+            _log_update_event(f"Update kind={kind}, url={self.update_url}")
             is_patch = kind == "patch" or self.update_url.lower().endswith(".bsdiff")
             is_patch_chain = kind == "patch-chain"
             is_zip = self.update_url.lower().endswith(".zip") or is_patch
@@ -707,6 +733,7 @@ class UpdaterApp:
             self.root.quit()
 
         except Exception as e:
+            _log_update_event(f"Update process error: {e}")
             self.status_label.config(text=f"เกิดข้อผิดพลาด: {e}", fg="red")
             if temp_dir and os.path.exists(temp_dir):
                 try:
