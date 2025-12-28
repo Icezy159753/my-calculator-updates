@@ -142,16 +142,6 @@ class UpdaterApp:
         self.exe_name = None
         self.old_exe_path = None
         self.update_url = None
-        self.update_kind = update_kind
-        self.current_version = current_version
-        self.new_version = new_version
-        self.patch_manifest_path = patch_manifest_path
-        self.release_url = release_url
-        _log_update_event(
-            f"Parsed args: kind={self.update_kind}, current={self.current_version}, "
-            f"new={self.new_version}, update_url={self.update_url}, patch_manifest={self.patch_manifest_path}, "
-            f"release_url={self.release_url}"
-        )
         if len(clean_args) == 3:
             self.old_exe_path = clean_args[1]
             self.update_url = clean_args[2]
@@ -161,6 +151,19 @@ class UpdaterApp:
             self.app_dir = clean_args[1]
             self.exe_name = clean_args[2]
             self.update_url = clean_args[3]
+
+        self.update_kind = update_kind
+        self.current_version = current_version
+        self.new_version = new_version
+        self.patch_manifest_path = patch_manifest_path
+        self.release_url = release_url
+        if self.app_dir:
+            os.environ["UPDATER_LOG_DIR"] = self.app_dir
+        _log_update_event(
+            f"Parsed args: kind={self.update_kind}, current={self.current_version}, "
+            f"new={self.new_version}, update_url={self.update_url}, patch_manifest={self.patch_manifest_path}, "
+            f"release_url={self.release_url}"
+        )
 
         self._maybe_relaunch_from_temp()
         if self._relaunch_in_progress:
@@ -238,7 +241,8 @@ class UpdaterApp:
         ready_file = os.path.join(temp_dir, "updater_ready.flag")
         args = [temp_exe] + sys.argv[1:] + ["--run-from-temp", "--ready-file", ready_file]
         try:
-            proc = subprocess.Popen(args, close_fds=True)
+            env = os.environ.copy()
+            proc = subprocess.Popen(args, close_fds=True, env=env)
             alive = False
             for _ in range(10):
                 time.sleep(0.3)
