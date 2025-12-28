@@ -791,7 +791,7 @@ if __name__ == "__main__":
             skip_next = True
             idx += 1
             continue
-        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest"):
+        if arg in ("--update-kind", "--current-version", "--new-version", "--patch-manifest", "--release-url"):
             idx += 2
             continue
         clean_args.append(arg)
