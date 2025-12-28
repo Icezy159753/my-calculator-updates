@@ -299,6 +299,12 @@ def check_for_updates(app_window):
                         log_update_event("Updater launch: cmd start succeeded.")
                     except Exception as e:
                         launch_errors.append(f"cmd start failed: {e}")
+                if proc is None:
+                    try:
+                        os.startfile(updater_path)
+                        log_update_event("Updater launch: os.startfile succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"os.startfile failed: {e}")
                 if launch_errors and proc is None:
                     log_update_event(f"Updater launch failed: {launch_errors}")
                     show_message(app_window, "Error", "ไม่สามารถเปิด updater ได้", QtWidgets.QMessageBox.Icon.Critical)
