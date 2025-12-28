@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.18"
+CURRENT_VERSION = "1.1.19"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -275,6 +275,12 @@ def check_for_updates(app_window):
                 env["UPDATER_LOG_DIR"] = app_dir
                 proc = None
                 launch_errors = []
+
+                def quote_arg(arg):
+                    if any(ch in arg for ch in (" ", "\t", "\"")):
+                        return "\"" + arg.replace("\"", "\\\"") + "\""
+                    return arg
+
                 try:
                     proc = subprocess.Popen(
                         cmd,
@@ -286,6 +292,7 @@ def check_for_updates(app_window):
                     log_update_event("Updater launch: direct Popen succeeded.")
                 except Exception as e:
                     launch_errors.append(f"direct Popen failed: {e}")
+
                 if proc is None:
                     try:
                         start_cmd = ["cmd", "/c", "start", '""', updater_path] + cmd[1:]
@@ -299,12 +306,37 @@ def check_for_updates(app_window):
                         log_update_event("Updater launch: cmd start succeeded.")
                     except Exception as e:
                         launch_errors.append(f"cmd start failed: {e}")
+
+                if proc is None:
+                    try:
+                        cmd_path = os.path.join(app_dir, "run_updater.cmd")
+                        cmd_args = " ".join(quote_arg(arg) for arg in cmd)
+                        cmd_text = (
+                            "@echo off\r\n"
+                            f"set \"UPDATER_LOG_DIR={app_dir}\"\r\n"
+                            f"cd /d \"{app_dir}\"\r\n"
+                            f"{cmd_args}\r\n"
+                        )
+                        with open(cmd_path, "w", encoding="utf-8") as f:
+                            f.write(cmd_text)
+                        subprocess.Popen(
+                            ["cmd", "/c", "start", '""', cmd_path],
+                            env=env,
+                            cwd=app_dir,
+                            close_fds=True,
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                        )
+                        log_update_event("Updater launch: cmd script succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"cmd script failed: {e}")
+
                 if proc is None:
                     try:
                         os.startfile(updater_path)
                         log_update_event("Updater launch: os.startfile succeeded.")
                     except Exception as e:
                         launch_errors.append(f"os.startfile failed: {e}")
+
                 if launch_errors and proc is None:
                     log_update_event(f"Updater launch failed: {launch_errors}")
                     show_message(app_window, "Error", "ไม่สามารถเปิด updater ได้", QtWidgets.QMessageBox.Icon.Critical)
