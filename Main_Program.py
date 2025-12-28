@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.14"
+CURRENT_VERSION = "1.1.15"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -257,32 +257,52 @@ def check_for_updates(app_window):
                 if release_url:
                     cmd += ["--release-url", release_url]
                 log_update_event(f"Launching updater: {cmd}")
+                env = os.environ.copy()
+                env["UPDATER_LOG_DIR"] = app_dir
+                proc = None
+                launch_errors = []
                 try:
-                    env = os.environ.copy()
-                    env["UPDATER_LOG_DIR"] = app_dir
-                    start_cmd = ["cmd", "/c", "start", '""', updater_path] + cmd[1:]
                     proc = subprocess.Popen(
-                        start_cmd,
+                        cmd,
                         env=env,
                         cwd=app_dir,
                         close_fds=True,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
                     )
+                    log_update_event("Updater launch: direct Popen succeeded.")
                 except Exception as e:
-                    log_update_event(f"Updater launch failed: {e}")
-                    show_message(app_window, "Error", f"ไม่สามารถเปิด updater ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
-                    return
-                def _check_updater_start():
-                    exit_code = proc.poll()
-                    if exit_code is not None:
-                        log_update_event(f"Updater exited early with code {exit_code}")
-                        show_message(
-                            app_window,
-                            "Updater ไม่ทำงาน",
-                            "เปิดตัวอัปเดตไม่สำเร็จ กรุณาเปิดโปรแกรมใหม่และลองอีกครั้ง",
-                            QtWidgets.QMessageBox.Icon.Warning
+                    launch_errors.append(f"direct Popen failed: {e}")
+                if proc is None:
+                    try:
+                        start_cmd = ["cmd", "/c", "start", '""', updater_path] + cmd[1:]
+                        subprocess.Popen(
+                            start_cmd,
+                            env=env,
+                            cwd=app_dir,
+                            close_fds=True,
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                         )
-                QtCore.QTimer.singleShot(1200, _check_updater_start)
+                        log_update_event("Updater launch: cmd start succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"cmd start failed: {e}")
+                if launch_errors and proc is None:
+                    log_update_event(f"Updater launch failed: {launch_errors}")
+                    show_message(app_window, "Error", "ไม่สามารถเปิด updater ได้", QtWidgets.QMessageBox.Icon.Critical)
+                    return
+
+                def _check_updater_start():
+                    updater_log = os.path.join(app_dir, "updater_debug.log")
+                    if os.path.exists(updater_log):
+                        return
+                    if proc is not None and proc.poll() is not None:
+                        log_update_event(f"Updater exited early with code {proc.poll()}")
+                    show_message(
+                        app_window,
+                        "Updater ไม่ทำงาน",
+                        "ตัวอัปเดตไม่เริ่มทำงาน กรุณาลองรัน updater.exe แบบคลิกขวา Run as administrator",
+                        QtWidgets.QMessageBox.Icon.Warning
+                    )
+                QtCore.QTimer.singleShot(1500, _check_updater_start)
                 app_window.close() # หรือ sys.exit()
 
         else:
