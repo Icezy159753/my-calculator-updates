@@ -63,7 +63,7 @@ TELEGRAM_RETRY_FALLBACK_WAIT = 5
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.26"
+CURRENT_VERSION = "1.1.27"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -822,6 +822,17 @@ PROGRAMS = [
         "entry_point": "run_this_app",
         "icon": "SVG.ico",
         "category": "อื่นๆ", # <--- เพิ่ม category
+        "enabled": True
+    },   
+    {
+        "id": "Program เช็ค Data Excel 2 ไฟล์ V1",
+        "name": "Program เช็ค Data Excel 2 ไฟล์ V1",
+        "description": "เอาไว้ตรวจสอบข้อมูล Excel 2 ไฟล์ว่าตรงกันหรือไม่",
+        "type": "local_py_module",
+        "module_path": "146_Mapdata", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "Mapdata_Excel.ico",
+        "category": "Excel", # <--- เพิ่ม category
         "enabled": True
     },   
 ]
