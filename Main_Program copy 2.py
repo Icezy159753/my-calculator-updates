@@ -11,6 +11,7 @@ import threading
 from datetime import datetime
 import socket # เพิ่มเข้ามาเพื่อดึง IP Address (ถ้าต้องการ)
 import ctypes
+import time
 
 
 class Spinner(QtWidgets.QWidget):
@@ -50,13 +51,19 @@ class Spinner(QtWidgets.QWidget):
 # --- เพิ่มค่าคงที่นี้ไว้ใกล้ๆกับค่าคงที่อื่นๆ ด้านบน ---
 # !!! สำคัญ: ให้เปลี่ยน URL นี้เป็น URL ของ Web App ที่ได้จากการ Deploy บน Google Apps Script ของคุณ
 GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5xJK1yvWOVYXhk1LXKVmQAofqzWV7keKywzdcnMQZmTMBIJ4fo_V92vQ/exec" # <--- ใส่ URL ของคุณที่นี่
+TELEGRAM_BOT_TOKEN = "8572127506:AAGLyBZxyjSnlENBVVcBux9i3Mi0GoIf9Y0"
+TELEGRAM_CHAT_ID = "8556512706"
+TELEGRAM_DASHBOARD_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5xJK1yvWOVYXhk1LXKVmQAofqzWV7keKywzdcnMQZmTMBIJ4fo_V92vQ/exec"
+TELEGRAM_MIN_INTERVAL_SECONDS = 10
+TELEGRAM_RETRY_MAX_ATTEMPTS = 2
+TELEGRAM_RETRY_FALLBACK_WAIT = 5
 
 
 # --- ค่าคงที่สำหรับชื่อโฟลเดอร์ ---
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.0.88"
+CURRENT_VERSION = "1.1.27"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -68,6 +75,63 @@ def get_executable_path():
     else:
         return os.path.abspath(__file__)
 
+def get_updates_dir(app_dir):
+    updates_dir = os.path.join(app_dir, "_internal", "updates")
+    os.makedirs(updates_dir, exist_ok=True)
+    return updates_dir
+
+def get_cached_package_path(app_dir, version):
+    if not version:
+        return None
+    return os.path.join(get_updates_dir(app_dir), f"package_{version}.zip")
+
+def _normalize_tag_version(tag):
+    if not tag:
+        return ""
+    return tag.lstrip("v")
+
+def _extract_release_assets_by_version(releases):
+    assets_by_version = {}
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        version = _normalize_tag_version(tag)
+        if not version:
+            continue
+        assets_by_version[version] = rel.get("assets", [])
+    return assets_by_version
+
+def _build_patch_chain(assets_by_version, current_version, latest_version):
+    versions = sorted(assets_by_version.keys(), key=parse_version)
+    try:
+        start_idx = versions.index(current_version)
+        end_idx = versions.index(latest_version)
+    except ValueError:
+        return []
+    if end_idx <= start_idx:
+        return []
+
+    chain = []
+    for idx in range(start_idx, end_idx):
+        from_v = versions[idx]
+        to_v = versions[idx + 1]
+        patch_name = f"Main_Program_patch_{from_v}_to_{to_v}.bsdiff"
+        patch_url = None
+        for asset in assets_by_version.get(to_v, []):
+            if asset.get("name") == patch_name:
+                patch_url = asset.get("browser_download_url")
+                break
+        if not patch_url:
+            return []
+        chain.append({"from": from_v, "to": to_v, "url": patch_url})
+    return chain
+
+def _normalize_download_url(url):
+    if not url:
+        return url
+    if url.startswith("https://github./"):
+        return url.replace("https://github./", "https://github.com/", 1)
+    return url
+
 def check_for_updates(app_window):
     """ตรวจสอบอัปเดตและเรียกใช้ updater"""
     print("Checking for updates...")
@@ -77,13 +141,23 @@ def check_for_updates(app_window):
         response.raise_for_status()
 
         latest_release = response.json()
-        latest_version = latest_release["tag_name"]
+        latest_tag = latest_release["tag_name"]
+        latest_version = _normalize_tag_version(latest_tag)
 
         if parse_version(latest_version) > parse_version(CURRENT_VERSION):
             print(f"New version found: {latest_version}")
 
             # ถามผู้ใช้ก่อนอัปเดต
             if ask_yes_no(app_window, "Update Available", f"มีเวอร์ชันใหม่ ({latest_version})!\nต้องการอัปเดตตอนนี้เลยหรือไม่?"):
+                def log_update_event(message):
+                    try:
+                        log_path = os.path.join(os.path.dirname(get_executable_path()), "update_debug.log")
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            f.write(f"[{timestamp}] {message}\n")
+                    except Exception:
+                        pass
+
                 # --- เพิ่มส่วนนี้เข้าไป ---
                 # ดึงรายละเอียดการอัปเดตจาก "body" ของ release
                 changelog_text = latest_release.get("body", "ไม่มีรายละเอียดการอัปเดต")
@@ -99,17 +173,31 @@ def check_for_updates(app_window):
                 except Exception as e:
                     print(f"Could not save changelog file: {e}")
                 # -------------------------
-                # หา URL ของไฟล์ updater.exe และไฟล์ zip จาก release ล่าสุด
+                # หา URL ของไฟล์ updater.exe, patch และไฟล์ zip จาก release ล่าสุด
                 updater_url = None
                 app_url = None
+                patch_url = None
+                patch_name = f"Main_Program_patch_{CURRENT_VERSION}_to_{latest_version}.bsdiff"
+                full_name = f"Main_Program_full_{latest_version}.zip"
                 for asset in latest_release['assets']:
                     if asset['name'] == 'updater.exe':
                         updater_url = asset['browser_download_url']
-                    if asset['name'] == 'Main_Program.zip':
+                    if asset['name'] == patch_name:
+                        patch_url = asset['browser_download_url']
+                    if asset['name'] == full_name:
                         app_url = asset['browser_download_url']
+                    if asset['name'] == 'Main_Program.zip' and app_url is None:
+                        app_url = asset['browser_download_url']
+
+                updater_url = _normalize_download_url(updater_url)
+                app_url = _normalize_download_url(app_url)
+                patch_url = _normalize_download_url(patch_url)
 
                 if not updater_url or not app_url:
                     show_message(app_window, "Error", "ไม่พบไฟล์สำหรับอัปเดตใน Release ล่าสุด", QtWidgets.QMessageBox.Icon.Critical)
+                    return
+                if "github.com" not in updater_url or "github.com" not in app_url:
+                    show_message(app_window, "Error", "ลิงก์อัปเดตไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง", QtWidgets.QMessageBox.Icon.Critical)
                     return
 
                 # ดาวน์โหลด updater.exe
@@ -120,13 +208,153 @@ def check_for_updates(app_window):
                     with open(updater_path, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
+                if not os.path.exists(updater_path) or os.path.getsize(updater_path) == 0:
+                    log_update_event("Updater download failed or zero-size file.")
+                    show_message(app_window, "Error", "ดาวน์โหลด updater ไม่สำเร็จ", QtWidgets.QMessageBox.Icon.Critical)
+                    return
 
                 # เรียกใช้ updater.exe และส่ง argument ที่จำเป็นไปให้
                 # แล้วปิดโปรแกรมหลักทันที
                 app_exe_path = get_executable_path()
                 app_dir = os.path.dirname(app_exe_path)
                 app_exe_name = os.path.basename(app_exe_path)
-                subprocess.Popen([updater_path, str(os.getpid()), app_dir, app_exe_name, app_url])
+                update_kind = "full"
+                update_url = app_url
+                patch_manifest_path = None
+                cached_package = get_cached_package_path(app_dir, CURRENT_VERSION)
+                if cached_package and os.path.exists(cached_package):
+                    if patch_url:
+                        update_kind = "patch"
+                        update_url = patch_url
+                    else:
+                        try:
+                            releases_resp = requests.get(
+                                f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases?per_page=100",
+                                timeout=8
+                            )
+                            releases_resp.raise_for_status()
+                            releases = releases_resp.json()
+                            assets_by_version = _extract_release_assets_by_version(releases)
+                            if CURRENT_VERSION in assets_by_version and latest_version in assets_by_version:
+                                chain = _build_patch_chain(assets_by_version, CURRENT_VERSION, latest_version)
+                                if chain:
+                                    manifest = {
+                                        "current_version": CURRENT_VERSION,
+                                        "target_version": latest_version,
+                                        "patches": chain
+                                    }
+                                    patch_manifest_path = os.path.join(get_updates_dir(app_dir), "patch_manifest.json")
+                                    with open(patch_manifest_path, "w", encoding="utf-8") as f:
+                                        import json
+                                        json.dump(manifest, f)
+                                    update_kind = "patch-chain"
+                                    update_url = app_url
+                        except Exception as e:
+                            print(f"PATCH_CHAIN_WARNING: {e}")
+
+                release_url = latest_release.get("html_url")
+                cmd = [
+                    updater_path,
+                    str(os.getpid()),
+                    app_dir,
+                    app_exe_name,
+                    update_url,
+                    "--update-kind",
+                    update_kind,
+                    "--current-version",
+                    CURRENT_VERSION,
+                    "--new-version",
+                    latest_version
+                ]
+                if patch_manifest_path and os.path.exists(patch_manifest_path):
+                    cmd += ["--patch-manifest", patch_manifest_path]
+                if release_url:
+                    cmd += ["--release-url", release_url]
+                log_update_event(f"Launching updater: {cmd}")
+                env = os.environ.copy()
+                env["UPDATER_LOG_DIR"] = app_dir
+                proc = None
+                launch_errors = []
+
+                def quote_arg(arg):
+                    if any(ch in arg for ch in (" ", "\t", "\"")):
+                        return "\"" + arg.replace("\"", "\\\"") + "\""
+                    return arg
+
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        env=env,
+                        cwd=app_dir,
+                        close_fds=True,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                    log_update_event("Updater launch: direct Popen succeeded.")
+                except Exception as e:
+                    launch_errors.append(f"direct Popen failed: {e}")
+
+                if proc is None:
+                    try:
+                        start_cmd = ["cmd", "/c", "start", '""', updater_path] + cmd[1:]
+                        subprocess.Popen(
+                            start_cmd,
+                            env=env,
+                            cwd=app_dir,
+                            close_fds=True,
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                        )
+                        log_update_event("Updater launch: cmd start succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"cmd start failed: {e}")
+
+                if proc is None:
+                    try:
+                        cmd_path = os.path.join(app_dir, "run_updater.cmd")
+                        cmd_args = " ".join(quote_arg(arg) for arg in cmd)
+                        cmd_text = (
+                            "@echo off\r\n"
+                            f"set \"UPDATER_LOG_DIR={app_dir}\"\r\n"
+                            f"cd /d \"{app_dir}\"\r\n"
+                            f"{cmd_args}\r\n"
+                        )
+                        with open(cmd_path, "w", encoding="utf-8") as f:
+                            f.write(cmd_text)
+                        subprocess.Popen(
+                            ["cmd", "/c", "start", '""', cmd_path],
+                            env=env,
+                            cwd=app_dir,
+                            close_fds=True,
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                        )
+                        log_update_event("Updater launch: cmd script succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"cmd script failed: {e}")
+
+                if proc is None:
+                    try:
+                        os.startfile(updater_path)
+                        log_update_event("Updater launch: os.startfile succeeded.")
+                    except Exception as e:
+                        launch_errors.append(f"os.startfile failed: {e}")
+
+                if launch_errors and proc is None:
+                    log_update_event(f"Updater launch failed: {launch_errors}")
+                    show_message(app_window, "Error", "ไม่สามารถเปิด updater ได้", QtWidgets.QMessageBox.Icon.Critical)
+                    return
+
+                def _check_updater_start():
+                    updater_log = os.path.join(app_dir, "updater_debug.log")
+                    if os.path.exists(updater_log):
+                        return
+                    if proc is not None and proc.poll() is not None:
+                        log_update_event(f"Updater exited early with code {proc.poll()}")
+                    show_message(
+                        app_window,
+                        "Updater ไม่ทำงาน",
+                        "ตัวอัปเดตไม่เริ่มทำงาน กรุณาลองรัน updater.exe แบบคลิกขวา Run as administrator",
+                        QtWidgets.QMessageBox.Icon.Warning
+                    )
+                QtCore.QTimer.singleShot(1500, _check_updater_start)
                 app_window.close() # หรือ sys.exit()
 
         else:
@@ -596,6 +824,17 @@ PROGRAMS = [
         "category": "อื่นๆ", # <--- เพิ่ม category
         "enabled": True
     },   
+    {
+        "id": "Program เช็ค Data Excel 2 ไฟล์ V1",
+        "name": "Program เช็ค Data Excel 2 ไฟล์ V1",
+        "description": "เอาไว้ตรวจสอบข้อมูล Excel 2 ไฟล์ว่าตรงกันหรือไม่",
+        "type": "local_py_module",
+        "module_path": "146_Mapdata", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "Mapdata_Excel.ico",
+        "category": "Excel", # <--- เพิ่ม category
+        "enabled": True
+    },   
 ]
 
 # --- ขนาดไอคอน ---
@@ -677,6 +916,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.launch_dialog = None
         self.launch_handle = None
         self.launch_wait_started = None
+        self.monitor_threads = []
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -1359,14 +1599,75 @@ class AppLauncher(QtWidgets.QMainWindow):
             }
 
             print(f"LOGGING: กำลังส่งข้อมูลเซสชัน: {payload}")
-            response = requests.post(GOOGLE_SCRIPT_URL, data=payload, timeout=15)
+            response = requests.post(GOOGLE_SCRIPT_URL, data=payload, timeout=(5, 10))
+            print(f"LOGGING_STATUS: {response.status_code}")
+            print(f"LOGGING_BODY: {response.text}")
             response.raise_for_status()
-            print(f"LOGGING: บันทึกข้อมูลเซสชันสำเร็จ. Response: {response.text}")
+            print("LOGGING: บันทึกข้อมูลเซสชันสำเร็จ.")
 
         except requests.exceptions.RequestException as e:
             print(f"LOGGING_ERROR: ไม่สามารถเชื่อมต่อเพื่อบันทึกข้อมูลเซสชันได้: {e}")
         except Exception as e:
             print(f"LOGGING_ERROR: เกิดข้อผิดพลาดที่ไม่คาดคิดระหว่างการบันทึกเซสชัน: {e}")
+        finally:
+            self.send_telegram_notification(program_name, user_info, start_time, end_time, duration_formatted)
+
+    def send_telegram_notification(self, program_name, user_info, start_time, end_time, duration_formatted):
+        if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
+            print("TELEGRAM_WARNING: กรุณาใส่ TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID")
+            return
+        now = datetime.now()
+        if hasattr(self, "last_telegram_sent_at") and self.last_telegram_sent_at:
+            elapsed = (now - self.last_telegram_sent_at).total_seconds()
+            if elapsed < TELEGRAM_MIN_INTERVAL_SECONDS:
+                print(f"TELEGRAM_SKIP: ส่งถี่เกินไป ({elapsed:.1f}s < {TELEGRAM_MIN_INTERVAL_SECONDS}s)")
+                return
+
+        message_text = (
+            "🔔 <b>มีการใช้งานโปรแกรมใหม่!</b>\n\n"
+            f"🧰 <b>โปรแกรม:</b> {program_name}\n"
+            f"👤 <b>ผู้ใช้:</b> {user_info}\n"
+            f"📅 <b>วันที่:</b> {start_time.strftime('%Y-%m-%d')}\n"
+            f"⏰ <b>เวลา:</b> {start_time.strftime('%H:%M:%S')} - {end_time.strftime('%H:%M:%S')}\n"
+            f"⏱️ <b>รวม:</b> {duration_formatted}\n\n"
+            f"🔗 <b>ดู Dashboard:</b>\n{TELEGRAM_DASHBOARD_URL}"
+        )
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+
+        print("TELEGRAM_INFO: เริ่มส่งแจ้งเตือน")
+        attempt = 0
+        while attempt < TELEGRAM_RETRY_MAX_ATTEMPTS:
+            attempt += 1
+            try:
+                print("TELEGRAM_REQUEST: กำลังส่งไป Telegram API...")
+                response = requests.post(url, json=payload, timeout=10)
+                print(f"TELEGRAM_STATUS: {response.status_code}")
+                print(f"TELEGRAM_BODY: {response.text}")
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    wait_seconds = TELEGRAM_RETRY_FALLBACK_WAIT
+                    if retry_after:
+                        try:
+                            wait_seconds = int(retry_after)
+                        except ValueError:
+                            wait_seconds = TELEGRAM_RETRY_FALLBACK_WAIT
+                    print(f"TELEGRAM_RETRY: รอ {wait_seconds}s แล้วลองส่งใหม่ (ครั้งที่ {attempt})")
+                    time.sleep(wait_seconds)
+                    continue
+                response.raise_for_status()
+                self.last_telegram_sent_at = now
+                print("TELEGRAM: แจ้งเตือนสำเร็จ")
+                return
+            except requests.exceptions.RequestException as e:
+                print(f"TELEGRAM_ERROR: ไม่สามารถส่งแจ้งเตือนได้: {e}")
+                return
 
     def _wait_and_log_session(self, process_to_watch, program_info):
         """
@@ -1453,8 +1754,9 @@ class AppLauncher(QtWidgets.QMainWindow):
                 target=self._wait_and_log_session,
                 args=(process, program_info)
             )
-            monitor_thread.daemon = True
+            monitor_thread.daemon = False
             monitor_thread.start()
+            self.monitor_threads.append(monitor_thread)
         else:
             print(f"LAUNCHER_WARNING: ไม่สามารถเริ่มเฝ้าดู '{program_name}' ได้เนื่องจาก process ไม่ทำงาน")
 

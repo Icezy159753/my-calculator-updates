@@ -57,13 +57,14 @@ TELEGRAM_DASHBOARD_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5
 TELEGRAM_MIN_INTERVAL_SECONDS = 10
 TELEGRAM_RETRY_MAX_ATTEMPTS = 2
 TELEGRAM_RETRY_FALLBACK_WAIT = 5
+UPDATE_HISTORY_URL = "https://dp1234.lovable.app/"
 
 
 # --- ค่าคงที่สำหรับชื่อโฟลเดอร์ ---
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.27"
+CURRENT_VERSION = "1.1.28"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -1019,7 +1020,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         log_button = QtWidgets.QPushButton("ประวัติการอัปเดต")
         log_button.setObjectName("PrimaryButton")
         log_button.setFont(self.font_body)
-        log_button.clicked.connect(self.show_update_log_window)
+        log_button.clicked.connect(self.open_update_history_link)
         layout.addWidget(log_button)
 
         version_label = QtWidgets.QLabel(f"เวอร์ชัน {CURRENT_VERSION}")
@@ -1233,6 +1234,20 @@ class AppLauncher(QtWidgets.QMainWindow):
         history_text = self.fetch_update_history_text()
         textbox.setText(history_text)
         dialog.exec()
+
+    def open_update_history_link(self):
+        """
+        เปิดลิงก์หน้าเว็บประวัติการอัปเดต
+        """
+        import webbrowser
+
+        url = UPDATE_HISTORY_URL
+        try:
+            print(f"LAUNCHER_INFO: Opening update history URL: {url}")
+            webbrowser.open_new_tab(url)
+        except Exception as e:
+            print(f"LAUNCHER_ERROR: Could not open update history URL: {e}")
+            show_message(self, "เกิดข้อผิดพลาด", f"ไม่สามารถเปิดลิงก์ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
 
     def open_web_script_link(self):
         """
