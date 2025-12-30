@@ -66,9 +66,23 @@ class Generic(object):
         # I/O modules, compared to hardcoding the names
         debug = False
         if getattr(sys, 'frozen', False):  # pragma: no cover
-            # The application is frozen by cx_freeze
-            path = os.path.dirname(sys.executable)
-            path = os.path.join(path, "savReaderWriter", "spssio", folder)
+            # The application is frozen by cx_freeze / PyInstaller
+            base_candidates = []
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                base_candidates.append(meipass)
+                if os.path.basename(meipass).lower() == "_internal":
+                    base_candidates.append(os.path.dirname(meipass))
+            base_candidates.append(os.path.dirname(sys.executable))
+
+            path = None
+            for base_dir in base_candidates:
+                candidate = os.path.join(base_dir, "savReaderWriter", "spssio", folder)
+                if os.path.isdir(candidate):
+                    path = candidate
+                    break
+            if path is None:
+                path = os.path.join(os.path.dirname(sys.executable), "savReaderWriter", "spssio", folder)
         else:
             path = os.path.join(os.path.dirname(__file__), "spssio", folder)
         libs = sorted(os.listdir(path))
