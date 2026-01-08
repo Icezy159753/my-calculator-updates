@@ -64,7 +64,7 @@ UPDATE_HISTORY_URL = "https://dp1234.lovable.app/"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.29"
+CURRENT_VERSION = "1.1.30"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -563,7 +563,7 @@ PROGRAMS = [
     },
     {
         "id": "โปรแกรมตัดชุด",
-        "name": "โปรแกรมตัดชุด ตามใบบรีฟ V1",
+        "name": "โปรแกรมตัดQuota Pro V1",
         "description": "โปรแกรมตัดชุด ตามใบบรีฟจากไฟล์ Excel",
         "type": "local_py_module",
         "module_path": "99_Excel", # <--- ปรับชื่อ module_path
