@@ -1,5 +1,25 @@
+# =============================================================================
+# === โค้ดสำหรับแก้ไข Path ของ savReaderWriter เมื่อเป็นไฟล์ .exe (PyInstaller) ===
+# ส่วนนี้ต้องอยู่บนสุด ก่อนการ import อื่นๆ ที่เกี่ยวข้อง
 import os
 import sys
+
+# ตรวจสอบว่าโปรแกรมกำลังรันในรูปแบบ "frozen" (ไฟล์ .exe) หรือไม่
+if getattr(sys, 'frozen', False):
+    _base_dirs = []
+    if hasattr(sys, "_MEIPASS"):
+        _base_dirs.append(sys._MEIPASS)
+    _base_dirs.append(os.path.dirname(sys.executable))
+    for _base_dir in _base_dirs:
+        _spss_home_path = os.path.join(_base_dir, 'savReaderWriter', 'spssio')
+        if os.path.isdir(_spss_home_path):
+            os.environ['SPSS_HOME'] = _spss_home_path
+            print(f"LAUNCHER_INFO: SPSS_HOME set to: {_spss_home_path}")
+            break
+    # ล้างตัวแปรชั่วคราว
+    del _base_dirs, _base_dir, _spss_home_path
+# =============================================================================
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 import importlib
 from multiprocessing import Process, freeze_support
@@ -64,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.lovable.app/"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.31"
+CURRENT_VERSION = "1.1.32"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 

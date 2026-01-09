@@ -6,6 +6,7 @@ import itertools
 from collections import defaultdict
 
 import pandas as pd
+import pyreadstat  # For reading SPSS files
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QComboBox, QListWidget, QListWidgetItem,
@@ -1252,14 +1253,14 @@ class QuotaSamplerApp(QMainWindow):
         header_layout.addLayout(title_row)
         
         # Subtitle
-        subtitle = QLabel("โปรแกรมตัด Quota สำหรับงานวิจัย | เลือก Excel → กำหนด Quota → ตัดข้อมูล → Export")
+        subtitle = QLabel("โปรแกรมตัด Quota สำหรับงานวิจัย | เลือกไฟล์ Excel/SPSS → กำหนด Quota → ตัดข้อมูล → Export")
         subtitle.setStyleSheet("color: #718096; font-size: 13px;")
         header_layout.addWidget(subtitle)
         
         # Controls row
         controls = QHBoxLayout()
         
-        self.btn_open = QPushButton("📂 เปิดไฟล์ Excel")
+        self.btn_open = QPushButton("📂 เปิดไฟล์ข้อมูล")
         self.btn_open.setFixedWidth(180)
         self.btn_open.clicked.connect(self.load_dataset)
         controls.addWidget(self.btn_open)
@@ -1414,7 +1415,7 @@ class QuotaSamplerApp(QMainWindow):
     def open_quota_dialog(self, index):
         """Open quota configuration dialog"""
         if self.cleaned_df is None:
-            QMessageBox.warning(self, "Error", "กรุณาโหลดไฟล์ Excel ก่อน")
+            QMessageBox.warning(self, "Error", "กรุณาโหลดไฟล์ข้อมูลก่อน")
             return
         
         dialog = QuotaConfigDialog(index, self, self.quota_data[index])
@@ -1424,9 +1425,10 @@ class QuotaSamplerApp(QMainWindow):
             self.log(f"✅ บันทึก Quota Set {index+1} แล้ว")
     
     def load_dataset(self):
-        """Load Excel"""
+        """Load Excel or SPSS file"""
         filepath, _ = QFileDialog.getOpenFileName(
-            self, "Open Excel", "", "Excel (*.xlsx *.xls);;All (*.*)"
+            self, "Open Data File", "", 
+            "Data Files (*.xlsx *.xls *.sav);;Excel (*.xlsx *.xls);;SPSS (*.sav);;All (*.*)"
         )
         if not filepath:
             return
@@ -1434,7 +1436,29 @@ class QuotaSamplerApp(QMainWindow):
         self.log(f"📂 Loading: {os.path.basename(filepath)}")
         
         try:
-            self.loaded_df = pd.read_excel(filepath, sheet_name=0)
+            # Determine file type and load accordingly
+            file_ext = os.path.splitext(filepath)[1].lower()
+            
+            if file_ext == '.sav':
+                # Load SPSS file with value labels
+                self.log("📊 Detected SPSS file (.sav)")
+                temp_df, meta = pyreadstat.read_sav(filepath)
+                
+                # Convert codes to labels using value_labels from metadata
+                value_labels = meta.variable_value_labels  # Dict of {column: {code: label}}
+                for col, labels_dict in value_labels.items():
+                    if col in temp_df.columns and labels_dict:
+                        # Map codes to labels
+                        temp_df[col] = temp_df[col].map(labels_dict).fillna(temp_df[col])
+                
+                self.loaded_df = temp_df
+                self.log(f"📝 Applied value labels to {len(value_labels)} columns")
+            else:
+                # Load Excel file
+                self.log("📊 Detected Excel file")
+                self.loaded_df = pd.read_excel(filepath, sheet_name=0)
+                temp_df = self.loaded_df.copy()
+            
             temp_df = self.loaded_df.copy()
             
             if temp_df.empty:
@@ -1454,8 +1478,9 @@ class QuotaSamplerApp(QMainWindow):
             self.sampling_results = None
             
             cols = len([c for c in temp_df.columns if c != self.id_col_target])
-            self.status_bar.showMessage(f"โหลดสำเร็จ: {len(temp_df)} records | {cols} columns")
-            self.log(f"✅ โหลดสำเร็จ: {len(temp_df)} records, {cols} columns")
+            file_type = "SPSS" if file_ext == '.sav' else "Excel"
+            self.status_bar.showMessage(f"โหลด {file_type} สำเร็จ: {len(temp_df)} records | {cols} columns")
+            self.log(f"✅ โหลด {file_type} สำเร็จ: {len(temp_df)} records, {cols} columns")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error:\n{e}")
@@ -1721,7 +1746,7 @@ class QuotaSamplerApp(QMainWindow):
     def preview_quota(self):
         """Preview all configured quotas"""
         if self.cleaned_df is None:
-            QMessageBox.warning(self, "Error", "กรุณาโหลดไฟล์ Excel ก่อน")
+            QMessageBox.warning(self, "Error", "กรุณาโหลดไฟล์ข้อมูลก่อน")
             return
         
         # Show preview dialog
