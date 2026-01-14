@@ -84,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.lovable.app/"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.32"
+CURRENT_VERSION = "1.1.33"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -525,6 +525,17 @@ def show_error_dialog(title, text):
 # --- กำหนดรายการโปรแกรม (เพิ่ม "category" และปรับ "module_path") ---
 PROGRAMS = [
     {
+        "id": "โปรแกรมfull Itemdef+Genpromt Beta V1",
+        "name": "โปรแกรมfull Itemdef+Genpromt Beta V1g",
+        "description": "เอาไว้ แปะภาษาENG+สร้างItemdefและT2B แบบเต็ม",
+        "type": "local_py_module",
+        "module_path": "108_GenPromt_NewBeta", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "GenPromt.ico",
+        "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },
+    {
         "id": "spss_log",
         "name": "สร้าง Itemdef จากSPSS V3",
         "description": "โปรแกรมแปลง SPSS เป็น Excel",
@@ -557,7 +568,6 @@ PROGRAMS = [
         #"category": "SPSS", # <--- เพิ่ม category
         #"enabled": True
     #},
-
     {
         "id": "โปรแกรมสร้าง Promt แปะ Eng v1",
         "name": "โปรแกรม GetValue+Promt แปะ Eng",
