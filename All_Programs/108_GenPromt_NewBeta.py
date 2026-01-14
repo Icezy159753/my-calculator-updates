@@ -1111,12 +1111,27 @@ class ItemdefLoopDialog(QDialog):
             except Exception as e: QMessageBox.critical(self, "Error", f"{e}")
 
     def export_itemdef(self):
+        base_dir = os.path.dirname(_resolve_resource_path("template.xlsx"))
+        if not os.path.isdir(base_dir):
+            base_dir = os.getcwd()
         # 1. Select Template
-        template_path, _ = QFileDialog.getOpenFileName(self, "เลือกไฟล์ Template Format Itemdef", "", "Excel Files (*.xlsx)")
+        template_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "เลือกไฟล์ Template Format Itemdef",
+            base_dir,
+            "Excel Files (*.xlsx)"
+        )
         if not template_path: return
         
         # 2. Select Output
-        save_path, _ = QFileDialog.getSaveFileName(self, "บันทึก Itemdef Output", f"{os.path.splitext(os.path.basename(self.spss_filepath))[0]}_Itemdef.xlsx", "Excel Files (*.xlsx)")
+        default_name = f"{os.path.splitext(os.path.basename(self.spss_filepath))[0]}_Itemdef.xlsx"
+        default_path = os.path.join(base_dir, default_name)
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "บันทึก Itemdef Output",
+            default_path,
+            "Excel Files (*.xlsx)"
+        )
         if not save_path: return
 
         # Show Loading Progress
