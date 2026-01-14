@@ -5,16 +5,40 @@ import sys
 import os
 
 # ตรวจสอบว่าโปรแกรมกำลังรันในรูปแบบ "frozen" (ไฟล์ .exe) หรือไม่
+# รองรับทั้งการรันจาก Main Process และ Subprocess
+_spss_found = False
+base_dirs = []
+
+# 1. ลอง _MEIPASS ก่อน (subprocess อาจไม่มี)
+if hasattr(sys, "_MEIPASS"):
+    base_dirs.append(sys._MEIPASS)
+
+# 2. ลองโฟลเดอร์ที่ .exe อยู่
 if getattr(sys, 'frozen', False):
-    base_dirs = []
-    if hasattr(sys, "_MEIPASS"):
-        base_dirs.append(sys._MEIPASS)
     base_dirs.append(os.path.dirname(sys.executable))
-    for base_dir in base_dirs:
-        spss_home_path = os.path.join(base_dir, 'savReaderWriter', 'spssio')
-        if os.path.isdir(spss_home_path):
-            os.environ['SPSS_HOME'] = spss_home_path
-            break
+
+# 3. ลองใช้ environment variable ที่ Main Process ส่งมา
+if 'MAIN_PROGRAM_DIR' in os.environ:
+    base_dirs.append(os.environ['MAIN_PROGRAM_DIR'])
+    base_dirs.append(os.path.join(os.environ['MAIN_PROGRAM_DIR'], '_internal'))
+
+# 4. ลองหาจาก path ของไฟล์นี้เอง
+base_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+base_dirs.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+print(f"SPSS_FIXER_DEBUG: Looking for savReaderWriter/spssio in: {base_dirs}")
+
+for base_dir in base_dirs:
+    spss_home_path = os.path.join(base_dir, 'savReaderWriter', 'spssio')
+    print(f"SPSS_FIXER_DEBUG: Checking: {spss_home_path} -> exists: {os.path.isdir(spss_home_path)}")
+    if os.path.isdir(spss_home_path):
+        os.environ['SPSS_HOME'] = spss_home_path
+        print(f"SPSS_FIXER_DEBUG: SPSS_HOME set to: {spss_home_path}")
+        _spss_found = True
+        break
+
+if not _spss_found:
+    print("SPSS_FIXER_WARNING: Could not find savReaderWriter/spssio folder!")
 # =============================================================================
 
 

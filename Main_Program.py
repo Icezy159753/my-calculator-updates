@@ -77,7 +77,7 @@ TELEGRAM_DASHBOARD_URL = "https://script.google.com/macros/s/AKfycbwTuNCMDpsm2a5
 TELEGRAM_MIN_INTERVAL_SECONDS = 10
 TELEGRAM_RETRY_MAX_ATTEMPTS = 2
 TELEGRAM_RETRY_FALLBACK_WAIT = 5
-UPDATE_HISTORY_URL = "https://dp1234.lovable.app/"
+UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 
 
 # --- ค่าคงที่สำหรับชื่อโฟลเดอร์ ---
@@ -876,8 +876,23 @@ CARD_MIN_WIDTH = 240
 CARD_MAX_WIDTH = 2000
 CARD_HEIGHT = 320
 
+# --- ฟังก์ชันสำหรับแสดง Error ใน subprocess (ใช้ tkinter แทน Qt) ---
+def show_subprocess_error(title, message):
+    """แสดง error dialog ใน subprocess โดยใช้ tkinter (ไม่ต้องมี QApplication)"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message, parent=root)
+        root.destroy()
+    except Exception as e:
+        print(f"SUBPROCESS_ERROR_DIALOG_FAILED: {e}")
+        print(f"{title}: {message}")
+
 # --- ฟังก์ชันสำหรับรันโมดูลย่อยในโปรเซสใหม่ (เหมือนเดิม) ---
 def run_module_entrypoint(module_name_in_subfolder, entry_point_func_name="main", args=(), script_kwargs={}):
+    full_module_name = None
     try:
         # Ensure the subfolder is part of the module name if not already
         if not module_name_in_subfolder.startswith(PROGRAM_SUBFOLDER + "."):
@@ -896,14 +911,18 @@ def run_module_entrypoint(module_name_in_subfolder, entry_point_func_name="main"
             print(f"LAUNCHER_INFO: Finished running {entry_point_func_name} in {full_module_name}")
         else:
             print(f"LAUNCHER_ERROR: Entry point function '{entry_point_func_name}' not found in module '{full_module_name}'.")
-            show_error_dialog("Launch Error", f"ไม่พบฟังก์ชันหลัก '{entry_point_func_name}'\nในโมดูล '{module_name_in_subfolder}'.")
+            show_subprocess_error("Launch Error", f"ไม่พบฟังก์ชันหลัก '{entry_point_func_name}'\nในโมดูล '{module_name_in_subfolder}'.")
 
     except ImportError as e:
+        import traceback
+        traceback.print_exc()
         print(f"LAUNCHER_ERROR: Error importing module {full_module_name}: {e}")
-        show_error_dialog("Launch Error", f"ไม่สามารถโหลดโมดูล '{module_name_in_subfolder}' ได้:\n{e}\n\nตรวจสอบว่าไฟล์ .py อยู่ในโฟลเดอร์ '{PROGRAM_SUBFOLDER}' และ sys.path ถูกต้อง")
+        show_subprocess_error("Launch Error", f"ไม่สามารถโหลดโมดูล '{module_name_in_subfolder}' ได้:\n{e}\n\nตรวจสอบว่าไฟล์ .py อยู่ในโฟลเดอร์ '{PROGRAM_SUBFOLDER}' และ sys.path ถูกต้อง")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"LAUNCHER_ERROR: Error running module {full_module_name}: {e}")
-        show_error_dialog("Runtime Error", f"เกิดข้อผิดพลาดขณะรัน '{module_name_in_subfolder}':\n{e}")
+        show_subprocess_error("Runtime Error", f"เกิดข้อผิดพลาดขณะรัน '{module_name_in_subfolder}':\n{e}")
 
 
 
@@ -1764,6 +1783,8 @@ class AppLauncher(QtWidgets.QMainWindow):
             
             try:
                 self.show_launching_dialog(program_name)
+                # ส่ง path ของ .exe ไปให้ subprocess ผ่าน environment variable
+                os.environ['MAIN_PROGRAM_DIR'] = self.launcher_base_dir
                 kwargs = {'working_dir': self.program_dir}
                 process = Process(target=run_module_entrypoint, args=(module_path, entry_point), kwargs={'script_kwargs': kwargs})
                 process.start()
