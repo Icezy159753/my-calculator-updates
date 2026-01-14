@@ -33,10 +33,54 @@ except ImportError:
     LIBS_INSTALLED = False
 
 # =====================================================
-# ⚠️ ใส่ API Key ที่นี่ (แก้ไขได้เลย)
+# OpenRouter API key loading
+# - Priority: env var OPENROUTER_API_KEY -> openrouter.json
+# - Avoid hardcoding keys in source to prevent leaks in GitHub Actions
 # =====================================================
-OPENROUTER_API_KEY = "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"
-# =====================================================
+OPENROUTER_API_KEY = None
+OPENROUTER_CONFIG_FILENAME = "openrouter.json"
+
+
+def _resolve_resource_path(filename):
+    candidates = []
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, filename))
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(exe_dir, filename))
+        candidates.append(os.path.join(exe_dir, "_internal", filename))
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(module_dir, filename))
+    candidates.append(os.path.join(os.path.dirname(module_dir), filename))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return os.path.join(module_dir, filename)
+
+
+def get_openrouter_api_key():
+    global OPENROUTER_API_KEY
+    if OPENROUTER_API_KEY is not None:
+        return OPENROUTER_API_KEY
+
+    env_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if env_key:
+        OPENROUTER_API_KEY = env_key
+        return OPENROUTER_API_KEY
+
+    config_path = _resolve_resource_path(OPENROUTER_CONFIG_FILENAME)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        file_key = str(data.get("api_key", "")).strip()
+        if file_key:
+            OPENROUTER_API_KEY = file_key
+            return OPENROUTER_API_KEY
+    except Exception:
+        pass
+
+    OPENROUTER_API_KEY = ""
+    return OPENROUTER_API_KEY
 
 # --- Default Model ---
 DEFAULT_MODEL = "google/gemini-3-flash-preview"
@@ -1327,10 +1371,16 @@ class AIWorker(QThread):
                 # Set up session with keep-alive
                 session = requests.Session()
                 
+                api_key = get_openrouter_api_key()
+                if not api_key:
+                    elapsed_ms = int((time.time() - start_time) * 1000)
+                    self.finished.emit(False, "Missing OpenRouter API key.", 0, elapsed_ms)
+                    return
+
                 response = session.post(
                     url="https://openrouter.ai/api/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                         "HTTP-Referer": "https://github.com/GenPromt/App", # Best practice for OpenRouter
                         "X-Title": "GenPromt App"
@@ -2134,8 +2184,12 @@ class GenPromtApp(QMainWindow):
         self.run_prompt_jod()
         
     def validate_inputs(self, mode):
-        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY.startswith("sk-or-v1-xxx"):
-            QMessageBox.warning(self, "API Key", "กรุณาใส่ API Key ใน code (บรรทัดที่ 33)")
+        if not get_openrouter_api_key():
+            QMessageBox.warning(
+                self,
+                "API Key",
+                "กรุณาตั้งค่า OPENROUTER_API_KEY หรือใส่ไฟล์ openrouter.json"
+            )
             return False
         if not self.questionnaire_data:
             QMessageBox.warning(self, "ข้อมูลไม่ครบ", "กรุณาเลือกไฟล์แบบสอบถามก่อน")

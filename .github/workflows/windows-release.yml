@@ -41,6 +41,18 @@ jobs:
           $bytes = [System.Convert]::FromBase64String($env:TEST3_JSON_B64)
           [System.IO.File]::WriteAllBytes("Test3.json", $bytes)
 
+      - name: Restore OpenRouter config from secret
+        shell: pwsh
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if (-not $env:OPENROUTER_API_KEY) {
+            Write-Error "Missing secret OPENROUTER_API_KEY"
+            exit 1
+          }
+          $json = @{ api_key = $env:OPENROUTER_API_KEY } | ConvertTo-Json
+          Set-Content -Path "openrouter.json" -Value $json -Encoding UTF8
+
       - name: Build EXE
         run: |
           pyinstaller Main_Program.spec

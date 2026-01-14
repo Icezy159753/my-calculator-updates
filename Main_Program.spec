@@ -12,6 +12,7 @@ datas = [
     (os.path.join(site_packages, "sv_ttk"), "sv_ttk"),
     ("Icon", "Icon"),
     ("All_Programs", "All_Programs"),
+    ("openrouter.json", "."),
     ("template.xlsx", "."),
     ("Test3.json", "."),
     ("Itemdef - Format.xlsx", "."),
