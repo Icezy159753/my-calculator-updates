@@ -4,6 +4,21 @@
 import sys
 import os
 
+# Compatibility shim for Python 3.10+ where collections.* moved to collections.abc
+try:
+    import collections
+    from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+    if not hasattr(collections, "Iterable"):
+        collections.Iterable = Iterable
+    if not hasattr(collections, "Mapping"):
+        collections.Mapping = Mapping
+    if not hasattr(collections, "MutableMapping"):
+        collections.MutableMapping = MutableMapping
+    if not hasattr(collections, "Sequence"):
+        collections.Sequence = Sequence
+except Exception:
+    pass
+
 # ตรวจสอบว่าโปรแกรมกำลังรันในรูปแบบ "frozen" (ไฟล์ .exe) หรือไม่
 # รองรับทั้งการรันจาก Main Process และ Subprocess
 _spss_found = False

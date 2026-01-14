@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextEdit, QFileDialog,
     QMessageBox, QGroupBox, QFrame, QProgressBar, QSplitter,
-    QDialog, QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView
+    QDialog, QTableWidget, QTableWidgetItem, QLineEdit, QHeaderView, QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
@@ -34,7 +34,7 @@ except ImportError:
 
 # =====================================================
 # OpenRouter API key loading
-# - Priority: env var OPENROUTER_API_KEY -> openrouter.json
+# - Priority: env var OPENROUTER_API_KEY -> openrouter.json (exe/_internal/appdata)
 # - Avoid hardcoding keys in source to prevent leaks in GitHub Actions
 # =====================================================
 OPENROUTER_API_KEY = None
@@ -58,6 +58,42 @@ def _resolve_resource_path(filename):
     return os.path.join(module_dir, filename)
 
 
+def _get_appdata_dir():
+    base_dir = os.environ.get("APPDATA")
+    if not base_dir:
+        base_dir = os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    return os.path.join(base_dir, "GenPromt")
+
+
+def _get_openrouter_read_paths():
+    paths = []
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            paths.append(os.path.join(sys._MEIPASS, OPENROUTER_CONFIG_FILENAME))
+        exe_dir = os.path.dirname(sys.executable)
+        paths.append(os.path.join(exe_dir, OPENROUTER_CONFIG_FILENAME))
+        paths.append(os.path.join(exe_dir, "_internal", OPENROUTER_CONFIG_FILENAME))
+    paths.append(os.path.join(_get_appdata_dir(), OPENROUTER_CONFIG_FILENAME))
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    paths.append(os.path.join(module_dir, OPENROUTER_CONFIG_FILENAME))
+    paths.append(os.path.join(os.path.dirname(module_dir), OPENROUTER_CONFIG_FILENAME))
+    return paths
+
+
+def _get_openrouter_write_paths():
+    paths = []
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        paths.append(os.path.join(exe_dir, OPENROUTER_CONFIG_FILENAME))
+        paths.append(os.path.join(exe_dir, "_internal", OPENROUTER_CONFIG_FILENAME))
+    else:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        paths.append(os.path.join(module_dir, OPENROUTER_CONFIG_FILENAME))
+        paths.append(os.path.join(os.path.dirname(module_dir), OPENROUTER_CONFIG_FILENAME))
+    paths.append(os.path.join(_get_appdata_dir(), OPENROUTER_CONFIG_FILENAME))
+    return paths
+
+
 def get_openrouter_api_key():
     global OPENROUTER_API_KEY
     if OPENROUTER_API_KEY is not None:
@@ -68,19 +104,36 @@ def get_openrouter_api_key():
         OPENROUTER_API_KEY = env_key
         return OPENROUTER_API_KEY
 
-    config_path = _resolve_resource_path(OPENROUTER_CONFIG_FILENAME)
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        file_key = str(data.get("api_key", "")).strip()
-        if file_key:
-            OPENROUTER_API_KEY = file_key
-            return OPENROUTER_API_KEY
-    except Exception:
-        pass
+    for config_path in _get_openrouter_read_paths():
+        try:
+            if not os.path.exists(config_path):
+                continue
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            file_key = str(data.get("api_key", "")).strip()
+            if file_key:
+                OPENROUTER_API_KEY = file_key
+                return OPENROUTER_API_KEY
+        except Exception:
+            continue
 
     OPENROUTER_API_KEY = ""
     return OPENROUTER_API_KEY
+
+
+def save_openrouter_api_key(api_key):
+    global OPENROUTER_API_KEY
+    payload = json.dumps({"api_key": api_key})
+    for config_path in _get_openrouter_write_paths():
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+            OPENROUTER_API_KEY = api_key
+            return config_path
+        except Exception:
+            continue
+    return ""
 
 # --- Default Model ---
 DEFAULT_MODEL = "google/gemini-3-flash-preview"
@@ -1942,7 +1995,7 @@ class GenPromtApp(QMainWindow):
             # Pass 1
             if is_lite_mode:
                 model = "google/gemini-2.5-flash-lite"
-                status_msg = "⏳ โจทย์ Pass 1/2: ใช้ Flash-Lite..."
+                status_msg = "⏳ โจทย์ Pass 1/2: พนักงานตัวน้อยกำลังทำงาน..."
             else:
                 model = selected_model
                 status_msg = f"⏳ โจทย์ Pass 1/2: ใช้ {model.split('/')[-1]}..."
@@ -1956,7 +2009,7 @@ class GenPromtApp(QMainWindow):
                 
             if is_lite_mode:
                 model = "google/gemini-3-flash-preview" # Upgrade for pass 2 if in Lite mode
-                status_msg = f"⏳ โจทย์ Pass 2/2: ใช้ Flash-Pro สำหรับ {len(self.jod_empty_rows_for_second_pass)} แถวที่ว่าง..."
+                status_msg = f"⏳ โจทย์ Pass 2/2: CEO กำลังดูงาน สำหรับ {len(self.jod_empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model # Stick to selected model
                 status_msg = f"⏳ โจทย์ Pass 2/2: ใช้ {model.split('/')[-1]} เก็บตก {len(self.jod_empty_rows_for_second_pass)} แถว..."
@@ -2060,7 +2113,7 @@ class GenPromtApp(QMainWindow):
             # Pass 1
             if is_lite_mode:
                 model = "google/gemini-2.5-flash-lite"
-                status_msg = "⏳ Pass 1/2: ใช้ Flash-Lite..."
+                status_msg = "⏳ Pass 1/2: พนักงานตัวน้อยกำลังทำงาน (Flash 2.5)..."
             else:
                 model = selected_model
                 status_msg = f"⏳ Pass 1/2: ใช้ {model.split('/')[-1]}..."
@@ -2075,7 +2128,7 @@ class GenPromtApp(QMainWindow):
                 
             if is_lite_mode:
                 model = "google/gemini-3-flash-preview"
-                status_msg = f"⏳ Pass 2/2: ใช้ Flash-Pro สำหรับ {len(self.empty_rows_for_second_pass)} แถวที่ว่าง..."
+                status_msg = f"⏳ Pass 2/2: CEO กำลังดูงาน (Flash 3) สำหรับ {len(self.empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model
                 status_msg = f"⏳ Pass 2/2: ใช้ {model.split('/')[-1]} เก็บตก {len(self.empty_rows_for_second_pass)} แถว..."
@@ -2184,12 +2237,7 @@ class GenPromtApp(QMainWindow):
         self.run_prompt_jod()
         
     def validate_inputs(self, mode):
-        if not get_openrouter_api_key():
-            QMessageBox.warning(
-                self,
-                "API Key",
-                "กรุณาตั้งค่า OPENROUTER_API_KEY หรือใส่ไฟล์ openrouter.json"
-            )
+        if not self.ensure_openrouter_api_key():
             return False
         if not self.questionnaire_data:
             QMessageBox.warning(self, "ข้อมูลไม่ครบ", "กรุณาเลือกไฟล์แบบสอบถามก่อน")
@@ -2200,6 +2248,40 @@ class GenPromtApp(QMainWindow):
         if mode in ["code", "all"] and not self.cat_program_data.get("value"):
             QMessageBox.warning(self, "ข้อมูลไม่ครบ", "กรุณาโหลดไฟล์ SPSS ก่อน (ไม่พบข้อมูล Value)")
             return False
+        return True
+
+    def ensure_openrouter_api_key(self):
+        if get_openrouter_api_key():
+            return True
+
+        key, ok = QInputDialog.getText(
+            self,
+            "OpenRouter API Key",
+            "กรุณาใส่ Key (ใส่ครั้งเดียว):",
+            QLineEdit.EchoMode.Password
+        )
+        if not ok:
+            return False
+
+        key = key.strip()
+        if not key:
+            QMessageBox.warning(self, "API Key", "กรุณากรอก API Key ให้ถูกต้อง")
+            return False
+
+        saved_path = save_openrouter_api_key(key)
+        if not saved_path:
+            QMessageBox.critical(
+                self,
+                "API Key",
+                "บันทึก openrouter.json ไม่สำเร็จ (สิทธิ์ไม่พอหรือพาธไม่ถูกต้อง)"
+            )
+            return False
+
+        QMessageBox.information(
+            self,
+            "API Key",
+            f"บันทึก API Key แล้วที่:\n{saved_path}"
+        )
         return True
         
 
