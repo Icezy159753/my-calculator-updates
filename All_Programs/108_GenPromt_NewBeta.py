@@ -2155,7 +2155,9 @@ class GenPromtApp(QMainWindow):
                 status_msg = "⏳ โจทย์ Pass 1/2: พนักงานตัวน้อยกำลังทำงาน..."
             else:
                 model = selected_model
-                status_msg = f"⏳ โจทย์ Pass 1/2: ใช้ {model.split('/')[-1]}..."
+                # แสดงชื่อ Agent จาก dropdown แทน model name
+                agent_name = self.model_combo.currentText()
+                status_msg = f"⏳ โจทย์ Pass 1/2: ใช้ {agent_name}ทำงาน..."
                 
             data_text = self.jod_header + '\n' + '\n'.join(self.jod_data_rows)
         else:
@@ -2169,7 +2171,8 @@ class GenPromtApp(QMainWindow):
                 status_msg = f"⏳ โจทย์ Pass 2/2: CEO กำลังดูงาน สำหรับ {len(self.jod_empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model # Stick to selected model
-                status_msg = f"⏳ โจทย์ Pass 2/2: ใช้ {model.split('/')[-1]} เก็บตก {len(self.jod_empty_rows_for_second_pass)} แถว..."
+                agent_name = self.model_combo.currentText()
+                status_msg = f"⏳ โจทย์ Pass 2/2: ใช้ {agent_name} เก็บตก {len(self.jod_empty_rows_for_second_pass)} แถว..."
                 
             data_text = self.jod_header + '\n' + '\n'.join(self.jod_empty_rows_for_second_pass)
         
@@ -2273,7 +2276,8 @@ class GenPromtApp(QMainWindow):
                 status_msg = "⏳ Pass 1/2: พนักงานตัวน้อยกำลังทำงาน (Flash 2.5)..."
             else:
                 model = selected_model
-                status_msg = f"⏳ Pass 1/2: ใช้ {model.split('/')[-1]}..."
+                agent_name = self.model_combo.currentText()
+                status_msg = f"⏳ Pass 1/2: ใช้ {agent_name}..."
 
             data_text = self.code_header + '\n' + '\n'.join(self.code_data_rows)
         else:
@@ -2288,7 +2292,8 @@ class GenPromtApp(QMainWindow):
                 status_msg = f"⏳ Pass 2/2: CEO กำลังดูงาน (Flash 3) สำหรับ {len(self.empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model
-                status_msg = f"⏳ Pass 2/2: ใช้ {model.split('/')[-1]} เก็บตก {len(self.empty_rows_for_second_pass)} แถว..."
+                agent_name = self.model_combo.currentText()
+                status_msg = f"⏳ Pass 2/2: ใช้ {agent_name} เก็บตก {len(self.empty_rows_for_second_pass)} แถว..."
 
             data_text = self.code_header + '\n' + '\n'.join(self.empty_rows_for_second_pass)
         
