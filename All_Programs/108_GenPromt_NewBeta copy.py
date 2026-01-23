@@ -8,6 +8,7 @@ import time
 import json
 import threading
 import webbrowser
+import re
 
 # PyQt6 imports
 from PyQt6.QtWidgets import (
@@ -136,81 +137,126 @@ def save_openrouter_api_key(api_key):
     return ""
 
 # --- Default Model ---
-DEFAULT_MODEL = "google/gemini-3-flash-preview"
+DEFAULT_MODEL = "xiaomi/mimo-v2-flash:free"
 
 # --- Prompt Templates ---
-PROMPT_JOD = """# งาน: จับคู่ข้อความไทย-อังกฤษ (VAR_ENG)
+PROMPT_JOD = """คุยไทยนะ
+จากข้อมูลต่อไปนี้:
 
-## ข้อมูลที่ให้:
 [ *** วางข้อมูล Word และ Excel *** ]
 
-## คำสั่ง:
-1. ดูตาราง Excel สุดท้ายที่มีคอลัมน์ `Name` และ `VAR_THA`
-2. สำหรับแต่ละแถว ค้นหาข้อความภาษาอังกฤษที่**ตรงกัน**กับ `VAR_THA` ในเอกสาร Word
-3. ถ้า VAR_THA มีคำว่า "Hide" ให้ข้าม
-4. สร้าง VAR_ENG โดยใส่หมายเลขคำถามนำหน้า + จุด + ข้อความอังกฤษ
+ให้ดำเนินการดังนี้:
 
-## ⚠️ กฎสำคัญ:
-- ดึงหมายเลขจาก Name เช่น: `s1` → "S1", `q1_1` → "Q1.1", `mq5` → "MQ5"
-- ต่อด้วยจุด (.) แล้วตามด้วยข้อความอังกฤษ
-- **ถ้าไม่พบข้อความอังกฤษในเอกสาร Word → ปล่อย VAR_ENG ว่างเปล่า** (ไม่ต้องใส่อะไร)
-- **ห้าม**แปลเอง **ห้าม**เดาเอง ใช้เฉพาะข้อความที่มีอยู่ในเอกสารเท่านั้น
+## กฎสำคัญที่สุด (ห้ามละเมิด):
+- **ห้ามแปลภาษาเอง** อย่างเด็ดขาด
+- **ห้ามเขียน/สรุป/เรียบเรียงข้อความภาษาอังกฤษขึ้นมาใหม่** อย่างเด็ดขาด (ห้าม paraphrase)
+- **ห้ามเอาข้อความภาษาอังกฤษจากข้ออื่นมาใส่** อย่างเด็ดขาด (เช่น ห้ามเอาอังกฤษของ S36 ไปใส่ให้ S37)
+- **ต้องตรวจสอบเลขข้อให้ตรงกัน** ก่อนนำไปใช้
+- ✅ **ข้อความอังกฤษที่ใส่ได้ ต้องเป็น "การคัดลอกตรงตัว (Exact Copy)" จากต้นฉบับเท่านั้น**
+  - หมายถึง: ตัวอักษร/คำ/เครื่องหมาย ต้องตรงกับข้อความที่ปรากฏในข้อมูลต้นฉบับ
+  - ห้ามแต่งเพิ่ม ห้ามสรุป ห้ามขยายความ ห้ามเติมคำเชื่อม
+- ถ้าหาข้อความภาษาอังกฤษไม่เจอ หรือ ไม่แน่ใจว่าตรงกัน -> **ต้องเว้นว่างไว้เท่านั้น** (ปล่อยค่าว่างจริง ๆ ไม่ใส่อะไรเลย)
 
-## ตัวอย่างผลลัพธ์:
-```
-Name	VAR_ENG
-s1	S1.Please indicate your gender
-age	
-q4_1_16	Q4.Lip balm
-mq5	
-```
-(หมายเหตุ: age และ mq5 ว่างเพราะไม่พบข้อความอังกฤษในเอกสาร)
+## วิธีหาข้อความภาษาอังกฤษในแบบสอบถาม (สำคัญมาก):
+- แบบสอบถามเป็นตาราง 2 ภาษา โดยภาษาอังกฤษอาจ:
+  1) อยู่บรรทัดถัดไป/ใต้ภาษาไทย
+  2) อยู่ท้ายประโยคไทยใน "บล็อกเดียวกัน"
+  3) อยู่คนละบรรทัดแต่ยังอยู่ใน "ส่วน/กรอบ/บล็อกของข้อเดียวกัน"
+- **ต้องดูบล็อกที่มีเลขข้อเดียวกันเท่านั้น**
+  - เช่น Name=s37 ต้องดึงอังกฤษจากบล็อก S37 เท่านั้น
+  - ห้ามข้ามไปใช้ประโยคอังกฤษที่อยู่ในส่วนอื่น แม้จะใกล้กัน
 
-**Output:** ส่งกลับเฉพาะ 2 คอลัมน์ `Name` และ `VAR_ENG` ใช้ Tab คั่น ใส่ใน Codebox
+## นิยาม "บล็อกของข้อเดียวกัน":
+- เริ่มตั้งแต่บรรทัดที่พบเลขข้อ (เช่น "S37") จนก่อนถึงเลขข้อถัดไป (เช่น "S38" หรือ "S0" หรือ "Q1" ฯลฯ)
+- หรือถ้าเป็นตาราง: อยู่ในกรอบ/แถว/ส่วนของเลขข้อนั้นเดียวกัน
+
+## ขั้นตอนการทำงาน:
+
+1) **ระบุคู่ข้อมูล:** สำหรับแต่ละแถวในตารางข้อมูลสุดท้าย (`Name`, `VAR_THA`):
+   - หา "บล็อก" ที่มีเลขข้อตรงกับ `Name` (เช่น Name=s37 -> บล็อก S37)
+   - ในบล็อกนั้น มองหาข้อความภาษาอังกฤษที่อยู่ใต้/ถัดจากภาษาไทย หรือท้ายบล็อก
+
+2) **สร้างตารางผลลัพธ์:** สร้างตารางที่มี 2 คอลัมน์: `Name`, `VAR_ENG`
+
+3) **เติมข้อมูล (เข้มงวด):**
+   - นำ `Name` มาใส่เหมือนเดิม
+   - **เฉพาะกรณีที่พบข้อความภาษาอังกฤษในบล็อกที่มีเลขข้อตรงกัน และคัดลอกได้ตรงตัวจากต้นฉบับเท่านั้น:**
+     - ให้ใส่ `VAR_ENG` = "Sxx) " + (ข้อความอังกฤษที่คัดลอกตรงตัว)
+   - **หากไม่เจอ หรือ ไม่แน่ใจว่าตรงกัน -> ต้องเว้นว่าง `VAR_ENG` ไว้ (ค่าว่างจริง ๆ)**
+   - **ห้ามใส่ข้อความภาษาไทย** ลงใน `VAR_ENG`
+
+4) ✅ **Self-check ก่อนส่งคำตอบ (ห้ามข้าม):**
+   - ตรวจทุกค่า `VAR_ENG` ทีละบรรทัดว่า "ข้อความอังกฤษหลัง `Sxx)`" สามารถพบเป็นข้อความเดียวกันในข้อมูลต้นฉบับ (Exact substring) จริงหรือไม่
+   - ถ้า **หาในต้นฉบับไม่พบแบบตรงตัว** -> ให้ลบค่านั้น แล้วเว้นว่าง
+
+5) **จัดรูปแบบตาราง:**
+   - ใช้ **Tab** เป็นตัวคั่นระหว่างคอลัมน์
+   - ส่งกลับเป็น Table Markdown ที่มี 2 คอลัมน์: `Name`, `VAR_ENG`
+   - จัดให้อยู่ในรูปแบบ Codebox
+
+## ตัวอย่างย้ำ (ห้ามผิด):
+- ถ้า A1 มีแต่ภาษาไทย (ไม่มีอังกฤษอยู่ในต้นฉบับ) -> ต้องเว้นว่างเท่านั้น ห้ามแปลเอง
+- ถ้าบล็อก S37 มีอังกฤษว่า "Are you interested in participating in this research – HVT Phase?" -> ต้องคัดลอกประโยคนี้ตรงตัวเท่านั้น ห้ามสรุป/ขยาย
 """
 
-PROMPT_CODE = """# งาน: จับคู่ข้อความไทย-อังกฤษ สำหรับ LABEL
+PROMPT_CODE = """คุยไทยนะ
+จากข้อมูลต่อไปนี้:
 
-## ข้อมูล:
 [ *** วางข้อมูล Word และ Excel *** ]
 
-## คำสั่ง:
-สำหรับ **แต่ละแถว** ในตาราง (`Variable`, `Value`, `Label_Th`):
-1. **ตรวจสอบอย่างละเอียด** ในเอกสาร Word เพื่อหาข้อความอังกฤษที่ตรงกับ `Label_Th` บริบทเดียวกัน
-2. ถ้าพบ → ใส่ใน Label_EN
-3. **ถ้าตรวจสอบดีแล้วไม่พบจริงๆ → ปล่อย Label_EN ว่างเปล่า** (ห้ามมั่ว ห้ามเดา ห้ามแปลเองเด็ดขาด)
-4. ถ้ามี (R1) (R2) นำหน้า → เอามาด้วย
-5. **ต้องส่งกลับให้ครบทุกแถว** ตามจำนวน Input ที่ได้รับ
+ให้ดำเนินการดังนี้:
 
-## ⚠️ กฎเหล็ก:
-- **ห้ามแปลเอง** ใช้เฉพาะข้อความที่มีในเอกสาร Word เท่านั้น
-- **ต้องแม่นยำ** ดูบริบทของคำถามประกอบด้วยเสมอ
-- **ห้ามเพิ่มจุด (.) หรือเครื่องหมายใดๆ** ถ้าต้นฉบับเป็น "Yes" ห้ามใส่ "Yes."
-- ถ้าไม่เจอจริงๆ ให้เว้นว่างไว้ ดีกว่าใส่ข้อมูลผิด
+## กฎสำคัญที่สุด (ห้ามละเมิด):
+- **ห้ามแปลภาษาเอง** อย่างเด็ดขาด
+- **ห้ามเขียน/สรุป/เรียบเรียงข้อความภาษาอังกฤษขึ้นมาใหม่** อย่างเด็ดขาด (ห้าม paraphrase)
+- **ห้ามเอาข้อความภาษาอังกฤษจากข้ออื่นมาใส่** อย่างเด็ดขาด (เช่น ห้ามเอาของ S2 ไปใส่ให้ S3)
+- **ต้องตรวจสอบเลขข้อให้ตรงกัน** ก่อนนำไปใช้
+- ✅ **ข้อความอังกฤษที่ใส่ได้ ต้องเป็น "การคัดลอกตรงตัว (Exact Copy)" จากต้นฉบับเท่านั้น**
+  - ตัวอักษร/คำ/เครื่องหมาย ต้องตรงกับที่ปรากฏ
+  - ห้ามแต่งเพิ่ม ห้ามสรุป
+- ถ้าหาข้อความภาษาอังกฤษไม่เจอ หรือ ไม่แน่ใจว่าตรงกัน -> **ต้องเว้นว่างไว้เท่านั้น** (ค่าว่างจริง ๆ)
 
-## รายการคำศัพท์ที่ต้องจับคู่ (Likert Scale):
-| ไทย | English |
-|-----|---------|
-| ไม่เห็นด้วยเลย | Strongly disagree |
-| ไม่เห็นด้วย | Disagree |
-| เฉยๆ | Neither nor / Neutral |
-| เห็นด้วย | Agree |
-| เห็นด้วยอย่างยิ่ง | Strongly agree |
-| ชาย | Male |
-| หญิง | Female |
+## ⚠️ กฎเรื่อง (Rxx) - สำคัญมาก:
+- ถ้าในต้นฉบับมี **(R1), (R2), (R3), (R101), (R111)** ฯลฯ นำหน้าข้อความอังกฤษ **ต้องใส่มาด้วยเสมอ**
+- ตัวอย่าง: 
+  - ต้นฉบับ: "(R101) MamyPoko Preemie/ Preterm / Small NB" 
+  - Label_En: "(R101) MamyPoko Preemie/ Preterm / Small NB" ← ต้องใส่ (R101) มาด้วย
+- **ห้ามตัด (Rxx) ออก** ถ้ามีในต้นฉบับ
 
-## ตัวอย่างผลลัพธ์:
-```
-Variable	Value	Label_EN
-sq1	1	Male
-sq1	2	Female
-sq99	1	
-sq99	2	
-po6_1	1	Strongly disagree
-```
-(หมายเหตุ: sq99 ว่างเพราะไม่พบในเอกสาร)
+## วิธีหาข้อความภาษาอังกฤษในแบบสอบถาม:
+- แบบสอบถามเป็นตาราง 2 ภาษา โดยภาษาอังกฤษอาจอยู่:
+  1) แถวถัดไป/ใต้ภาษาไทย
+  2) ท้ายบรรทัดเดียวกัน
+  3) คนละบรรทัดแต่ยังอยู่ใน "บล็อกของข้อเดียวกัน"
+- **ต้องดูบล็อกที่มีเลขข้อตรงกับ `Variable` เท่านั้น**
+- ตัวเลือกหนึ่ง ๆ ต้องจับคู่ ไทย (`Label_Th`) กับ อังกฤษที่อยู่ "ติดกัน/ใต้กัน" ภายในบล็อกเดียวกัน
 
-**Output:** ส่งกลับ 3 คอลัมน์ `Variable`, `Value`, `Label_EN` ใช้ Tab คั่น ใส่ใน Codebox
+## ขั้นตอนการทำงาน:
+
+1) **ระบุคู่ข้อมูล:** สำหรับแต่ละแถว (`Variable`, `Value`, `Label_Th`):
+   - หาบล็อกในแบบสอบถามที่มีเลขข้อตรงกับ `Variable` (เช่น s3 -> S3)
+   - ในบล็อกนั้น ค้นหาตัวเลือกที่มีข้อความไทยตรงกับ `Label_Th`
+   - จากตำแหน่งตัวเลือกนั้น ให้หา "ข้อความอังกฤษที่จับคู่กัน" (อยู่บรรทัดถัดไป/ท้ายบรรทัด/ใต้กัน ภายในตัวเลือกเดียวกัน)
+
+2) **สร้างตารางผลลัพธ์:** สร้างตารางที่มี 3 คอลัมน์: `Variable`, `Value`, `Label_En`
+
+3) **เติมข้อมูล (เข้มงวด):**
+   - ใส่ `Variable` และ `Value` เหมือนเดิม
+   - **เฉพาะกรณีที่พบข้อความอังกฤษที่เป็นคู่ของ `Label_Th` ภายในบล็อกเดียวกัน และคัดลอกได้ตรงตัวเท่านั้น:**
+     - คัดลอกข้อความอังกฤษมาใส่ `Label_En` (Exact Copy)
+     - **ถ้ามี (R1) (R2) (R3) (R101) ฯลฯ นำหน้าในต้นฉบับ ต้องใส่มาด้วยเสมอ**
+   - **หากไม่เจอ หรือ ไม่แน่ใจว่าตรงกัน -> เว้นว่าง `Label_En`**
+   - **ห้ามใส่ข้อความภาษาไทย** ลงใน `Label_En`
+
+4) ✅ **Self-check ก่อนส่งคำตอบ (ห้ามข้าม):**
+   - ตรวจทุกค่า `Label_En` ว่าสามารถพบเป็นข้อความเดียวกันในข้อมูลต้นฉบับ (Exact substring) จริงหรือไม่
+   - ตรวจว่า (Rxx) ถูกใส่มาครบถ้ามีในต้นฉบับ
+   - ถ้าไม่พบแบบตรงตัว -> ลบทิ้งแล้วเว้นว่าง
+
+5) **จัดรูปแบบตาราง:**
+   - ใช้ **Tab** เป็นตัวคั่นระหว่างคอลัมน์
+   - ส่งกลับเป็น Table Markdown ที่มี 3 คอลัมน์: `Variable`, `Value`, `Label_En`
+   - จัดให้อยู่ในรูปแบบ Codebox
 """
 
 # --- Dark Mode Stylesheet (Larger Fonts) ---
@@ -461,6 +507,7 @@ class ItemdefLoopDialog(QDialog):
     """Dialog for manual loop selection and Itemdef export with TB/T2B Making support"""
     
     # ค่าคงที่สำหรับ TB/T2B Making
+    MAKING_OPTIONS_4 = ["T2B", "B2B"]  # 4 scale
     MAKING_OPTIONS_5 = ["TB", "T2B", "BB", "B2B"]  # 5 scale
     MAKING_OPTIONS_7_10 = ["TB", "T2B", "T3B", "BB", "B2B", "B3B"]  # 7/10 scale
     
@@ -514,7 +561,7 @@ class ItemdefLoopDialog(QDialog):
         t2b_label.setStyleSheet("font-weight: bold; color: #cba6f7;")
         t2b_layout.addWidget(t2b_label)
         
-        btn_detect_scale = QPushButton("🔍 ตรวจจับ Scale 5/7/10")
+        btn_detect_scale = QPushButton("🔍 ตรวจจับ Scale 4/5/6/7/9/10")
         btn_detect_scale.setStyleSheet("background-color: #89b4fa; color: #1e1e2e; font-weight: bold;")
         btn_detect_scale.clicked.connect(self.detect_scale_variables)
         t2b_layout.addWidget(btn_detect_scale)
@@ -662,7 +709,7 @@ class ItemdefLoopDialog(QDialog):
             
             # Build display text with first/last label hints
             display_text = direction_val
-            if scale_info.get('num_options') in [5, 7, 10]:
+            if scale_info.get('num_options') in [4, 5, 6, 7, 9, 10]:
                 labels_list = scale_info.get('labels', [])
                 if labels_list and not direction_val:
                     first_lbl = labels_list[0][:15] if labels_list[0] else "?"
@@ -675,7 +722,7 @@ class ItemdefLoopDialog(QDialog):
             direction_item.setFlags(direction_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             
             # Color Direction based on scale detection
-            if scale_info.get('num_options') in [5, 7, 10]:
+            if scale_info.get('num_options') in [4, 5, 6, 7, 9, 10]:
                 if direction_val == "Scale น้อยดี(-)":
                     direction_item.setForeground(QColor("#f38ba8"))
                     direction_item.setBackground(QColor("#313244"))
@@ -779,7 +826,7 @@ class ItemdefLoopDialog(QDialog):
     # ============ TB/T2B Making Functions ============
     
     def detect_scale_variables(self):
-        """ตรวจจับตัวแปรที่มี Value Labels 5/7/10 options"""
+        """ตรวจจับตัวแปรที่มี Value Labels 4/5/6/7/9/10 options"""
         if not self.spss_meta:
             QMessageBox.warning(self, "เตือน", "กรุณาโหลดไฟล์ SPSS ก่อน")
             return
@@ -796,7 +843,7 @@ class ItemdefLoopDialog(QDialog):
                          (isinstance(k, str) and k.replace('.','',1).isdigit())]
                 num_options = len(codes)
                 
-                if num_options in [5, 7, 10]:
+                if num_options in [4, 5, 6, 7, 9, 10]:
                     # Get labels in order
                     sorted_codes = sorted([int(float(c)) for c in codes])
                     labels_list = []
@@ -813,7 +860,7 @@ class ItemdefLoopDialog(QDialog):
         
         self.populate_table()
         QMessageBox.information(self, "ตรวจจับ Scale", 
-            f"พบตัวแปร Scale 5/7/10 จำนวน {found_scales} ตัว\n\n"
+            f"พบตัวแปร Scale 4/5/6/7/9/10 จำนวน {found_scales} ตัว\n\n"
             "คลิก 'ตั้ง Direction' เพื่อกำหนดทิศทาง Scale")
     
     def set_direction_selected(self):
@@ -833,7 +880,7 @@ class ItemdefLoopDialog(QDialog):
         
         if not valid_vars:
             QMessageBox.warning(self, "เตือน", 
-                "ตัวแปรที่เลือกไม่มี Scale 5/7/10\n\n"
+                "ตัวแปรที่เลือกไม่มี Scale 4/5/6/7/9/10\n\n"
                 "กรุณากด 'ตรวจจับ Scale' ก่อน หรือเลือกตัวแปรที่มี Scale")
             return
         
@@ -861,15 +908,30 @@ class ItemdefLoopDialog(QDialog):
         btn2.clicked.connect(lambda: (selected_direction.__setitem__(0, "Scale มากดี(+)"), dlg.accept()))
         layout.addWidget(btn2)
         
-        btn3 = QPushButton("🟡 Justright")
+        btn3 = QPushButton("🟡 Justright(w+-) ไม่ทำTB")
         btn3.setStyleSheet(btn_style.format(bg="#f39c12", hover="#d68910"))
-        btn3.clicked.connect(lambda: (selected_direction.__setitem__(0, "Justright"), dlg.accept()))
+        btn3.clicked.connect(lambda: (selected_direction.__setitem__(0, "Justright(w+-) ไม่ทำTB"), dlg.accept()))
         layout.addWidget(btn3)
         
-        btn4 = QPushButton("⬜ ยกเลิก Direction")
-        btn4.setStyleSheet(btn_style.format(bg="#7f8c8d", hover="#5d6d7e"))
-        btn4.clicked.connect(lambda: (selected_direction.__setitem__(0, ""), dlg.accept()))
+        btn4 = QPushButton("🟠 Justright(w+-) พร้อม TB")
+        btn4.setStyleSheet(btn_style.format(bg="#e67e22", hover="#ca6f1e"))
+        btn4.clicked.connect(lambda: (selected_direction.__setitem__(0, "Justright(w+-) พร้อม TB"), dlg.accept()))
         layout.addWidget(btn4)
+        
+        btn5 = QPushButton("🟣 Justright(ตามQNR) ไม่ทำTB")
+        btn5.setStyleSheet(btn_style.format(bg="#8e44ad", hover="#71368a"))
+        btn5.clicked.connect(lambda: (selected_direction.__setitem__(0, "Justright(ตามQNR) ไม่ทำTB"), dlg.accept()))
+        layout.addWidget(btn5)
+        
+        btn6 = QPushButton("🟤 Justright(ตามQNR) พร้อม TB")
+        btn6.setStyleSheet(btn_style.format(bg="#6d4c41", hover="#5d4037"))
+        btn6.clicked.connect(lambda: (selected_direction.__setitem__(0, "Justright(ตามQNR) พร้อม TB"), dlg.accept()))
+        layout.addWidget(btn6)
+        
+        btn7 = QPushButton("⬜ ยกเลิก Direction")
+        btn7.setStyleSheet(btn_style.format(bg="#7f8c8d", hover="#5d6d7e"))
+        btn7.clicked.connect(lambda: (selected_direction.__setitem__(0, ""), dlg.accept()))
+        layout.addWidget(btn7)
         
         if dlg.exec() == QDialog.DialogCode.Accepted:
             direction = selected_direction[0]
@@ -885,39 +947,67 @@ class ItemdefLoopDialog(QDialog):
     def _generate_conditions(self, var, direction, num_labels):
         """สร้าง Conditions สำหรับ TB/T2B Making"""
         conditions = []
+        justright_with_tb = {
+            "Justright",
+            "Justright(w+-) พร้อม TB",
+            "Justright(ตามQNR) พร้อม TB",
+        }
         
         # Original scale conditions
         for i in range(1, num_labels + 1):
             conditions.append(f"{var}={i}")
         
         # Making conditions based on direction
-        if num_labels == 5:
+        if num_labels == 4:
+            if direction == "Scale น้อยดี(-)":
+                # T2B=1|2, B2B=3|4
+                conditions.extend([
+                    f"{var}=1|{var}=2",
+                    f"{var}=3|{var}=4"
+                ])
+            elif direction == "Scale มากดี(+)":
+                # T2B=4|3, B2B=1|2
+                conditions.extend([
+                    f"{var}=4|{var}=3",
+                    f"{var}=1|{var}=2"
+                ])
+            elif direction in justright_with_tb:
+                conditions.extend([
+                    f"{var}=1|{var}=2",
+                    f"{var}=3|{var}=4"
+                ])
+            else:
+                conditions.extend(["NO_DIR"] * 2)
+                
+        elif num_labels in [5, 6]:
             if direction == "Scale น้อยดี(-)":
                 # TB=1, T2B=1|2, BB=5, B2B=4|5
+                high_code = num_labels
                 conditions.extend([
                     f"{var}=1",
                     f"{var}=1|{var}=2",
-                    f"{var}=5",
-                    f"{var}=4|{var}=5"
+                    f"{var}={high_code}",
+                    f"{var}={high_code-1}|{var}={high_code}"
                 ])
             elif direction == "Scale มากดี(+)":
                 # TB=5, T2B=5|4, BB=1, B2B=1|2
+                high_code = num_labels
                 conditions.extend([
-                    f"{var}=5",
-                    f"{var}=5|{var}=4",
+                    f"{var}={high_code}",
+                    f"{var}={high_code}|{var}={high_code-1}",
                     f"{var}=1",
                     f"{var}=1|{var}=2"
                 ])
-            elif direction == "Justright":
+            elif direction in justright_with_tb:
                 # Only T2B(1+2) and B2B(4+5) - Scale มากดีเสมอ
                 conditions.extend([
                     f"{var}=1|{var}=2",
-                    f"{var}=4|{var}=5"
+                    f"{var}={num_labels-1}|{var}={num_labels}"
                 ])
             else:
                 conditions.extend(["NO_DIR"] * 4)
                 
-        elif num_labels in [7, 10]:
+        elif num_labels in [7, 9, 10]:
             if direction == "Scale น้อยดี(-)":
                 if num_labels == 7:
                     conditions.extend([
@@ -928,14 +1018,15 @@ class ItemdefLoopDialog(QDialog):
                         f"{var}=6|{var}=7",
                         f"{var}=5|{var}=6|{var}=7"
                     ])
-                else:  # 10
+                else:  # 9/10
+                    high_code = num_labels
                     conditions.extend([
                         f"{var}=1",
                         f"{var}=1|{var}=2",
                         f"{var}=1|{var}=2|{var}=3",
-                        f"{var}=10",
-                        f"{var}=9|{var}=10",
-                        f"{var}=8|{var}=9|{var}=10"
+                        f"{var}={high_code}",
+                        f"{var}={high_code-1}|{var}={high_code}",
+                        f"{var}={high_code-2}|{var}={high_code-1}|{var}={high_code}"
                     ])
             elif direction == "Scale มากดี(+)":
                 if num_labels == 7:
@@ -947,26 +1038,28 @@ class ItemdefLoopDialog(QDialog):
                         f"{var}=1|{var}=2",
                         f"{var}=1|{var}=2|{var}=3"
                     ])
-                else:  # 10
+                else:  # 9/10
+                    high_code = num_labels
                     conditions.extend([
-                        f"{var}=10",
-                        f"{var}=10|{var}=9",
-                        f"{var}=10|{var}=9|{var}=8",
+                        f"{var}={high_code}",
+                        f"{var}={high_code}|{var}={high_code-1}",
+                        f"{var}={high_code}|{var}={high_code-1}|{var}={high_code-2}",
                         f"{var}=1",
                         f"{var}=1|{var}=2",
                         f"{var}=1|{var}=2|{var}=3"
                     ])
-            elif direction == "Justright":
+            elif direction in justright_with_tb:
                 # Only T2B(1+2) and B2B - Scale มากดีเสมอ
                 if num_labels == 7:
                     conditions.extend([
                         f"{var}=1|{var}=2",
                         f"{var}=6|{var}=7"
                     ])
-                else:  # 10
+                else:  # 9/10
+                    high_code = num_labels
                     conditions.extend([
                         f"{var}=1|{var}=2",
-                        f"{var}=9|{var}=10"
+                        f"{var}={high_code-1}|{var}={high_code}"
                     ])
             else:
                 conditions.extend(["NO_DIR"] * 6)
@@ -981,7 +1074,15 @@ class ItemdefLoopDialog(QDialog):
             return
         
         # Check variables with direction set
-        valid_directions = ["Scale น้อยดี(-)", "Scale มากดี(+)", "Justright"]
+        valid_directions = [
+            "Scale น้อยดี(-)",
+            "Scale มากดี(+)",
+            "Justright",
+            "Justright(w+-) ไม่ทำTB",
+            "Justright(w+-) พร้อม TB",
+            "Justright(ตามQNR) ไม่ทำTB",
+            "Justright(ตามQNR) พร้อม TB",
+        ]
         vars_with_direction = [
             var for var, data in self.scales_data.items() 
             if data.get('direction') in valid_directions
@@ -995,20 +1096,33 @@ class ItemdefLoopDialog(QDialog):
         
         # Generate making data
         self.making_data = {}
+        skipped_no_tb = 0
+        no_tb_directions = {"Justright(w+-) ไม่ทำTB", "Justright(ตามQNR) ไม่ทำTB"}
         for var in vars_with_direction:
             scale_info = self.scales_data[var]
             num_options = scale_info['num_options']
             direction = scale_info['direction']
             labels = scale_info.get('labels', [])
             
+            if direction in no_tb_directions:
+                skipped_no_tb += 1
+                continue
+            
             # Generate conditions
             conditions = self._generate_conditions(var, direction, num_options)
             
             # Making options based on scale and direction
-            if direction == "Justright":
+            if direction in ["Justright", "Justright(w+-) พร้อม TB", "Justright(ตามQNR) พร้อม TB"]:
                 # Only T2B(1+2) and B2B(4+5)
-                making_opts = ["(1+2)", "(4+5)"]
-            elif num_options == 5:
+                if num_options == 7:
+                    making_opts = ["(1+2)", "(6+7)"]
+                elif num_options in [9, 10]:
+                    making_opts = ["(1+2)", "(8+9)" if num_options == 9 else "(9+10)"]
+                else:
+                    making_opts = ["(1+2)", f"({num_options-1}+{num_options})"]
+            elif num_options == 4:
+                making_opts = self.MAKING_OPTIONS_4
+            elif num_options in [5, 6]:
                 making_opts = self.MAKING_OPTIONS_5
             else:
                 making_opts = self.MAKING_OPTIONS_7_10
@@ -1023,9 +1137,11 @@ class ItemdefLoopDialog(QDialog):
                 'making_labels': making_opts
             }
         
+        msg = f"สร้าง TB/T2B Making สำหรับ {len(self.making_data)} ตัวแปร"
+        if skipped_no_tb:
+            msg += f"\n(ข้าม {skipped_no_tb} ตัวแปร: เลือกแบบไม่ทำTB)"
         QMessageBox.information(self, "สร้าง Making สำเร็จ", 
-            f"สร้าง TB/T2B Making สำหรับ {len(self.making_data)} ตัวแปร\n\n"
-            "ข้อมูล Making จะถูกเพิ่มเมื่อ Export Itemdef")
+            f"{msg}\n\nข้อมูล Making จะถูกเพิ่มเมื่อ Export Itemdef")
 
     def group_selected(self):
         selected_rows = sorted(set(index.row() for index in self.table.selectedIndexes()))
@@ -1328,18 +1444,23 @@ class ItemdefLoopDialog(QDialog):
                                         try: code_map[int(float(k))] = v
                                         except: pass
                                    
-                                   # Calculate weights if this var has making data
+                                   # Calculate weights based on Direction (if any)
                                    weights = []
-                                   if var in self.making_data:
-                                        making_info = self.making_data[var]
-                                        num_opts = making_info['num_options']
-                                        direction = making_info['direction']
-                                        if direction == "Scale น้อยดี(-)":
-                                            weights = list(range(num_opts, 0, -1))
-                                        elif direction == "Scale มากดี(+)":
-                                            weights = list(range(1, num_opts + 1))
-                                        elif direction == "Justright":
-                                            weights = list(range(1, num_opts + 1))
+                                   scale_info = self.scales_data.get(var, {})
+                                   direction = scale_info.get('direction', '')
+                                   num_opts = scale_info.get('num_options', 0)
+                                   if direction == "Scale น้อยดี(-)":
+                                       weights = list(range(num_opts, 0, -1))
+                                   elif direction == "Scale มากดี(+)":
+                                       weights = list(range(1, num_opts + 1))
+                                   elif direction in ["Justright", "Justright(ตามQNR) ไม่ทำTB", "Justright(ตามQNR) พร้อม TB"]:
+                                       weights = list(range(1, num_opts + 1))
+                                   elif direction in ["Justright(w+-) ไม่ทำTB", "Justright(w+-) พร้อม TB"]:
+                                       half = num_opts // 2
+                                       if num_opts % 2 == 1:
+                                           weights = list(range(-half, 0)) + [0] + list(range(1, half + 1))
+                                       else:
+                                           weights = list(range(-half, 0)) + list(range(1, half + 1))
                                    
                                    for c in range(1, max_code + 1):
                                         ws.cell(row=current_row, column=col_idx['ValID'], value=c)
@@ -1771,10 +1892,11 @@ class GenPromtApp(QMainWindow):
             "🧑‍💼 พนักงานตัวน้อย",
             "👔 CEO"
         ])
+        self.model_combo.setCurrentIndex(1)  # ตั้ง "👔 CEO" เป็น default
         # Map display name to actual model
         self.model_map = {
             "🧑‍💼 พนักงานตัวน้อย": "google/gemini-2.5-flash-lite",
-            "👔 CEO": "google/gemini-3-flash-preview"
+            "👔 CEO": "xiaomi/mimo-v2-flash:free"
         }
         model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
@@ -1871,8 +1993,24 @@ class GenPromtApp(QMainWindow):
                 try:
                     if filepath.endswith('.docx'):
                         doc = Document(filepath)
-                        text = '\n'.join([p.text for p in doc.paragraphs])
-                        all_text.append(text)
+                        
+                        # === ดึงข้อมูลจาก PARAGRAPHS ===
+                        for p in doc.paragraphs:
+                            if p.text.strip():
+                                all_text.append(p.text)
+                        
+                        # === ดึงข้อมูลจาก TABLES (สำคัญมาก!) ===
+                        for table in doc.tables:
+                            for row in table.rows:
+                                row_text = []
+                                for cell in row.cells:
+                                    # ดึงข้อความทั้งหมดในเซลล์ (รวมหลายบรรทัด)
+                                    cell_text = cell.text.strip()
+                                    if cell_text:
+                                        row_text.append(cell_text)
+                                if row_text:
+                                    all_text.append('\t'.join(row_text))
+                                    
                     elif filepath.endswith('.xlsx'):
                         wb = openpyxl.load_workbook(filepath, data_only=True)
                         for sheet in wb.worksheets:
@@ -1886,6 +2024,11 @@ class GenPromtApp(QMainWindow):
             self.questionnaire_data = '\n'.join(all_text)
             names = [os.path.basename(f) for f in files]
             self.lbl_quest_file.setText('\n'.join(names))
+            
+            # === แสดงจำนวนข้อมูลที่โหลดได้ ===
+            line_count = len(all_text)
+            char_count = len(self.questionnaire_data)
+            print(f"✅ Loaded questionnaire: {line_count} lines, {char_count:,} characters")
             
     def load_spss_file(self):
         spss_path, _ = QFileDialog.getOpenFileName(
@@ -1915,15 +2058,14 @@ class GenPromtApp(QMainWindow):
                         df_value.to_excel(writer, index=False, sheet_name='Value')
                     
                     # Compute tab-separated text for prompts
-                    # Var sheet
+                    # Var sheet (send Name + VAR_THA)
                     var_lines = []
-                    # Header
                     var_lines.append(f"{df_var.columns[0]}\t{df_var.columns[1]}")
                     for _, row in df_var.iterrows():
                         var_lines.append(f"{row['Name']}\t{row['VAR_THA']}")
                     self.cat_program_data['var'] = '\n'.join(var_lines)
                     
-                    # Value sheet
+                    # Value sheet (send Variable + Value + Label_Th)
                     val_lines = []
                     val_lines.append(f"{df_value.columns[0]}\t{df_value.columns[1]}\t{df_value.columns[2]}")
                     for _, row in df_value.iterrows():
@@ -2023,7 +2165,7 @@ class GenPromtApp(QMainWindow):
                 return
                 
             if is_lite_mode:
-                model = "google/gemini-3-flash-preview" # Upgrade for pass 2 if in Lite mode
+                model = "xiaomi/mimo-v2-flash:free" # Upgrade for pass 2 if in Lite mode
                 status_msg = f"⏳ โจทย์ Pass 2/2: CEO กำลังดูงาน สำหรับ {len(self.jod_empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model # Stick to selected model
@@ -2142,7 +2284,7 @@ class GenPromtApp(QMainWindow):
                 return
                 
             if is_lite_mode:
-                model = "google/gemini-3-flash-preview"
+                model = "xiaomi/mimo-v2-flash:free"
                 status_msg = f"⏳ Pass 2/2: CEO กำลังดูงาน (Flash 3) สำหรับ {len(self.empty_rows_for_second_pass)} แถวที่ว่าง..."
             else:
                 model = selected_model
@@ -2165,6 +2307,40 @@ class GenPromtApp(QMainWindow):
         self.set_buttons_enabled(False)
         self.output_text.clear()
         self.current_ai_mode = mode
+        
+        # === SAVE PROMPT LOG ===
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # กำหนดชื่อไฟล์ตามประเภท prompt
+            if self.current_prompt_type == "jod":
+                log_filename = f"prompt_log_JOD_{timestamp}.txt"
+            elif self.current_prompt_type == "code":
+                log_filename = f"prompt_log_CODE_{timestamp}.txt"
+            else:
+                log_filename = f"prompt_log_{timestamp}.txt"
+            
+            # บันทึกในโฟลเดอร์เดียวกับไฟล์ SPSS หรือ Desktop
+            if hasattr(self, 'spss_filepath') and self.spss_filepath:
+                log_dir = os.path.dirname(self.spss_filepath)
+            else:
+                log_dir = os.path.expanduser("~/Desktop")
+            
+            log_path = os.path.join(log_dir, log_filename)
+            
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"=== PROMPT LOG ({self.current_prompt_type.upper()}) ===\n")
+                f.write(f"Timestamp: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Model: {model}\n")
+                f.write(f"Mode: {mode}\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(prompt)
+            
+            print(f"✅ Prompt log saved: {log_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to save prompt log: {e}")
+        # === END SAVE PROMPT LOG ===
         
         self.worker = AIWorker(prompt, model)
         self.worker.progress.connect(self.on_ai_progress)
@@ -2473,6 +2649,7 @@ class GenPromtApp(QMainWindow):
     def parse_ai_result(self, prompt_type):
         result = []
         lines = self.ai_result_text.strip().split('\n')
+        thai_re = re.compile(r"[\u0E00-\u0E7F]")
         
         for line in lines:
             line = line.strip()
@@ -2491,11 +2668,82 @@ class GenPromtApp(QMainWindow):
                 continue
                 
             if prompt_type == "jod" and len(cols) >= 2:
-                result.append({'Name': cols[0], 'VAR_ENG': cols[1] if len(cols) > 1 else ''})
+                var_eng = cols[1] if len(cols) > 1 else ''
+                if var_eng and thai_re.search(var_eng):
+                    var_eng = ''
+                # === VALIDATION: ตรวจสอบว่า VAR_ENG มีอยู่ในแบบสอบถามจริงหรือไม่ ===
+                if var_eng:
+                    var_eng = self._validate_english_text(var_eng)
+                result.append({'Name': cols[0], 'VAR_ENG': var_eng})
             elif prompt_type == "code" and len(cols) >= 3:
-                result.append({'Variable': cols[0], 'Value': cols[1], 'Label_EN': cols[2] if len(cols) > 2 else ''})
+                label_en = cols[2] if len(cols) > 2 else ''
+                if label_en and thai_re.search(label_en):
+                    label_en = ''
+                # === VALIDATION: ตรวจสอบว่า Label_EN มีอยู่ในแบบสอบถามจริงหรือไม่ ===
+                if label_en:
+                    label_en = self._validate_english_text(label_en)
+                result.append({'Variable': cols[0], 'Value': cols[1], 'Label_EN': label_en})
         
         return result
+    
+    def _validate_english_text(self, eng_text):
+        """
+        ตรวจสอบว่าข้อความภาษาอังกฤษที่ AI ให้มา มีอยู่ในแบบสอบถามจริงหรือไม่
+        ถ้าไม่มี จะ return '' (ค่าว่าง)
+        """
+        if not eng_text or not hasattr(self, 'questionnaire_data') or not self.questionnaire_data:
+            return eng_text  # ถ้าไม่มี questionnaire_data ให้ return ตามเดิม
+        
+        clean_text = eng_text.strip()
+        
+        # Normalize: แปลง whitespace หลายอันเป็น space เดียว และ lowercase
+        def normalize(text):
+            # แปลง en-dash, em-dash เป็น hyphen
+            text = text.replace('–', '-').replace('—', '-')
+            # ลบ newlines, tabs, multiple spaces
+            text = re.sub(r'\s+', ' ', text)
+            return text.lower().strip()
+        
+        questionnaire_normalized = normalize(self.questionnaire_data)
+        
+        # === ตรวจสอบพิเศษสำหรับ (Rxx) pattern ===
+        rxx_match = re.match(r'^\(R\d+\)', clean_text)
+        if rxx_match:
+            rxx_code = rxx_match.group(0).lower()  # เช่น "(r310)"
+            # ถ้า (Rxx) มีอยู่ในแบบสอบถาม -> ผ่าน
+            if rxx_code in questionnaire_normalized:
+                return eng_text  # พบ (Rxx) ในแบบสอบถาม - ใช้ได้
+        
+        # ลบ prefix เช่น "S37) " หรือ "Q1A) " ออกก่อนตรวจสอบ
+        prefix_match = re.match(r'^[A-Za-z0-9_]+\)\s*', clean_text)
+        if prefix_match:
+            clean_text = clean_text[prefix_match.end():].strip()
+        
+        if not clean_text:
+            return ''
+        
+        clean_text_normalized = normalize(clean_text)
+        
+        # ตรวจสอบแบบตรงตัว (exact substring)
+        if clean_text_normalized in questionnaire_normalized:
+            return eng_text  # พบในแบบสอบถาม - ใช้ได้
+        
+        # ตรวจสอบ 3 คำแรก (ผ่อนคลายจาก 5 คำ)
+        words = clean_text_normalized.split()
+        if len(words) >= 3:
+            first_3_words = ' '.join(words[:3])
+            if first_3_words in questionnaire_normalized:
+                return eng_text  # พบบางส่วนในแบบสอบถาม - ใช้ได้
+        
+        # ตรวจสอบ 2 คำแรก (ผ่อนคลายมากขึ้นสำหรับข้อความสั้น)
+        if len(words) >= 2:
+            first_2_words = ' '.join(words[:2])
+            if first_2_words in questionnaire_normalized:
+                return eng_text  # พบบางส่วนในแบบสอบถาม - ใช้ได้
+        
+        # ไม่พบในแบบสอบถาม - AI อาจแปลเอง - return ค่าว่าง
+        print(f"⚠️ VALIDATION: ไม่พบข้อความนี้ในแบบสอบถาม (อาจเป็นการแปลเอง): {eng_text[:80]}...")
+        return ''
         
     def download_excel(self):
         if not self.ai_result_text:

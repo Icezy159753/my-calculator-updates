@@ -84,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.40"
+CURRENT_VERSION = "1.1.41"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -526,7 +526,7 @@ def show_error_dialog(title, text):
 PROGRAMS = [
     {
         "id": "โปรแกรมfull Itemdef+Genpromt Beta V1",
-        "name": "โปรแกรมfull Itemdef+Genpromt Beta V1g",
+        "name": "โปรแกรมfull Itemdef+Genpromt Beta V1",
         "description": "เอาไว้ แปะภาษาENG+สร้างItemdefและT2B แบบเต็ม",
         "type": "local_py_module",
         "module_path": "108_GenPromt_NewBeta", # <--- ปรับชื่อ module_path
