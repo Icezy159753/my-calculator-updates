@@ -289,10 +289,10 @@ QPushButton {
     color: #cdd6f4;
     border: 2px solid transparent;
     border-radius: 12px;
-    padding: 14px 28px;
+    padding: 8px 16px;
     font-weight: bold;
-    font-size: 14px;
-    min-height: 28px;
+    font-size: 13px;
+    min-height: 24px;
 }
 QPushButton:hover {
     background-color: #585b70;
@@ -605,13 +605,26 @@ class ItemdefLoopDialog(QDialog):
         # Auto-Run MA Grouping (Silent)
         self.auto_group_ma(silent=True)
         
-        # Export Button
+        # Export Buttons Layout
+        export_layout = QHBoxLayout()
+        
+        # Export Rawdata
+        btn_export_raw = QPushButton("📄 Export Rawdata (.xlsx)")
+        btn_export_raw.setObjectName("btnTeal")
+        btn_export_raw.setFixedHeight(45)
+        btn_export_raw.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        btn_export_raw.clicked.connect(self.export_rawdata)
+        export_layout.addWidget(btn_export_raw)
+
+        # Export Itemdef
         btn_export = QPushButton("💾 Export Itemdef Excel (with Template)")
         btn_export.setObjectName("btnGreen")
-        btn_export.setFixedHeight(50)
-        btn_export.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        btn_export.setFixedHeight(45)
+        btn_export.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         btn_export.clicked.connect(self.export_itemdef)
-        layout.addWidget(btn_export)
+        export_layout.addWidget(btn_export)
+        
+        layout.addLayout(export_layout)
         
         # Bottom Tools (Load/Save Config)
         config_layout = QHBoxLayout()
@@ -1164,7 +1177,7 @@ class ItemdefLoopDialog(QDialog):
             group_name = group_name.strip()
             
             # Ask for Loop Type
-            items = ["Loop(SA)", "Loop(Text)", "Loop(Numeric)", "MA", "SA"]
+            items = ["Loop(SA)", "Loop(MA)", "Loop(Text)", "Loop(Numeric)", "MA", "SA"]
             item, ok_type = QInputDialog.getItem(self, "เลือกประเภท Loop/Group", "Type:", items, 0, False)
             
             if ok_type and item:
@@ -1296,6 +1309,59 @@ class ItemdefLoopDialog(QDialog):
             
             processed_groups = set()
             
+            # Helper to write Making Data
+            from openpyxl.styles import PatternFill
+            blue_fill = PatternFill(start_color="89B4FA", end_color="89B4FA", fill_type="solid")
+
+            def write_making_data(current_r, target_var, label_txt):
+                if target_var in self.making_data:
+                    info = self.making_data[target_var]
+                    mk_var = info['making_var']
+                    n_opts = info['num_options']
+                    conds = info['conditions']
+                    orig_lbls = info['original_labels']
+                    mk_lbls = info['making_labels']
+                    
+                    # Write Header
+                    ws.cell(row=current_r, column=col_idx['Item'], value="Item")
+                    ws.cell(row=current_r, column=col_idx['Fmt'], value="Making")
+                    ws.cell(row=current_r, column=col_idx['Type'], value="MA")
+                    ws.cell(row=current_r, column=col_idx['Disp'], value="O")
+                    ws.cell(row=current_r, column=col_idx['ID'], value=mk_var)
+                    ws.cell(row=current_r, column=col_idx['Label'], value=label_txt)
+                    ws.cell(row=current_r, column=15, value=target_var)
+                    ws.cell(row=current_r, column=18, value="Follow the condition items")
+                    
+                    start_r = current_r
+                    current_r += 1
+                    
+                    # Orig Options
+                    for i, obl in enumerate(orig_lbls):
+                        ws.cell(row=current_r, column=col_idx['ValID'], value=i+1)
+                        ws.cell(row=current_r, column=col_idx['ValLbl'], value=obl)
+                        ws.cell(row=current_r, column=col_idx['Valid'], value="Valid")
+                        if i < len(conds):
+                            ws.cell(row=current_r, column=col_idx.get('Cat', 10)+6, value=conds[i]) # Col 16
+                        current_r += 1
+                        
+                    # Making Options
+                    start_cond_idx = n_opts
+                    for j, mbl in enumerate(mk_lbls):
+                        ws.cell(row=current_r, column=col_idx['ValID'], value=n_opts + j + 1)
+                        ws.cell(row=current_r, column=col_idx['ValLbl'], value=mbl)
+                        ws.cell(row=current_r, column=col_idx['Valid'], value="Valid")
+                        c_idx = start_cond_idx + j
+                        if c_idx < len(conds):
+                             ws.cell(row=current_r, column=col_idx.get('Cat', 10)+6, value=conds[c_idx])
+                        current_r += 1
+                        
+                    # Fill Blue
+                    for r in range(start_r, current_r):
+                        for c in range(1, 20):
+                            ws.cell(row=r, column=c).fill = blue_fill
+                            
+                return current_r
+
             for index, var in enumerate(vars):
                 # Check Overrides
                 ov = overrides.get(var, {})
@@ -1317,6 +1383,18 @@ class ItemdefLoopDialog(QDialog):
                     
                     # Handle "MA" separately as a Single Item (not Loop)
                     if grp_type == "MA" or grp_type == "SA": 
+                         # Fix: Check if this is a "Broken" MA group (e.g. O1 is moved to a Loop)
+                         # If the first member is not _O1, we skip exporting this group entirely.
+                         if grp_type == "MA" and members:
+                             start_node = members[0]
+                             match = re.search(r'_O(\d+)$', start_node)
+                             if match:
+                                 idx = int(match.group(1))
+                                 if idx > 1:
+                                     # This is a tail of an MA group whose head was moved. Skip.
+                                     processed_groups.add(grp_name)
+                                     continue
+
                          # Treat as Single Item but with Group Name
                          ws.cell(row=current_row, column=col_idx['Item'], value="Item")
                          ws.cell(row=current_row, column=col_idx['Fmt'], value="Survey")
@@ -1349,7 +1427,13 @@ class ItemdefLoopDialog(QDialog):
                                         ws.cell(row=current_row, column=col_idx['ValLbl'], value=code_map.get(c, ""))
                                         ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
                                         current_row += 1
-                         
+                        
+                         # Write Making for Members
+                         for m in members:
+                             m_ov = overrides.get(m, {})
+                             m_lbl = m_ov.get('label', labels[vars.index(m)] if m in vars else "")
+                             current_row = write_making_data(current_row, m, m_lbl)
+                          
                     else:
                         # Real Loop
                         # 1. Write Header
@@ -1394,12 +1478,106 @@ class ItemdefLoopDialog(QDialog):
                                        for k, v in val_labels.items():
                                             try: code_map[int(float(k))] = v
                                             except: pass
-                                            
+                                       
+                                       # Calculate weights based on Direction (if any for first member)
+                                       weights = []
+                                       scale_info = self.scales_data.get(members[0], {})
+                                       direction = scale_info.get('direction', '')
+                                       num_opts = scale_info.get('num_options', 0)
+                                       if direction == "Scale น้อยดี(-)":
+                                           weights = list(range(num_opts, 0, -1))
+                                       elif direction == "Scale มากดี(+)":
+                                           weights = list(range(1, num_opts + 1))
+                                       elif direction in ["Justright", "Justright(ตามQNR) ไม่ทำTB", "Justright(ตามQNR) พร้อม TB"]:
+                                           weights = list(range(1, num_opts + 1))
+                                       elif direction in ["Justright(w+-) ไม่ทำTB", "Justright(w+-) พร้อม TB"]:
+                                           half = num_opts // 2
+                                           if num_opts % 2 == 1:
+                                               weights = list(range(-half, 0)) + [0] + list(range(1, half + 1))
+                                           else:
+                                               weights = list(range(-half, 0)) + list(range(1, half + 1))
+
                                        for c in range(1, max_code + 1):
                                             ws.cell(row=current_row, column=col_idx['ValID'], value=c)
                                             ws.cell(row=current_row, column=col_idx['ValLbl'], value=code_map.get(c, ""))
                                             ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
+                                            # Weight column (J=10)
+                                            if weights and c <= len(weights):
+                                                ws.cell(row=current_row, column=10, value=weights[c-1])
                                             current_row += 1
+                        
+                        # Write Making as a LOOP (Loop(MA))
+                        # Check if first member has making data (assume consistent for group)
+                        if members and members[0] in self.making_data:
+                             mk_info = self.making_data[members[0]] 
+                             mk_grp_name = f"N{grp_name}"
+                             
+                             # 1. Header
+                             ws.cell(row=current_row, column=col_idx['Item'], value="Item")
+                             ws.cell(row=current_row, column=col_idx['Fmt'], value="Making")
+                             ws.cell(row=current_row, column=col_idx['Type'], value="Loop(MA)")
+                             ws.cell(row=current_row, column=col_idx['Disp'], value="O")
+                             ws.cell(row=current_row, column=col_idx['ID'], value=mk_grp_name)
+                             ws.cell(row=current_row, column=col_idx['Label'], value=final_label)  # Group Label
+                             # Statistic = Original Group Name
+                             ws.cell(row=current_row, column=15, value=grp_name)
+                             # BaseType = Follow condition
+                             ws.cell(row=current_row, column=18, value="Follow the condition items")
+                             
+                             current_row += 1
+                             
+                             # 2. Sub Items
+                             for i, mem_var in enumerate(members, 1):
+                                  mem_ov = overrides.get(mem_var, {})
+                                  mem_label = mem_ov.get('label', labels[vars.index(mem_var)] if mem_var in vars else "")
+                                  sub_id = f"{mk_grp_name}({i})"
+                                  
+                                  ws.cell(row=current_row, column=col_idx['LoopSub'], value="Loop sub")
+                                  ws.cell(row=current_row, column=col_idx['ID'], value=sub_id)
+                                  ws.cell(row=current_row, column=col_idx['Label'], value=mem_label)
+                                  ws.cell(row=current_row, column=col_idx['Disp'], value="O")
+                                  current_row += 1
+
+                             # 3. Value Labels (Making Options)
+                             # Use data from first member BUT replace var name with GROUP name in conditions
+                             n_opts = mk_info['num_options']
+                             conds = mk_info['conditions']
+                             orig_lbls = mk_info['original_labels']
+                             mk_lbls = mk_info['making_labels']
+                             original_var_name = mk_info['original_var'] # This is what we need to replace
+                             
+                             # Orig Options
+                             for i, obl in enumerate(orig_lbls):
+                                ws.cell(row=current_row, column=col_idx['ValID'], value=i+1)
+                                ws.cell(row=current_row, column=col_idx['ValLbl'], value=obl)
+                                ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
+                                if i < len(conds):
+                                    # Replace var name with group name
+                                    # Example: l_1_b5=1 -> B5=1
+                                    # Use regex or simple replace if simple structure
+                                    # Condition e.g. "var=1|var=2", so replacing var with grp_name works
+                                    new_cond = conds[i].replace(original_var_name, grp_name)
+                                    ws.cell(row=current_row, column=col_idx.get('Cat', 10)+6, value=new_cond) # Col 16
+                                current_row += 1
+                                
+                             # Making Options
+                             start_cond_idx = n_opts
+                             for j, mbl in enumerate(mk_lbls):
+                                ws.cell(row=current_row, column=col_idx['ValID'], value=n_opts + j + 1)
+                                ws.cell(row=current_row, column=col_idx['ValLbl'], value=mbl)
+                                ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
+                                c_idx = start_cond_idx + j
+                                if c_idx < len(conds):
+                                     new_cond = conds[c_idx].replace(original_var_name, grp_name)
+                                     ws.cell(row=current_row, column=col_idx.get('Cat', 10)+6, value=new_cond)
+                                current_row += 1
+                            
+                             # Fill Blue
+                             rows_count = 1 + len(members) + len(orig_lbls) + len(mk_lbls)
+                             start_fill = current_row - rows_count
+                             for r in range(start_fill, current_row):
+                                 for c in range(1, 20):
+                                     ws.cell(row=r, column=c).fill = blue_fill
                                         
                     processed_groups.add(grp_name)
                     
@@ -1471,59 +1649,9 @@ class ItemdefLoopDialog(QDialog):
                                             ws.cell(row=current_row, column=10, value=weights[c-1])
                                         current_row += 1
                     
-                    # ============ Write TB/T2B Making if exists ============
-                    if var in self.making_data:
-                        from openpyxl.styles import PatternFill
-                        blue_fill = PatternFill(start_color="89B4FA", end_color="89B4FA", fill_type="solid")
-                        
-                        making_info = self.making_data[var]
-                        making_var = making_info['making_var']
-                        num_options = making_info['num_options']
-                        direction = making_info['direction']
-                        conditions = making_info['conditions']
-                        original_labels = making_info['original_labels']
-                        making_labels = making_info['making_labels']
-                        
-                        making_start_row = current_row
-                        
-                        # Write Making Header
-                        ws.cell(row=current_row, column=col_idx['Item'], value="Item")
-                        ws.cell(row=current_row, column=col_idx['Fmt'], value="Making")
-                        ws.cell(row=current_row, column=col_idx['Type'], value="MA")
-                        ws.cell(row=current_row, column=col_idx['Disp'], value="O")
-                        ws.cell(row=current_row, column=col_idx['ID'], value=making_var)
-                        ws.cell(row=current_row, column=col_idx['Label'], value=final_label)
-                        # Statistic column (O=15) = original var name (keep case)
-                        ws.cell(row=current_row, column=15, value=var)
-                        # BaseType column (R=18)
-                        ws.cell(row=current_row, column=18, value="Follow the condition items")
-                        current_row += 1
-                        
-                        # Write Original Scale Options with conditions (no Weight here)
-                        for i, lbl in enumerate(original_labels):
-                            ws.cell(row=current_row, column=col_idx['ValID'], value=i+1)
-                            ws.cell(row=current_row, column=col_idx['ValLbl'], value=lbl)
-                            ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
-                            # Conditions column (P=16)
-                            if i < len(conditions):
-                                ws.cell(row=current_row, column=16, value=conditions[i])
-                            current_row += 1
-                        
-                        # Write TB/T2B/BB/B2B Options
-                        start_cond_idx = num_options
-                        for j, making_lbl in enumerate(making_labels):
-                            ws.cell(row=current_row, column=col_idx['ValID'], value=num_options + j + 1)
-                            ws.cell(row=current_row, column=col_idx['ValLbl'], value=making_lbl)
-                            ws.cell(row=current_row, column=col_idx['Valid'], value="Valid")
-                            cond_idx = start_cond_idx + j
-                            if cond_idx < len(conditions):
-                                ws.cell(row=current_row, column=16, value=conditions[cond_idx])
-                            current_row += 1
-                        
-                        # Apply blue fill to all Making rows
-                        for r in range(making_start_row, current_row):
-                            for c in range(1, 20):
-                                ws.cell(row=r, column=c).fill = blue_fill
+                    # Single Var Making
+                    current_row = write_making_data(current_row, var, final_label)
+
 
             # Write END marker
             ws.cell(row=current_row, column=col_idx['Item'], value="End")
@@ -1538,6 +1666,46 @@ class ItemdefLoopDialog(QDialog):
             QMessageBox.critical(self, "Error", f"เกิดข้อผิดพลาดในการ Export:\n{e}")
             import traceback
             traceback.print_exc()
+
+    def export_rawdata(self):
+        """Export original SPSS data to Excel"""
+        if not self.spss_filepath:
+            return
+            
+        default_name = f"{os.path.splitext(os.path.basename(self.spss_filepath))[0]}_Rawdata.xlsx"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "บันทึกไฟล์ Rawdata Excel", 
+            default_name, 
+            "Excel Files (*.xlsx)"
+        )
+        
+        if save_path:
+            # Show Progress
+            from PyQt6.QtWidgets import QProgressDialog
+            from PyQt6.QtCore import Qt as QtCore_Qt
+            progress = QProgressDialog("กำลังอ่านและบันทึกไฟล์ Rawdata...", None, 0, 0, self)
+            progress.setWindowTitle("รอสักครู่")
+            progress.setWindowModality(QtCore_Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
+            QApplication.processEvents()
+            
+            try:
+                # Read SPSS using pyreadstat (already imported?)
+                # We need to re-read to get dataframe if we didn't store it?
+                # Actually, usually we read meta only first?
+                # Let's check imports. Assuming pyreadstat is available.
+                
+                df, meta = pyreadstat.read_sav(self.spss_filepath)
+                df.to_excel(save_path, index=False)
+                
+                progress.close()
+                QMessageBox.information(self, "สำเร็จ", f"บันทึก Rawdata เรียบร้อย:\n{save_path}")
+                
+            except Exception as e:
+                progress.close()
+                QMessageBox.critical(self, "Error", f"เกิดข้อผิดพลาดในการ Export Rawdata:\n{e}")
 
 class AIWorker(QThread):
     """Thread สำหรับเรียก API แบบ non-blocking"""
