@@ -1,4 +1,5 @@
-from PyQt6 import QtCore, QtGui, QtWidgets
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import pandas as pd
 import pyreadstat
 import re
@@ -19,7 +20,6 @@ lower_to_original_map = {}
 current_df = None
 condition_counts = {} # <--- เพิ่มตัวแปรนี้
 spss_meta = None # <--- เพิ่มตัวแปร global สำหรับเก็บ Metadata
-STRICT_MODE = True  # ถ้าต้องการปิดโหมดเข้มงวดให้ตั้งเป็น False
 
 # --- Constants ---
 HELP_TEXT = (
@@ -60,107 +60,6 @@ HELP_TEXT = (
     "  (s8_1_O=12 | s8_2_O=12) & s4_range=3\n"
     "  AGE > 25 AND INCOME <= 50000\n"
 )
-
-# --- UI Helpers (PyQt6) ---
-ui = None
-
-class UiVar:
-    """Simple get/set wrapper to replace Tkinter StringVar behavior."""
-    def __init__(self, getter=None, setter=None):
-        self._getter = getter
-        self._setter = setter
-        self._value = ""
-
-    def get(self):
-        return self._getter() if self._getter else self._value
-
-    def set(self, value):
-        self._value = value if value is not None else ""
-        if self._setter:
-            self._setter(self._value)
-
-class SweetAlert(QtWidgets.QDialog):
-    def __init__(self, title, message, kind="info", buttons=("OK",), parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setModal(True)
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.FramelessWindowHint)
-        self._result = None
-
-        root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(16)
-
-        header = QtWidgets.QHBoxLayout()
-        icon_label = QtWidgets.QLabel()
-        icon_label.setFixedSize(36, 36)
-        icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        icon_label.setObjectName("iconLabel")
-        header.addWidget(icon_label)
-
-        title_label = QtWidgets.QLabel(title)
-        title_label.setObjectName("titleLabel")
-        header.addWidget(title_label)
-        header.addStretch(1)
-        root.addLayout(header)
-
-        msg = QtWidgets.QLabel(message)
-        msg.setWordWrap(True)
-        msg.setObjectName("messageLabel")
-        root.addWidget(msg)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.addStretch(1)
-        for b in buttons:
-            btn = QtWidgets.QPushButton(b)
-            btn.clicked.connect(self._make_handler(b))
-            btn_row.addWidget(btn)
-        root.addLayout(btn_row)
-
-        color_map = {
-            "info": "#3b82f6",
-            "success": "#16a34a",
-            "warning": "#f59e0b",
-            "error": "#ef4444",
-            "question": "#6366f1",
-        }
-        accent = color_map.get(kind, "#3b82f6")
-        icon_label.setStyleSheet(
-            f"background:{accent};color:white;border-radius:18px;font-weight:bold;"
-        )
-        icon_label.setText("!")
-
-        self.setStyleSheet("""
-            QDialog { background: #ffffff; border-radius: 12px; }
-            QLabel#titleLabel { font-size: 14px; font-weight: 700; color: #111827; }
-            QLabel#messageLabel { font-size: 12px; color: #374151; }
-            QPushButton {
-                background: #111827; color: white; border: none; padding: 8px 16px;
-                border-radius: 8px; font-weight: 600;
-            }
-            QPushButton:hover { background: #0b1220; }
-        """)
-
-        self.adjustSize()
-
-    def _make_handler(self, label):
-        def handler():
-            self._result = label
-            self.accept()
-        return handler
-
-    @property
-    def result(self):
-        return self._result
-
-def set_button_enabled(btn, enabled):
-    if btn is not None:
-        btn.setEnabled(enabled)
-
-def process_events():
-    app = QtWidgets.QApplication.instance()
-    if app:
-        app.processEvents()
 
 # --- Helper Functions ---
 
@@ -349,18 +248,10 @@ def expand_wildcard(expr, original_cols, lower_to_orig_map):
         # --- กรณี: ค่าเป็นตัวเลขเดี่ยว ---
         elif re.fullmatch(r'\d+', val_str):
             val_num = val_str
-            if op_raw == '=' or op_raw == '==':
-                op, joiner = '==', ' | '
-                parts = [f"(`{c_orig}` {op} {val_num})" for c_orig in cols_original_case]
-            elif op_raw == '!=':
-                joiner = ' & '
-                if STRICT_MODE:
-                    # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                    parts = [f"((`{c_orig}`.notnull()) & (`{c_orig}` != '') & (`{c_orig}` != {val_num}))"
-                             for c_orig in cols_original_case]
-                else:
-                    parts = [f"(`{c_orig}` != {val_num})" for c_orig in cols_original_case]
+            if op_raw == '=' or op_raw == '==': op, joiner = '==', ' | '
+            elif op_raw == '!=': op, joiner = '!=', ' & '
             else: raise ValueError(f"Operator '{op_raw}' กับตัวเลข '{val_num}' ใน wildcard ไม่รองรับ")
+            parts = [f"(`{c_orig}` {op} {val_num})" for c_orig in cols_original_case]
 
         # --- กรณี: ค่าเป็น List/Range ---
         elif re.fullmatch(r'[\d,\s-]+', val_str):
@@ -374,11 +265,7 @@ def expand_wildcard(expr, original_cols, lower_to_orig_map):
                 col_expr_template = "`{c_orig}`.isin({nums})"
             elif op_raw == '!=':
                 joiner = ' & '
-                if STRICT_MODE:
-                    # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                    col_expr_template = "((`{c_orig}`.notnull()) & (`{c_orig}` != '') & ~(`{c_orig}`.isin({nums})))"
-                else:
-                    col_expr_template = "~(`{c_orig}`.isin({nums}))"
+                col_expr_template = "~(`{c_orig}`.isin({nums}))"
             else: raise ValueError(f"Operator '{op_raw}' กับ list/range '{val_str}' ใน wildcard ไม่รองรับ")
 
             nums_repr = repr(nums_list)
@@ -458,13 +345,8 @@ def auto_convert(expr, lower_to_orig_map):
         except ValueError as e: raise ValueError(f"'{vals_str}': {e}") # Propagate parse error
         op = '==' if op_raw == '=' else op_raw # Convert = to ==
         nums_str = [str(n) for n in nums]
-        if op == '==':
-            return f"({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str}))"
-        elif op == '!=':
-            if STRICT_MODE:
-                # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                return f"(({var_quoted}.notnull()) & ({var_quoted} != '') & ~(({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str}))))"
-            return f"~(({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str})))"
+        if op == '==': return f"({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str}))"
+        elif op == '!=': return f"~(({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str})))"
         else: return m.group(0) # Should not happen if regex is correct
     expr = re.sub(r'\b(?<![`\w.])(\w+)(?![._\w])\s*([=!]?=)\s*([\d,\s-]+)\b', repl_list_range, expr)
 
@@ -486,11 +368,6 @@ def auto_convert(expr, lower_to_orig_map):
                  val_str_unquoted = val_str[1:-1]
             else: val_str_unquoted = val_str
             val_final = repr(val_str_unquoted) # Safely quote the string content
-        if op_final == '!=':
-            if STRICT_MODE:
-                # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                return f"(({var_quoted}.notnull()) & ({var_quoted} != '') & ({var_quoted} {op_final} {val_final}))"
-            return f"{var_quoted} {op_final} {val_final}"
         return f"{var_quoted} {op_final} {val_final}"
     # Regex to match variable <op> value (run last) - includes quoted strings
     expr = re.sub(r"""
@@ -610,11 +487,11 @@ def open_multi_excel(df_dict, counts_dict, filename_base="Result"):
     if not df_dict:
         # แม้ไม่มี df_dict แต่ก็อาจจะมี counts ที่ไม่ใช่ 0 (กรณี Error หรือ N/A)
         # แต่โดยทั่วไป ถ้า df_dict ว่างเปล่า หมายถึงไม่มีเงื่อนไขที่ Count > 0
-        ui.show_info("ไม่มีข้อมูล", "ไม่มีเงื่อนไขใดที่มีข้อมูล (Count > 0) ที่จะส่งออก")
+        messagebox.showinfo("ไม่มีข้อมูล", "ไม่มีเงื่อนไขใดที่มีข้อมูล (Count > 0) ที่จะส่งออก")
         return
 
     # ถามผู้ใช้ว่าจะบันทึกไฟล์ที่ไหนและชื่ออะไร
-    save_path = ui.save_file_dialog(
+    save_path = filedialog.asksaveasfilename(
         defaultextension='.xlsx',
         filetypes=[("Excel files", "*.xlsx")],
         initialfile=f'{filename_base}_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
@@ -731,82 +608,82 @@ def open_multi_excel(df_dict, counts_dict, filename_base="Result"):
             index_sheet.activate()
 
         # --- สิ้นสุดบล็อก with (ไฟล์ Excel ถูกบันทึก) ---
-        ui.show_info("สำเร็จ", f"ส่งออกข้อมูลไปยังไฟล์:\n{os.path.basename(save_path)}\nเรียบร้อยแล้ว (พร้อม Index, Count, และ Backlink)")
+        messagebox.showinfo("สำเร็จ", f"ส่งออกข้อมูลไปยังไฟล์:\n{os.path.basename(save_path)}\nเรียบร้อยแล้ว (พร้อม Index, Count, และ Backlink)")
 
         # ถามผู้ใช้ว่าต้องการเปิดไฟล์หรือไม่
-        if ui.ask_yes_no("เปิดไฟล์", "ต้องการเปิดไฟล์ Excel ที่ส่งออกหรือไม่?"):
+        if messagebox.askyesno("เปิดไฟล์", "ต้องการเปิดไฟล์ Excel ที่ส่งออกหรือไม่?"):
             try:
                 if sys.platform.startswith('win'): os.startfile(save_path)
                 elif sys.platform.startswith('darwin'): subprocess.run(["open", save_path], check=True)
                 else: subprocess.run(["xdg-open", save_path], check=True)
             except FileNotFoundError:
-                 ui.show_error("ไม่สามารถเปิดไฟล์", f"ไม่พบคำสั่งเปิดไฟล์สำหรับระบบปฏิบัติการของคุณ\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{save_path}")
+                 messagebox.showerror("ไม่สามารถเปิดไฟล์", f"ไม่พบคำสั่งเปิดไฟล์สำหรับระบบปฏิบัติการของคุณ\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{save_path}")
             except Exception as e:
-                ui.show_error("ไม่สามารถเปิดไฟล์", f"เกิดข้อผิดพลาดในการเปิดไฟล์: {e}\n\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{save_path}")
+                messagebox.showerror("ไม่สามารถเปิดไฟล์", f"เกิดข้อผิดพลาดในการเปิดไฟล์: {e}\n\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{save_path}")
 
     except Exception as e:
-         ui.show_error("ส่งออก Excel ล้มเหลว", f"เกิดข้อผิดพลาดระหว่างการเขียนไฟล์ Excel: {e}")
+         messagebox.showerror("ส่งออก Excel ล้มเหลว", f"เกิดข้อผิดพลาดระหว่างการเขียนไฟล์ Excel: {e}")
 # --- สิ้นสุดฟังก์ชัน open_multi_excel ---
 
 
 # --- UI Functions ---
 
 def update_table(counts=None):
-    """อัปเดตตารางเงื่อนไข (PyQt6)"""
-    if ui is None:
-        return
-    table = ui.conditions_table
-    table.setRowCount(0)
+    """อัปเดต Treeview ให้แสดงเงื่อนไขและ Count"""
+    # Clear existing items
+    for item in tree.get_children():
+        tree.delete(item)
+    # Insert new items with appropriate tags
     for idx, cond in enumerate(saved_conditions, start=1):
         cnt = counts.get(cond, '') if counts is not None else ''
-        row = table.rowCount()
-        table.insertRow(row)
-
-        id_item = QtWidgets.QTableWidgetItem(str(idx))
-        cond_item = QtWidgets.QTableWidgetItem(cond)
-        cnt_item = QtWidgets.QTableWidgetItem(str(cnt))
-
-        id_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        cnt_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        font_bold = QtGui.QFont()
-        font_bold.setBold(True)
-
-        if isinstance(cnt, (int, float)) and cnt > 0:
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#d11f1f")))
-            cnt_item.setFont(font_bold)
+        tag = ()
+        # Apply 'count_red' tag if count is a positive integer
+        if isinstance(cnt, (int, float)) and cnt > 0: # Allow float counts too? Changed to int/float check
+             tag = ('count_red',)
+        # Apply 'error_msg' tag if count indicates an error
         elif str(cnt) == "Error":
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#e67e22")))
-        elif str(cnt) == "N/A":
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#6b7280")))
+             tag = ('error_msg',)
+        elif str(cnt) == "N/A": # Tag for when data isn't loaded
+             tag = ('not_available',)
 
-        table.setItem(row, 0, id_item)
-        table.setItem(row, 1, cond_item)
-        table.setItem(row, 2, cnt_item)
+        tree.insert('', 'end', values=(idx, cond, cnt), tags=tag)
 
 def show_help():
     """แสดงคำอธิบายวิธีใช้งาน"""
-    if ui:
-        ui.show_info("วิธีใช้งาน", HELP_TEXT)
+    messagebox.showinfo("วิธีใช้งาน", HELP_TEXT)
 
 # --- ฟังก์ชัน load_file (เวอร์ชันแก้ไข Log ไม่ให้ซ้ำ) ---
 # --- ฟังก์ชัน load_file (เวอร์ชันแก้ไข Log ไม่ให้ซ้ำ และใช้ global UI vars) ---
 def load_file():
-    """เลือกและโหลดไฟล์ SPSS, อัปเดต Global Vars (รวม Metadata) และ UI"""
+    """เลือกและโหลดไฟล์ SPSS, อัปเดต Global Vars (รวม Metadata) และ UI
+       (เวอร์ชันแก้ไข: ลองหลาย Encoding และ Log แค่ครั้งเดียวเมื่อสำเร็จ)"""
+    # Access global variables needed
+    # file_var ควรจะถูกมองเห็นเป็น global ที่นี่แล้ว เนื่องจากถูกประกาศ global และ assign ค่าใน run_this_app()
     global current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, spss_meta, file_var
 
-    if ui is None:
-        return
+    # DEBUG: ตรวจสอบสถานะของ file_var ก่อนใช้งาน
+    print(f"DEBUG load_file: 'file_var' in globals()? { 'file_var' in globals()}")
+    if 'file_var' in globals():
+        print(f"DEBUG load_file: type(file_var) = {type(file_var)}, id(file_var) = {id(file_var)}")
+        if not isinstance(file_var, tk.StringVar):
+            print(f"DEBUG load_file: CRITICAL - file_var is NOT a StringVar!")
+    else:
+        print(f"DEBUG load_file: CRITICAL - file_var is NOT in globals!")
 
-    path = ui.open_file_dialog(
-        title="เลือกไฟล์ SPSS",
-        filter_text="SPSS files (*.sav);;All files (*.*)"
-    )
+
+    path = filedialog.askopenfilename(filetypes=[("SPSS files", "*.sav"), ("All files", "*.*")])
     if not path:
         add_log("ยกเลิกการเลือกไฟล์")
-        return
+        return # User cancelled
 
-    file_var.set(path)
+    try:
+        # ทดลอง .set() ใน try-except block เพื่อดูว่า error เกิดตรงนี้จริงไหม
+        file_var.set(path) # Show selected path in UI
+    except Exception as e_set:
+        print(f"DEBUG load_file: ERROR during file_var.set(path): {e_set}")
+        messagebox.showerror("Error Setting File Path", f"Could not set file path in UI: {e_set}")
+        # อาจจะ return หรือจัดการ error เพิ่มเติมที่นี่
+        return
 
 
     df, meta, error_msg_load = None, None, None # Initialize
@@ -847,12 +724,13 @@ def load_file():
 
     # --- ส่วนจัดการผลลัพธ์ UI, global vars (เหมือนเดิม) ---
     if error_msg_load or df is None:
-        ui.show_error("โหลดไฟล์ SPSS ล้มเหลว", error_msg_load or "ไม่สามารถโหลด DataFrame ได้")
+        messagebox.showerror("โหลดไฟล์ SPSS ล้มเหลว", error_msg_load or "ไม่สามารถโหลด DataFrame ได้")
         # Reset global state on failure
         current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map = None, [], set(), {}
         condition_counts = {}
         spss_meta = None
-        file_var.set("")
+        if 'file_var' in globals() and isinstance(file_var, tk.StringVar): # ตรวจสอบก่อน set ค่าว่าง
+            file_var.set("")
         update_table()
     else:
         # โหลดสำเร็จแล้ว...
@@ -862,7 +740,7 @@ def load_file():
         lower_df_columns_set = {c.lower() for c in original_df_columns_list}
         lower_to_original_map = {c.lower(): c for c in original_df_columns_list}
         condition_counts = {}
-        ui.show_info("สำเร็จ", f"โหลดไฟล์ SPSS:\n{os.path.basename(path)}\nเรียบร้อยแล้ว (ใช้ Encoding: {successful_encoding}) ({len(df)} แถว)")
+        messagebox.showinfo("สำเร็จ", f"โหลดไฟล์ SPSS:\n{os.path.basename(path)}\nเรียบร้อยแล้ว (ใช้ Encoding: {successful_encoding}) ({len(df)} แถว)")
 
         # Recalculate counts...
         if saved_conditions:
@@ -870,7 +748,7 @@ def load_file():
             condition_counts = counts_result if counts_result else {}
             update_table(condition_counts)
             if error_summary:
-                ui.show_warning("พบข้อผิดพลาด", f"บางเงื่อนไขมีปัญหาในการประมวลผลกับข้อมูลใหม่:\n{error_summary}")
+                messagebox.showwarning("พบข้อผิดพลาด", f"บางเงื่อนไขมีปัญหาในการประมวลผลกับข้อมูลใหม่:\n{error_summary}")
         else:
             update_table()
 
@@ -881,19 +759,19 @@ def save_condition():
     global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts # เพิ่ม condition_counts
     cond = condition_var.get().strip()
     if not cond:
-        ui.show_warning("แจ้งเตือน", "กรุณากรอกเงื่อนไขก่อนบันทึก")
+        messagebox.showwarning("แจ้งเตือน", "กรุณากรอกเงื่อนไขก่อนบันทึก")
         return
 
     # Validate condition before saving if data is loaded
     if current_df is not None:
         error_msg = validate_condition(cond, original_df_columns_list, lower_df_columns_set, lower_to_original_map)
         if error_msg:
-            ui.show_error("เงื่อนไขไม่ถูกต้อง", f"ไม่สามารถบันทึกเงื่อนไข:\n'{cond}'\n\nข้อผิดพลาด: {error_msg}\n\nกรุณาแก้ไขก่อนบันทึก")
+            messagebox.showerror("เงื่อนไขไม่ถูกต้อง", f"ไม่สามารถบันทึกเงื่อนไข:\n'{cond}'\n\nข้อผิดพลาด: {error_msg}\n\nกรุณาแก้ไขก่อนบันทึก")
             return
 
     # Check for duplicates
     if cond in saved_conditions:
-         ui.show_info("ข้อมูลซ้ำ", "เงื่อนไขนี้ถูกบันทึกไว้แล้ว")
+         messagebox.showinfo("ข้อมูลซ้ำ", "เงื่อนไขนี้ถูกบันทึกไว้แล้ว")
          condition_var.set('')
          return
 
@@ -918,16 +796,24 @@ def delete_condition():
     """ลบเงื่อนไขที่เลือกและอัปเดต UI"""
     global current_df, saved_conditions, condition_counts # เพิ่ม condition_counts
 
-    if ui is None:
+    selected_items = tree.selection()
+    if not selected_items:
+        messagebox.showwarning("ไม่ได้เลือก", "กรุณาเลือกเงื่อนไขที่ต้องการลบ")
         return
 
-    conditions_to_delete_texts = ui.get_selected_conditions()
+    conditions_to_delete_texts = []
+    for item_id in selected_items:
+        if tree.exists(item_id):
+             values = tree.item(item_id, 'values')
+             if values and len(values) > 1:
+                 conditions_to_delete_texts.append(values[1])
+
     if not conditions_to_delete_texts:
-        ui.show_warning("ไม่ได้เลือก", "กรุณาเลือกเงื่อนไขที่ต้องการลบ")
-        return
+         messagebox.showerror("ผิดพลาด", "ไม่พบข้อความเงื่อนไขที่เลือก")
+         return
 
     confirm_msg = f"ต้องการลบ {len(conditions_to_delete_texts)} เงื่อนไข?\n\n" + "\n".join([f"- {c[:70]}{'...' if len(c)>70 else ''}" for c in conditions_to_delete_texts[:5]]) + ("\n..." if len(conditions_to_delete_texts)>5 else "")
-    if not ui.ask_yes_no("ยืนยันการลบ", confirm_msg): return
+    if not messagebox.askyesno("ยืนยันการลบ", confirm_msg): return
 
     # --- ส่วนที่แก้ไข ---
     # 1. Remove from saved_conditions list
@@ -943,15 +829,15 @@ def delete_condition():
     update_table(condition_counts)
     # --- สิ้นสุดส่วนที่แก้ไข ---
 
-    ui.show_info("สำเร็จ", f"ลบเงื่อนไข {deleted_count} รายการ")
+    messagebox.showinfo("สำเร็จ", f"ลบเงื่อนไข {deleted_count} รายการ")
     # ไม่ต้องคำนวณ count ใหม่ หรือแจ้งเตือน error การคำนวณ
 
 def export_conditions():
     """ส่งออกเงื่อนไขที่บันทึกไว้เป็นไฟล์ Excel"""
     if not saved_conditions:
-        ui.show_warning("แจ้งเตือน", "ไม่มีเงื่อนไขให้บันทึก")
+        messagebox.showwarning("แจ้งเตือน", "ไม่มีเงื่อนไขให้บันทึก")
         return
-    path = ui.save_file_dialog(defaultextension='.xlsx', filetypes=[("Excel files", "*.xlsx")], title="บันทึกไฟล์เงื่อนไข")
+    path = filedialog.asksaveasfilename(defaultextension='.xlsx', filetypes=[("Excel files", "*.xlsx")], title="บันทึกไฟล์เงื่อนไข")
     if not path: return # User cancelled
 
     try:
@@ -961,16 +847,16 @@ def export_conditions():
             'Condition': saved_conditions
             })
         export_df.to_excel(path, index=False)
-        ui.show_info("สำเร็จ", f"บันทึกเงื่อนไข {len(saved_conditions)} รายการไปยัง:\n{os.path.basename(path)}\nเรียบร้อยแล้ว")
+        messagebox.showinfo("สำเร็จ", f"บันทึกเงื่อนไข {len(saved_conditions)} รายการไปยัง:\n{os.path.basename(path)}\nเรียบร้อยแล้ว")
     except Exception as e:
-        ui.show_error("Error", f"บันทึกไฟล์เงื่อนไขล้มเหลว: {e}")
+        messagebox.showerror("Error", f"บันทึกไฟล์เงื่อนไขล้มเหลว: {e}")
 # --- ฟังก์ชัน import_conditions ที่อัปเดตแล้ว พร้อม Progress Bar ตอนคำนวณ Count ---
 def import_conditions():
     """โหลดเงื่อนไขจากไฟล์ Excel, ล้าง Counts เดิม, และคำนวณใหม่พร้อม Progress Bar (ถ้ามีข้อมูล)"""
     # Access global variables needed
     global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts
 
-    path = ui.open_file_dialog(filetypes=[("Excel files", "*.xlsx")], title="เลือกไฟล์เงื่อนไข")
+    path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")], title="เลือกไฟล์เงื่อนไข")
     if not path: return # User cancelled
 
     try:
@@ -981,16 +867,16 @@ def import_conditions():
             col_name = 'Condition'
         elif len(df_import.columns) > 0:
             col_name = df_import.columns[0]
-            ui.show_warning("รูปแบบไฟล์", f"ไม่พบคอลัมน์ 'Condition', กำลังใช้คอลัมน์แรก '{col_name}' แทน")
+            messagebox.showwarning("รูปแบบไฟล์", f"ไม่พบคอลัมน์ 'Condition', กำลังใช้คอลัมน์แรก '{col_name}' แทน")
         else:
-             ui.show_error("Error", "ไฟล์ Excel ไม่มีข้อมูลหรือไม่มีคอลัมน์ที่รู้จัก")
+             messagebox.showerror("Error", "ไฟล์ Excel ไม่มีข้อมูลหรือไม่มีคอลัมน์ที่รู้จัก")
              return
 
         # Read conditions, convert to string, drop NaN, strip whitespace, remove empty
         conds_from_file = [str(c).strip() for c in df_import[col_name].dropna() if str(c).strip()]
 
         if not conds_from_file:
-            ui.show_info("สำเร็จ", "ไฟล์ที่เลือกไม่มีเงื่อนไขที่สามารถนำเข้าได้")
+            messagebox.showinfo("สำเร็จ", "ไฟล์ที่เลือกไม่มีเงื่อนไขที่สามารถนำเข้าได้")
             return
 
         # --- Validate imported conditions if data is loaded ---
@@ -1013,18 +899,18 @@ def import_conditions():
 
         # --- Show errors for invalid conditions found during validation ---
         if import_errors:
-            ui.show_warning("เงื่อนไขบางรายการไม่ถูกต้อง",
+            messagebox.showwarning("เงื่อนไขบางรายการไม่ถูกต้อง",
                                    f"เงื่อนไขต่อไปนี้จากไฟล์นำเข้าไม่ถูกต้องและจะถูกข้าม:\n" +
                                    "\n".join(import_errors) +
                                    f"\n\nดำเนินการต่อด้วยเงื่อนไขที่ถูกต้อง {len(valid_conds)} รายการ")
 
         # Stop if no valid conditions remain after validation
         if not valid_conds:
-            ui.show_error("นำเข้าล้มเหลว", "ไม่มีเงื่อนไขที่ถูกต้องในไฟล์ที่เลือกหลังจากตรวจสอบ (ถ้าทำได้)")
+            messagebox.showerror("นำเข้าล้มเหลว", "ไม่มีเงื่อนไขที่ถูกต้องในไฟล์ที่เลือกหลังจากตรวจสอบ (ถ้าทำได้)")
             return
 
         # --- Ask user whether to replace or append conditions ---
-        choice = ui.ask_yes_no_cancel("นำเข้าเงื่อนไข",
+        choice = messagebox.askyesnocancel("นำเข้าเงื่อนไข",
                                           f"พบ {len(valid_conds)} เงื่อนไขที่ถูกต้องในไฟล์\n"
                                           "ต้องการแทนที่เงื่อนไขที่มีอยู่ทั้งหมดหรือไม่?\n"
                                           "(Yes=แทนที่, No=ต่อท้ายรายการเดิม, Cancel=ยกเลิก)")
@@ -1054,13 +940,13 @@ def import_conditions():
         if current_df is not None and saved_conditions:
             total_conditions_to_calc = len(saved_conditions)
             # --- Setup Progress Bar ---
-            ui.progress_bar.setMaximum(total_conditions_to_calc)
-            ui.progress_bar.setValue(0)
+            progressbar['maximum'] = total_conditions_to_calc
+            progressbar['value'] = 0
             progress_status_var.set(f"Calculating counts (0/{total_conditions_to_calc})...")
             # Optional: Disable relevant buttons (Need references to buttons)
             # e.g., import_button.config(state=tk.DISABLED)
             # e.g., check_button_widget.config(state=tk.DISABLED)
-            process_events() # Show initial progress state
+            root.update_idletasks() # Show initial progress state
 
             try: # Use finally to ensure UI elements are reset
                 # --- Loop to calculate counts for all conditions ---
@@ -1084,20 +970,20 @@ def import_conditions():
                         current_status = "Error"
 
                     # --- Update Progress Bar and Status Label ---
-                    ui.progress_bar.setValue(i + 1)
+                    progressbar['value'] = i + 1
                     # Simplified status message as requested previously
                     progress_status_var.set(f"Calculating counts {i + 1}/{total_conditions_to_calc}")
-                    process_events() # IMPORTANT: Update UI within the loop
+                    root.update_idletasks() # IMPORTANT: Update UI within the loop
                 # --- End Calculation Loop ---
 
             finally:
                 # --- Reset Progress Bar and Status ---
-                ui.progress_bar.setValue(0)
+                progressbar['value'] = 0
                 progress_status_var.set("Idle")
                 # Optional: Re-enable buttons
                 # e.g., import_button.config(state=tk.NORMAL)
                 # e.g., check_button_widget.config(state=tk.NORMAL)
-                process_events() # Ensure final UI state is shown
+                root.update_idletasks() # Ensure final UI state is shown
 
             # Update global counts dictionary with the fresh results
             condition_counts = counts_result
@@ -1105,23 +991,23 @@ def import_conditions():
         # --- Update the UI table ---
         # Pass the newly calculated counts (or the empty dict if no data/no conditions)
         update_table(condition_counts)
-        ui.show_info("สำเร็จ", f"{op_text}เงื่อนไขเรียบร้อยแล้ว")
+        messagebox.showinfo("สำเร็จ", f"{op_text}เงื่อนไขเรียบร้อยแล้ว")
 
         # Show errors encountered during recalculation (if any)
         if error_summary_list:
              error_summary_str = "\n".join(error_summary_list)
-             ui.show_warning("พบข้อผิดพลาด", f"พบข้อผิดพลาดในการคำนวณ Count หลังนำเข้า:\n{error_summary_str}")
+             messagebox.showwarning("พบข้อผิดพลาด", f"พบข้อผิดพลาดในการคำนวณ Count หลังนำเข้า:\n{error_summary_str}")
 
     # --- Exception Handling for File Operations ---
     except FileNotFoundError:
-         ui.show_error("Error", f"ไม่พบไฟล์ที่ระบุ: {path}")
+         messagebox.showerror("Error", f"ไม่พบไฟล์ที่ระบุ: {path}")
     except pd.errors.EmptyDataError:
-         ui.show_error("Error", f"ไฟล์ Excel '{os.path.basename(path)}' ว่างเปล่า หรือไม่มีข้อมูลในคอลัมน์ที่ต้องการ")
+         messagebox.showerror("Error", f"ไฟล์ Excel '{os.path.basename(path)}' ว่างเปล่า หรือไม่มีข้อมูลในคอลัมน์ที่ต้องการ")
     except Exception as e:
         # Catch other potential errors during file reading or processing
         # import traceback
-        # ui.show_error("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}\n{traceback.format_exc()}") # Detailed error for debug
-        ui.show_error("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}")
+        # messagebox.showerror("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}\n{traceback.format_exc()}") # Detailed error for debug
+        messagebox.showerror("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}")
 # --- สิ้นสุดฟังก์ชัน import_conditions ---
 
 
@@ -1138,10 +1024,10 @@ def check_conditions():
 
     # --- Pre-checks ---
     if current_df is None:
-        ui.show_warning("แจ้งเตือน", "กรุณาเลือกไฟล์ SPSS ก่อน")
+        messagebox.showwarning("แจ้งเตือน", "กรุณาเลือกไฟล์ SPSS ก่อน")
         return
     if not saved_conditions:
-        ui.show_warning("แจ้งเตือน", "ไม่มีเงื่อนไขให้ตรวจสอบ")
+        messagebox.showwarning("แจ้งเตือน", "ไม่มีเงื่อนไขให้ตรวจสอบ")
         return
 
     # --- 1. ค้นหาเงื่อนไขที่ต้อง Export (Count > 0) จากค่าที่คำนวณไว้แล้ว ---
@@ -1151,20 +1037,20 @@ def check_conditions():
     ]
 
     if not conditions_to_export:
-        ui.show_info("ไม่มีข้อมูลสำหรับ Export", "ไม่พบเงื่อนไขใดๆ ที่มีผลลัพธ์ (Count > 0)")
+        messagebox.showinfo("ไม่มีข้อมูลสำหรับ Export", "ไม่พบเงื่อนไขใดๆ ที่มีผลลัพธ์ (Count > 0)")
         return
 
     total_to_process = len(conditions_to_export)
     add_log(f"พบ {total_to_process} เงื่อนไขที่มีข้อมูล จะเริ่มเตรียมการ Export...")
 
     # --- 2. Progress Bar Setup (สำหรับขั้นตอนการเตรียม Export) ---
-    ui.progress_bar.setMaximum(total_to_process)
-    ui.progress_bar.setValue(0)
+    progressbar['maximum'] = total_to_process
+    progressbar['value'] = 0
     progress_status_var.set(f"Preparing to export {total_to_process} conditions...")
     
     check_button = check_button_widget # ใช้ global widget ที่ประกาศไว้
-    set_button_enabled(check_button, False)
-    process_events()
+    if check_button: check_button.config(state=tk.DISABLED)
+    root.update_idletasks()
 
     # --- 3. Initialize results (สำหรับ Export) ---
     result_dict = {}  # Dictionary สำหรับเก็บ DataFrame ที่จะ Export
@@ -1176,8 +1062,8 @@ def check_conditions():
         for i, cond in enumerate(conditions_to_export):
             current_progress = i + 1
             progress_status_var.set(f"Preparing Export {current_progress}/{total_to_process}: {cond[:50]}...")
-            ui.progress_bar.setValue(current_progress)
-            process_events()
+            progressbar['value'] = current_progress
+            root.update_idletasks()
 
             try:
                 # ทำการ Validate -> Expand -> Convert เพื่อสร้าง query string
@@ -1212,27 +1098,27 @@ def check_conditions():
         # --- 5. สรุปผลและเริ่ม Export ---
         if errors_dict:
             error_summary = "\n".join([f"- {m}" for c, m in errors_dict.items()])
-            ui.show_warning("พบข้อผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลบางรายการ:\n{error_summary}\n\nจะทำการ Export เฉพาะรายการที่สำเร็จ")
+            messagebox.showwarning("พบข้อผิดพลาด", f"เกิดข้อผิดพลาดในการเตรียมข้อมูลบางรายการ:\n{error_summary}\n\nจะทำการ Export เฉพาะรายการที่สำเร็จ")
 
         if not result_dict:
-             ui.show_error("Export ล้มเหลว", "ไม่สามารถเตรียมข้อมูลสำหรับ Export ได้เลยแม้แต่รายการเดียว")
+             messagebox.showerror("Export ล้มเหลว", "ไม่สามารถเตรียมข้อมูลสำหรับ Export ได้เลยแม้แต่รายการเดียว")
              return
 
         # --- เริ่ม Export ไปยัง Excel ---
         add_log("เตรียมข้อมูลเสร็จสิ้น กำลังส่งออกไปยัง Excel...")
         progress_status_var.set("Exporting to Excel...")
-        process_events()
+        root.update_idletasks()
         filename_base = os.path.splitext(os.path.basename(file_var.get()))[0] if file_var.get() else "SPSS_Check"
         # ส่ง result_dict (ที่เก็บ DataFrame) และ condition_counts (สำหรับแสดงค่า Count ใน Index)
         open_multi_excel(result_dict, condition_counts, filename_base=f"{filename_base}_CheckResult")
 
     finally:
         # --- Reset Progress Bar & Button ---
-        ui.progress_bar.setValue(0)
+        progressbar['value'] = 0
         progress_status_var.set("Idle")
         if check_button:
-            set_button_enabled(check_button, True)
-        process_events()
+            check_button.config(state=tk.NORMAL)
+        root.update_idletasks()
 
 # --- สิ้นสุดฟังก์ชัน check_conditions (เวอร์ชันปรับปรุง) ---
 
@@ -1265,146 +1151,197 @@ def select_variables_for_frequency():
     แสดงรายการทั้งหมดตามลำดับในไฟล์ SPSS ต้นฉบับ
     """
     if current_df is None:
-        ui.show_warning("ไม่มีข้อมูล", "กรุณาเลือกไฟล์ SPSS ก่อน")
+        messagebox.showwarning("ไม่มีข้อมูล", "กรุณาเลือกไฟล์ SPSS ก่อน")
         return None
-
-    class VarTable(QtWidgets.QTableWidget):
-        def keyPressEvent(self, event):
-            if event.key() == QtCore.Qt.Key.Key_Delete:
-                rows = sorted({i.row() for i in self.selectedItems()}, reverse=True)
-                for r in rows:
-                    self.removeRow(r)
-            else:
-                super().keyPressEvent(event)
-
-    dialog = QtWidgets.QDialog(ui)
-    dialog.setWindowTitle("เลือกตัวแปรที่ต้องการวิเคราะห์ Frequency Analysis")
-    dialog.resize(720, 640)
-    layout = QtWidgets.QVBoxLayout(dialog)
-
-    title = QtWidgets.QLabel("เลือกตัวแปรที่ต้องการวิเคราะห์:")
-    title.setStyleSheet("font-weight:700;")
-    layout.addWidget(title)
-
-    search_row = QtWidgets.QHBoxLayout()
-    search_row.addWidget(QtWidgets.QLabel("ค้นหา:"))
-    search_input = QtWidgets.QLineEdit()
-    search_input.setPlaceholderText("พิมพ์เพื่อค้นหา...")
-    search_row.addWidget(search_input, 1)
-    layout.addLayout(search_row)
-
-    table = VarTable()
-    table.setColumnCount(2)
-    table.setHorizontalHeaderLabels(["ชื่อตัวแปร", "จำนวนคอลัมน์"])
-    table.horizontalHeader().setStretchLastSection(True)
-    table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-    table.verticalHeader().setVisible(False)
-    layout.addWidget(table, 1)
-
-    hint = QtWidgets.QLabel("กด Delete เพื่อตัดรายการที่ไม่ต้องการออก")
-    hint.setStyleSheet("color:#6b7280;font-style:italic;")
-    layout.addWidget(hint)
-
-    btn_row = QtWidgets.QHBoxLayout()
-    restore_btn = QtWidgets.QPushButton("เลือกทั้งหมด")
-    clear_btn = QtWidgets.QPushButton("ยกเลิกทั้งหมด")
-    btn_row.addWidget(restore_btn)
-    btn_row.addWidget(clear_btn)
-    btn_row.addStretch(1)
-    ok_btn = QtWidgets.QPushButton("OK")
-    cancel_btn = QtWidgets.QPushButton("Cancel")
-    ok_btn.setStyleSheet("background:#16a34a;color:white;font-weight:700;")
-    cancel_btn.setStyleSheet("background:#ef4444;color:white;font-weight:700;")
-    btn_row.addWidget(cancel_btn)
-    btn_row.addWidget(ok_btn)
-    layout.addLayout(btn_row)
-
-    # เตรียมข้อมูลสำหรับแสดง
+        
+    # สร้างหน้าต่างใหม่
+    select_window = tk.Toplevel(root)
+    select_window.title("เลือกตัวแปรที่ต้องการวิเคราะห์ Frequency Analysis")
+    select_window.geometry("600x600")
+    select_window.transient(root)  # ทำให้หน้าต่างนี้อยู่เหนือหน้าต่างหลัก
+    select_window.grab_set()       # ป้องกันการคลิกหน้าต่างอื่นๆ
+    
+    # เพิ่มคำอธิบายด้านบน
+    tk.Label(select_window, text="เลือกตัวแปรที่ต้องการวิเคราะห์:", font=('Tahoma', 10, 'bold')).pack(pady=(10, 5))
+    
+    # สร้างเฟรมสำหรับการค้นหา/กรอง
+    search_frame = tk.Frame(select_window)
+    search_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+    
+    tk.Label(search_frame, text="ค้นหา:", font=('Tahoma', 9)).pack(side=tk.LEFT, padx=(0, 5))
+    search_var = tk.StringVar()
+    search_entry = tk.Entry(search_frame, textvariable=search_var, font=('Tahoma', 9))
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    
+    # สร้างเฟรมหลักสำหรับรายการตัวแปร
+    list_frame = tk.Frame(select_window)
+    list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    
+    # จำแนกคอลัมน์เป็น MA sets และ Single columns เพื่อการแสดงผล
     all_columns = current_df.columns.tolist()
     ma_sets = {}
-    ma_pattern = re.compile(r'(.+)_O(\\d+)$', flags=re.IGNORECASE)
+    ma_pattern = re.compile(r'(.+)_O(\d+)$', flags=re.IGNORECASE)
+    
+    # รวบรวม MA sets เพื่อเก็บข้อมูลจำนวนคอลัมน์
     for col_name in all_columns:
         match = ma_pattern.match(col_name)
         if match:
             base_name = match.group(1).upper() + "_O"
             ma_sets.setdefault(base_name, []).append(col_name)
-
+    
+    # สร้าง Frame สำหรับ Treeview และ Scrollbar
+    tree_frame = tk.Frame(list_frame)
+    tree_frame.pack(fill=tk.BOTH, expand=True)
+    
+    # สร้าง Scrollbar
+    scrolly = ttk.Scrollbar(tree_frame)
+    scrolly.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    # สร้าง Treeview
+    var_tree = ttk.Treeview(
+        tree_frame,
+        columns=("name", "count"),
+        show="headings",
+        selectmode="extended",  # อนุญาตให้เลือกหลายรายการได้
+        yscrollcommand=scrolly.set
+    )
+    var_tree.heading("name", text="ชื่อตัวแปร")
+    var_tree.heading("count", text="จำนวนคอลัมน์")
+    var_tree.column("name", width=400)
+    var_tree.column("count", width=150, anchor="center")
+    var_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scrolly.config(command=var_tree.yview)
+    
+    # เตรียมข้อมูลสำหรับแสดงในรูปแบบที่ต้องการ
     display_items = []
-    processed_cols = set()
+    processed_cols = set()  # เก็บคอลัมน์ที่ประมวลผลไปแล้ว
+    
+    # ไปตามลำดับคอลัมน์ในข้อมูลต้นฉบับ
     for col_name in all_columns:
         if col_name in processed_cols:
-            continue
+            continue  # ข้ามคอลัมน์ที่ประมวลผลไปแล้ว
+            
         match = ma_pattern.match(col_name)
         if match:
+            # กรณีเป็นส่วนหนึ่งของ MA set
             base_name = match.group(1).upper() + "_O"
             if base_name in ma_sets and len(ma_sets[base_name]) > 1:
+                # แสดง MA set แทนคอลัมน์ย่อย
                 display_items.append({
-                    "name": base_name,
-                    "count": f"({len(ma_sets[base_name])} columns)",
+                    "name": base_name, 
+                    "count": f"({len(ma_sets[base_name])} columns)", 
                     "type": "ma_set"
                 })
+                # มาร์กทุกคอลัมน์ในชุดนี้ว่าประมวลผลแล้ว
                 processed_cols.update(ma_sets[base_name])
             else:
-                display_items.append({"name": col_name, "count": "", "type": "single_col"})
+                # แสดงแบบปกติสำหรับคอลัมน์เดี่ยว
+                display_items.append({
+                    "name": col_name, 
+                    "count": "", 
+                    "type": "single_col"
+                })
                 processed_cols.add(col_name)
         else:
-            display_items.append({"name": col_name, "count": "", "type": "single_col"})
+            # กรณีเป็นคอลัมน์เดี่ยวปกติ
+            display_items.append({
+                "name": col_name, 
+                "count": "", 
+                "type": "single_col"
+            })
             processed_cols.add(col_name)
-
-    def fill_table(items):
-        table.setRowCount(0)
-        for item in items:
-            row = table.rowCount()
-            table.insertRow(row)
-            name_item = QtWidgets.QTableWidgetItem(item["name"])
-            count_item = QtWidgets.QTableWidgetItem(item["count"])
-            if item["type"] == "ma_set":
-                name_item.setBackground(QtGui.QColor("#f3f4f6"))
-                count_item.setBackground(QtGui.QColor("#f3f4f6"))
-            table.setItem(row, 0, name_item)
-            table.setItem(row, 1, count_item)
-        table.resizeColumnsToContents()
-
-    fill_table(display_items)
-
-    def filter_items():
-        text = search_input.text().lower().strip()
-        for row in range(table.rowCount()):
-            name = table.item(row, 0).text().lower()
-            table.setRowHidden(row, text not in name)
-
-    def restore_all():
-        fill_table(display_items)
-        filter_items()
-
-    def clear_all():
-        table.setRowCount(0)
-
-    def on_ok():
-        dialog.accept()
-
-    def on_cancel():
-        dialog.reject()
-
-    search_input.textChanged.connect(filter_items)
-    restore_btn.clicked.connect(restore_all)
-    clear_btn.clicked.connect(clear_all)
-    ok_btn.clicked.connect(on_ok)
-    cancel_btn.clicked.connect(on_cancel)
-
-    result = dialog.exec()
-    if result != QtWidgets.QDialog.DialogCode.Accepted:
-        return None
-
+    
+    # เรียงการแสดงผลตามลำดับที่พบในข้อมูลต้นฉบับ
+    
+    # เพิ่มข้อมูลเข้า Treeview ตามลำดับ
+    for item in display_items:
+        var_tree.insert("", "end", values=(item["name"], item["count"]), tags=(item["type"],))
+    
+    # ฟังก์ชันตอบสนองต่อการกด Delete key
+    def delete_selected(event):
+        selected_items = var_tree.selection()
+        for item in selected_items:
+            var_tree.delete(item)
+    
+    # ผูกการกด Delete Key กับฟังก์ชัน
+    var_tree.bind("<Delete>", delete_selected)
+    
+    # ฟังก์ชันค้นหา/กรอง
+    def filter_items(*args):
+        search_text = search_var.get().lower()
+        
+        for item in var_tree.get_children():
+            values = var_tree.item(item, "values")
+            if search_text in values[0].lower():
+                var_tree.item(item, tags=(var_tree.item(item, "tags")[0],))  # คงแท็กเดิม
+            else:
+                var_tree.item(item, tags=("hidden",))  # ซ่อนรายการ
+    
+    # กำหนด tag style
+    var_tree.tag_configure("ma_set", background="#F0F0F0")  # พื้นหลังสีเทาอ่อนสำหรับ MA sets
+    var_tree.tag_configure("single_col", background="white")  # พื้นหลังขาวสำหรับคอลัมน์เดี่ยว
+    var_tree.tag_configure("hidden", background="gray")  # สำหรับซ่อนรายการ
+    
+    # ผูกการเปลี่ยนแปลงใน search field กับฟังก์ชันกรอง
+    search_var.trace_add("write", filter_items)
+    
+    # แสดงข้อความแนะนำเพิ่มเติม
+    tk.Label(list_frame, text="กด Delete เพื่อตัดรายการที่ไม่ต้องการออก", font=('Tahoma', 9, 'italic'), fg="gray").pack(pady=(5, 0))
+    
+    # สร้างกลุ่มปุ่มด้านล่าง
+    button_frame = tk.Frame(select_window, pady=10)
+    button_frame.pack(fill=tk.X, padx=10)
+    
+    # ตัวแปรสำหรับเก็บผลลัพธ์
     result_vars = []
-    for row in range(table.rowCount()):
-        if table.isRowHidden(row):
-            continue
-        item = table.item(row, 0)
-        if item:
-            result_vars.append(item.text())
-
+    
+    # ฟังก์ชันสำหรับปุ่ม
+    def on_ok():
+        nonlocal result_vars
+        
+        # รวบรวมตัวแปรที่ยังเหลืออยู่
+        for item in var_tree.get_children():
+            values = var_tree.item(item, "values")
+            result_vars.append(values[0])  # เก็บชื่อตัวแปร
+        
+        select_window.destroy()
+    
+    def on_cancel():
+        nonlocal result_vars
+        result_vars = None
+        select_window.destroy()
+    
+    # ปุ่ม OK และ Cancel
+    cancel_btn = tk.Button(select_window, text="Cancel", command=on_cancel, width=10)
+    cancel_btn.pack(side=tk.RIGHT, padx=(0, 10), pady=10)
+    
+    ok_btn = tk.Button(select_window, text="OK", command=on_ok, width=10, 
+                      bg="#4CAF50", fg="white", font=('Tahoma', 10, 'bold'))
+    ok_btn.pack(side=tk.RIGHT, padx=10, pady=10)
+    
+    # ปุ่มเลือกทั้งหมด/ยกเลิกทั้งหมด
+    tk.Button(button_frame, text="เลือกทั้งหมด", command=lambda: restore_all()).pack(side=tk.LEFT)
+    tk.Button(button_frame, text="ยกเลิกทั้งหมด", command=lambda: clear_all()).pack(side=tk.LEFT, padx=5)
+    
+    # ฟังก์ชัน Restore All และ Clear All
+    def restore_all():
+        # ลบรายการทั้งหมดแล้วเพิ่มใหม่
+        for item in var_tree.get_children():
+            var_tree.delete(item)
+            
+        for item in display_items:
+            var_tree.insert("", "end", values=(item["name"], item["count"]), tags=(item["type"],))
+        
+        # กรองตามคำค้นหาปัจจุบัน (ถ้ามี)
+        filter_items()
+    
+    def clear_all():
+        for item in var_tree.get_children():
+            var_tree.delete(item)
+    
+    # รอจนกว่าหน้าต่างจะปิด
+    select_window.wait_window()
+    
     return result_vars
 
 
@@ -1415,13 +1352,13 @@ def run_all_frequencies():
     (เวอร์ชันแก้ไข: จัดการ TypeError ตอนกรองข้อมูล MA Set)
     """
     # Access global variables
-    global current_df, spss_meta, file_var, progress_status_var
+    global current_df, spss_meta, file_var, root, progressbar, progress_status_var
     # Make sure button widgets are accessible if declared globally or passed as args
-    global check_button_widget, freq_button_widget
+    global check_button_widget, freq_button_widget, log_text
 
     # --- การตรวจสอบเบื้องต้น ---
     if current_df is None:
-        ui.show_warning("ไม่มีข้อมูล", "กรุณาเลือกไฟล์ SPSS ก่อน")
+        messagebox.showwarning("ไม่มีข้อมูล", "กรุณาเลือกไฟล์ SPSS ก่อน")
         return
 
     # --- เปิดหน้าต่างเลือกคอลัมน์ ---
@@ -1431,7 +1368,7 @@ def run_all_frequencies():
         return
 
     if not selected_columns:
-        ui.show_warning("ไม่มีคอลัมน์ที่เลือก", "กรุณาเลือกอย่างน้อย 1 ตัวแปร หรือ MA Set")
+        messagebox.showwarning("ไม่มีคอลัมน์ที่เลือก", "กรุณาเลือกอย่างน้อย 1 ตัวแปร หรือ MA Set")
         return
 
     # --- ยืนยันการทำงาน ---
@@ -1440,17 +1377,17 @@ def run_all_frequencies():
           confirm_msg += f"\n\nคำเตือน: การเลือก {len(selected_columns)} รายการอาจใช้เวลานาน"
     confirm_msg += "\n\nต้องการดำเนินการต่อหรือไม่?"
 
-    if not ui.ask_yes_no("ยืนยันการทำงาน", confirm_msg):
+    if not messagebox.askyesno("ยืนยันการทำงาน", confirm_msg):
         add_log("ยกเลิกการทำงาน: ผู้ใช้ไม่ยืนยันการดำเนินการ")
         return
 
-    ui.show_info("เริ่มคำนวณ", f"กำลังเตรียมคำนวณ Frequency Tables สำหรับ {len(selected_columns)} รายการที่เลือก...");
-    process_events()
+    messagebox.showinfo("เริ่มคำนวณ", f"กำลังเตรียมคำนวณ Frequency Tables สำหรับ {len(selected_columns)} รายการที่เลือก...");
+    if root: root.update_idletasks()
 
     # --- ล้าง Log ---
     # Check if log_text exists and is a valid widget before clearing
-    if ui and ui.log_text:
-        ui.log_text.clear()
+    if 'log_text' in globals() and isinstance(log_text, tk.Text):
+        log_text.delete(1.0, tk.END)
     else:
         print("Warning: log_text widget not found or not initialized.")
 
@@ -1481,9 +1418,7 @@ def run_all_frequencies():
 
     # --- 2. ตั้งค่า Progress Bar และ Disable Buttons ---
     total_items_to_process = len(selected_columns)
-    if ui and ui.progress_bar:
-        ui.progress_bar.setMaximum(total_items_to_process)
-        ui.progress_bar.setValue(0)
+    if progressbar: progressbar['maximum'] = total_items_to_process; progressbar['value'] = 0
     if progress_status_var: progress_status_var.set(f"Running Frequencies (0/{total_items_to_process})...")
 
     # Disable buttons - Use try-except in case widgets haven't been assigned yet
@@ -1493,12 +1428,13 @@ def run_all_frequencies():
 
     try:
         for btn in buttons_to_disable:
-            set_button_enabled(btn, False)
+            if btn and isinstance(btn, tk.Button): # Check if it's actually a button
+                 btn.config(state=tk.DISABLED)
     except Exception as e_disable:
         add_log(f"Warning: Error disabling buttons: {e_disable}", "WARNING")
         print(f"Warning: Error disabling buttons: {e_disable}")
 
-    process_events()
+    if root: root.update_idletasks()
 
     # --- 3. คำนวณ Frequency (วนลูปตาม selected_columns) ---
     frequency_results = {}; errors_freq = {};
@@ -1510,7 +1446,7 @@ def run_all_frequencies():
         for item_name in selected_columns:
             calculation_progress_count += 1
             if progress_status_var: progress_status_var.set(f"Calculating ({calculation_progress_count}/{total_items_to_process}): {item_name[:40]}...")
-            process_events()
+            if root: root.update_idletasks()
 
             is_ma_set_calc = item_name in ma_sets
 
@@ -1729,11 +1665,12 @@ def run_all_frequencies():
         if progress_status_var: progress_status_var.set("Calculation Complete. Preparing Export...") # Or set based on errors
         try:
             for btn in buttons_to_disable:
-                 set_button_enabled(btn, True)
+                 if btn and isinstance(btn, tk.Button):
+                     btn.config(state=tk.NORMAL)
         except Exception as e_enable:
             add_log(f"Warning: Error re-enabling buttons: {e_enable}", "WARNING")
             print(f"Warning: Error re-enabling buttons: {e_enable}")
-        process_events()
+        if root: root.update_idletasks()
 
     # --- 4. สรุปผลการคำนวณ และ แจ้งเตือน Error (ถ้ามี) ---
     add_log("\n===== สรุปผลการคำนวณ =====")
@@ -1748,7 +1685,7 @@ def run_all_frequencies():
             error_list_short = "\n".join([f"- {col}: {msg}" for col, msg in list(errors_freq.items())[:10]])
             if len(errors_freq) > 10: error_list_short += "\n..."
             final_error_message += f"\n\nข้อผิดพลาดตัวอย่าง:\n{error_list_short}"
-        add_log(f"❌ {final_error_message}", "ERROR"); ui.show_error("คำนวณล้มเหลวทั้งหมด", final_error_message)
+        add_log(f"❌ {final_error_message}", "ERROR"); messagebox.showerror("คำนวณล้มเหลวทั้งหมด", final_error_message)
         # Reset progress bar status
         if progress_status_var: progress_status_var.set("Idle (Failed)")
         return # จบการทำงานถ้าไม่มีผลลัพธ์เลย
@@ -1756,11 +1693,11 @@ def run_all_frequencies():
     if errors_freq:
           error_list_short = "\n".join([f"- {col}: {msg}" for col, msg in list(errors_freq.items())[:10]])
           if len(errors_freq) > 10: error_list_short += "\n..."
-          ui.show_warning("Frequency Calculation Errors", f"เกิดข้อผิดพลาดระหว่างการคำนวณ Frequency สำหรับบางรายการ:\n{error_list_short}\n\n(ดูรายละเอียดเพิ่มเติมใน Log)\n\nจะส่งออกเฉพาะตารางที่สร้างสำเร็จเท่านั้น")
+          messagebox.showwarning("Frequency Calculation Errors", f"เกิดข้อผิดพลาดระหว่างการคำนวณ Frequency สำหรับบางรายการ:\n{error_list_short}\n\n(ดูรายละเอียดเพิ่มเติมใน Log)\n\nจะส่งออกเฉพาะตารางที่สร้างสำเร็จเท่านั้น")
 
 
     # --- 5. ถามผู้ใช้เรื่องรูปแบบ Export ---
-    export_mode_single_sheet = ui.ask_yes_no(
+    export_mode_single_sheet = messagebox.askyesno(
         "เลือกรูปแบบการ Export",
         "ต้องการ Export ตาราง Frequency ทั้งหมดลงในชีทเดียว ('Table') หรือไม่?\n\n"
         "• กด 'Yes' -> รวมทุกตารางในชีท 'Table'\n"
@@ -1848,7 +1785,7 @@ def run_all_frequencies():
     base_filename = 'SPSS_Data'
     if file_var and file_var.get() and os.path.exists(file_var.get()): base_filename = os.path.splitext(os.path.basename(file_var.get()))[0]
     timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M'); suggested_filename = f"{base_filename}_Frequencies_{timestamp}.xlsx"
-    freq_save_path = ui.save_file_dialog(defaultextension='.xlsx', filetypes=[("Excel files", "*.xlsx")], initialfile=suggested_filename, title="บันทึก Frequency Tables เป็น Excel")
+    freq_save_path = filedialog.asksaveasfilename(defaultextension='.xlsx', filetypes=[("Excel files", "*.xlsx")], initialfile=suggested_filename, title="บันทึก Frequency Tables เป็น Excel")
 
     if not freq_save_path:
         add_log("❌ ยกเลิกการ Export โดยผู้ใช้", "WARNING")
@@ -1857,7 +1794,7 @@ def run_all_frequencies():
 
     add_log(f"ตำแหน่งไฟล์ที่เลือก: {freq_save_path}")
     if progress_status_var: progress_status_var.set("Exporting to Excel...")
-    process_events()
+    if root: root.update_idletasks()
 
 
     # --- 8. เขียนไฟล์ Excel ---
@@ -1989,7 +1926,7 @@ def run_all_frequencies():
 
                         export_progress_count += 1
                         if progress_status_var: progress_status_var.set(f"Writing Export ({export_progress_count}/{total_items_to_export}): {item_key_to_consider[:40]}...")
-                        process_events()
+                        if root: root.update_idletasks()
 
                         items_actually_exported += 1
                         (variable_label, freq_table) = frequency_results[item_key_to_consider]
@@ -2188,35 +2125,34 @@ def run_all_frequencies():
              total_sheets_created = len(writer.sheets)
              add_log(f"• ชีทที่สร้างทั้งหมด: {total_sheets_created} ชีท {'(รวม Index และ Table)' if export_mode_single_sheet else '(รวม Index และ Data Sheets)'}")
         add_log(f"• เวลาสิ้นสุด: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        ui.show_info("สำเร็จ", f"สร้างไฟล์ Frequency Tables:\n{os.path.basename(freq_save_path)}\nเรียบร้อยแล้ว ({items_actually_exported} ตารางตามที่เลือก)")
+        messagebox.showinfo("สำเร็จ", f"สร้างไฟล์ Frequency Tables:\n{os.path.basename(freq_save_path)}\nเรียบร้อยแล้ว ({items_actually_exported} ตารางตามที่เลือก)")
 
         # --- ถามผู้ใช้ว่าต้องการเปิดไฟล์หรือไม่ ---
-        if ui.ask_yes_no("เปิดไฟล์", "ต้องการเปิดไฟล์ Frequency Tables ที่สร้างเสร็จหรือไม่?"):
+        if messagebox.askyesno("เปิดไฟล์", "ต้องการเปิดไฟล์ Frequency Tables ที่สร้างเสร็จหรือไม่?"):
               add_log("กำลังเปิดไฟล์ Excel...")
               try:
                   if sys.platform.startswith('win'): os.startfile(freq_save_path); add_log("  ✓ เปิดไฟล์ (Windows)")
                   elif sys.platform.startswith('darwin'): subprocess.run(["open", freq_save_path], check=True); add_log("  ✓ เปิดไฟล์ (macOS)")
                   else: subprocess.run(["xdg-open", freq_save_path], check=True); add_log("  ✓ เปิดไฟล์ (Linux)")
-              except FileNotFoundError: error_msg = f"ไม่พบคำสั่งสำหรับเปิดไฟล์..."; add_log(f"  ❌ {error_msg}", "ERROR"); ui.show_error("เปิดไฟล์ไม่ได้", error_msg)
-              except Exception as e: error_msg = f"เกิดข้อผิดพลาดในการเปิดไฟล์: {e}"; add_log(f"  ❌ {error_msg}", "ERROR"); ui.show_error("เปิดไฟล์ไม่ได้", f"{error_msg}\n\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{freq_save_path}")
+              except FileNotFoundError: error_msg = f"ไม่พบคำสั่งสำหรับเปิดไฟล์..."; add_log(f"  ❌ {error_msg}", "ERROR"); messagebox.showerror("เปิดไฟล์ไม่ได้", error_msg)
+              except Exception as e: error_msg = f"เกิดข้อผิดพลาดในการเปิดไฟล์: {e}"; add_log(f"  ❌ {error_msg}", "ERROR"); messagebox.showerror("เปิดไฟล์ไม่ได้", f"{error_msg}\n\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{freq_save_path}")
 
     except PermissionError as pe:
         error_msg = f"ไม่สามารถเขียนไฟล์ได้ อาจเป็นเพราะไฟล์กำลังเปิดอยู่ หรือไม่มีสิทธิ์เขียนในตำแหน่งที่เลือก"
         add_log(f"\n❌ เกิดข้อผิดพลาด PermissionError: {error_msg}", "ERROR"); add_log(f"รายละเอียด: {pe}")
-        ui.show_error("Export ล้มเหลว", f"{error_msg}\n\nกรุณาปิดไฟล์ (ถ้าเปิดอยู่) หรือเลือกตำแหน่งบันทึกอื่น")
+        messagebox.showerror("Export ล้มเหลว", f"{error_msg}\n\nกรุณาปิดไฟล์ (ถ้าเปิดอยู่) หรือเลือกตำแหน่งบันทึกอื่น")
     except Exception as e:
         # Catch-all for other unexpected errors during Excel writing
         error_msg = f"เกิดข้อผิดพลาดที่ไม่คาดคิดระหว่างการเขียนไฟล์ Excel"
         add_log(f"\n❌ เกิดข้อผิดพลาดร้ายแรงในการ Export: {error_msg}", "ERROR"); add_log(f"รายละเอียด: {e}")
         import traceback; add_log(traceback.format_exc(), "ERROR") # Log full traceback for debugging
-        ui.show_error("Export ล้มเหลว", f"{error_msg}: {e}")
+        messagebox.showerror("Export ล้มเหลว", f"{error_msg}: {e}")
     finally:
         # --- Reset Progress Bar and Status ---
         # (ทำไปแล้วใน finally block ของการคำนวณ แต่ทำซ้ำเผื่อกรณี error ตอน export)
-        if ui and ui.progress_bar:
-            ui.progress_bar.setValue(0)
+        if progressbar: progressbar['value'] = 0
         if progress_status_var: progress_status_var.set("Idle")
-        process_events()
+        if root: root.update_idletasks()
 
 # --- สิ้นสุดฟังก์ชัน run_all_frequencies (เวอร์ชันแก้ไข TypeError) ---
 
@@ -2230,252 +2166,232 @@ def add_log(message, level="INFO"):
     เพิ่มข้อความลงใน Log พร้อมระบุระดับความสำคัญ
     level: "INFO" (ปกติ), "SUCCESS" (สำเร็จ), "WARNING" (คำเตือน), "ERROR" (ข้อผิดพลาด)
     """
-    global ui
-    if ui is None:
+    global root, log_text # <--- เพิ่ม global root, log_text
+
+    # ตรวจสอบว่า log_text widget ถูกสร้างแล้วหรือยัง และยังคงอยู่ ก่อนที่จะพยายามใช้
+    if 'log_text' in globals() and isinstance(log_text, tk.Text) and log_text.winfo_exists():
+        # กำหนดแท็กสีตามระดับความสำคัญ
+        tag = None # Default tag
+        if level == "SUCCESS":
+            log_text.tag_config("success", foreground="green")
+            tag = "success"
+        elif level == "WARNING":
+            log_text.tag_config("warning", foreground="#FF8C00")  # Orange
+            tag = "warning"
+        elif level == "ERROR":
+            log_text.tag_config("error", foreground="red")
+            tag = "error"
+        # else INFO or other levels will use default foreground or existing "info" tag if configured
+
+        # เพิ่มข้อความลง Log
+        log_text.insert(tk.END, f"{message}\n", tag)
+        log_text.see(tk.END)  # เลื่อนไปที่บรรทัดล่าสุด
+
+        # ตรวจสอบว่า root widget ถูกสร้างแล้วหรือยัง และยังคงอยู่ ก่อนที่จะพยายามใช้
+        if 'root' in globals() and isinstance(root, tk.Tk) and root.winfo_exists():
+            root.update_idletasks()  # อัปเดต UI
+    else:
+        # ถ้า log_text หรือ root ยังไม่ได้ถูกสร้าง (เช่น ตอนเริ่มโปรแกรมมากๆ หรือถูกทำลายไปแล้ว)
+        # ก็ print ไปที่ console แทน เพื่อไม่ให้เกิด error เพิ่มเติม
         print(f"LOG [{level}] (UI not ready): {message}")
-        return
-
-    color_map = {
-        "SUCCESS": "#16a34a",
-        "WARNING": "#f59e0b",
-        "ERROR": "#ef4444",
-        "INFO": "#374151",
-    }
-    color = color_map.get(level, "#374151")
-
-    cursor = ui.log_text.textCursor()
-    fmt = QtGui.QTextCharFormat()
-    fmt.setForeground(QtGui.QBrush(QtGui.QColor(color)))
-    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-    cursor.insertText(f"{message}\n", fmt)
-    ui.log_text.setTextCursor(cursor)
-    ui.log_text.ensureCursorVisible()
 
 # <<< START OF CHANGES >>>
 # --- ฟังก์ชัน Entry Point ใหม่ (สำหรับให้ Launcher เรียก) ---
 # --- ฟังก์ชัน Entry Point ใหม่ (สำหรับให้ Launcher เรียก) ---
+def run_this_app(working_dir=None): # ชื่อฟังก์ชันนี้จะถูกใช้ใน Launcher
+    """
+    ฟังก์ชันหลักสำหรับสร้างและรัน QuotaSamplerApp.
+    """
+    # VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV
+    # ประกาศ global variables ที่จะถูกใช้ใน module นี้ทั้งหมดไว้ข้างบนสุดของฟังก์ชัน
+    # เพื่อให้ Python รู้จักพวกมันในฐานะ global ก่อนที่จะมีการ assign ค่าใดๆ
+    global root, file_var, condition_var, tree, progressbar, progress_status_var
+    global check_button_widget, freq_button_widget, log_text
+    # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-class QuotaSamplerWindow(QtWidgets.QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("โปรแกรมตรวจสอบเงื่อนไข SPSS V1.4 (Modern)")
-        self.resize(1100, 720)
+    print(f"--- QUOTA_SAMPLER_INFO: Starting 'QuotaSamplerApp' via run_this_app() ---")
+    try:
+        # --- โค้ดที่ย้ายมาจาก if __name__ == "__main__": เดิมจะมาอยู่ที่นี่ ---
+        # --- สร้าง UI ---
+        root = tk.Tk()
+        root.title("โปรแกรมตรวจสอบเงื่อนไข SPSS V1.4 (Green Progress)") # Updated Version
+        root.geometry("950x650") # Initial window size
+
+        # --- Tkinter Variables ---
+        # ตอนนี้ เมื่อเรา assign ค่าให้ file_var, Python จะรู้ว่ามันคือ global file_var ที่ประกาศไว้ข้างบน
+        file_var = tk.StringVar() # For displaying selected file path
+        condition_var = tk.StringVar() # For the condition input entry
+
+        # --- Set Icon ---
         try:
-            icon_path = resource_path("Clean.ico")
+            # Ensure resource_path function is defined correctly earlier in your code
+            icon_path = resource_path("Clean.ico") # Assumes icon is in same dir or bundled
             if os.path.exists(icon_path):
-                self.setWindowIcon(QtGui.QIcon(icon_path))
-        except Exception:
-            pass
+                root.iconbitmap(icon_path)
+        except NameError:
+            print("Warning: resource_path function not defined, cannot set icon.")
+        except Exception as e:
+            print(f"Warning: Could not load application icon: {e}")
+
+        # --- Configure Style ---
+        style = ttk.Style(root)
+        style.theme_use('clam') # Use a theme that generally looks good cross-platform
+        style.configure("Treeview.Heading", font=('Tahoma', 10, 'bold'))
+        style.configure("Treeview", rowheight=25, font=('Tahoma', 10)) # Adjust row height if needed
+
+        # *** สร้าง Style ใหม่สำหรับ Progressbar สีเขียว ***
+        style.configure('green.Horizontal.TProgressbar', troughcolor='#E0E0E0', background='#28a745') # Light grey trough, green bar
+
+        # --- Top Frame (File Selection & Help) ---
+        top_fr = tk.Frame(root, padx=10, pady=5)
+        # Pack top frame first
+        top_fr.pack(fill=tk.X, side=tk.TOP)
+        # Widgets within top frame
+        tk.Button(top_fr, text="❓วิธีใช้", command=show_help, bg="#FF6347", fg="white", font=('Tahoma', 9, 'bold'), width=8).pack(side=tk.RIGHT, padx=(5,0))
+        tk.Button(top_fr, text="📂 เลือกไฟล์ SPSS", command=load_file, bg="#90EE90", activebackground="#3CB371", font=('Tahoma', 9, 'bold'), width=18).pack(side=tk.RIGHT, padx=5)
+        tk.Label(top_fr, text="ไฟล์:", font=('Tahoma', 9)).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Entry(top_fr, textvariable=file_var, state='readonly', relief=tk.SUNKEN, bg="#F0F0F0").pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # --- Entry Frame (Condition Input & Management Buttons) ---
+        entry_fr = tk.Frame(root, padx=10, pady=5)
+        # Pack entry frame below top frame
+        entry_fr.pack(fill=tk.X, side=tk.TOP)
+        # Widgets within entry frame
+        tk.Label(entry_fr, text="เงื่อนไข:", font=('Tahoma', 9)).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Entry(entry_fr, textvariable=condition_var, font=('Tahoma', 10)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,5))
+        tk.Button(entry_fr, text="➕ บันทึก", command=save_condition, bg="#FFD700", activebackground="#B8860B", font=('Tahoma', 9, 'bold'), width=8).pack(side=tk.LEFT, padx=(0,5))
+        tk.Button(entry_fr, text="❌ ลบ", command=delete_condition, bg="#FF6347", fg="white", font=('Tahoma', 9, 'bold'), width=5).pack(side=tk.LEFT, padx=(0,5)) # Delete button
+        cond_file_fr = tk.Frame(entry_fr)
+        cond_file_fr.pack(side=tk.LEFT, padx=(10,0)) # Add padding before this group
+        tk.Button(cond_file_fr, text="📥 Load", command=import_conditions, bg="#ADD8E6", activebackground="#4682B4", font=('Tahoma', 9, 'bold'), width=8).pack(side=tk.LEFT, padx=(0,5))
+        tk.Button(cond_file_fr, text="💾 Save", command=export_conditions, bg="#ADD8E6", activebackground="#4682B4", font=('Tahoma', 9, 'bold'), width=8).pack(side=tk.LEFT)
+
+        # --- Treeview Frame (Displaying Conditions) ---
+        # Pack frame_table ให้ fill และ expand ในส่วนที่เหลือด้านบน
+        frame_table = tk.Frame(root)
+        # Pack this *before* the bottom elements and make it expand
+        frame_table.pack(padx=10, pady=(5,0), fill=tk.BOTH, expand=True, side=tk.TOP) # Reduced bottom padding
+
+        # Scrollbars (ภายใน frame_table)
+        h_scroll = ttk.Scrollbar(frame_table, orient='horizontal')
+        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        v_scroll = ttk.Scrollbar(frame_table, orient='vertical')
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        # Treeview Widget (ภายใน frame_table)
+        tree = ttk.Treeview(
+            frame_table,
+            columns=("ID", "Condition", "Count"), # Define columns
+            show='headings', # Hide the default first empty column
+            yscrollcommand=v_scroll.set, # Link vertical scrollbar
+            xscrollcommand=h_scroll.set  # Link horizontal scrollbar
+        )
+        # Configure Tags for Row Formatting
+        tree.tag_configure('count_red', foreground='red', font=('Tahoma', 10, 'bold')) # For rows with count > 0
+        tree.tag_configure('error_msg', foreground='#E67E22', font=('Tahoma', 10, 'italic')) # Orange/italic for errors
+        tree.tag_configure('not_available', foreground='grey', font=('Tahoma', 10, 'italic')) # Grey/italic for N/A
+        # Define Headings
+        tree.heading("ID", text="ID", anchor='center')
+        tree.heading("Condition", text="เงื่อนไขที่บันทึกไว้")
+        tree.heading("Count", text="Count", anchor='center')
+        # Define Column Properties
+        tree.column("ID", width=40, minwidth=30, anchor='center', stretch=tk.NO) # Fixed width ID
+        tree.column("Condition", width=600, minwidth=300) # Condition column can stretch
+        tree.column("Count", width=80, minwidth=60, anchor='center', stretch=tk.NO) # Fixed width Count
+        # Pack Treeview to fill frame_table
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Configure Scrollbars
+        v_scroll.config(command=tree.yview)
+        h_scroll.config(command=tree.xview)
+
+        # --- Check & Freq Button Frame (Pack ไว้ล่างสุด) ---
+        # *** แก้ไข: สร้าง Frame โดยไม่มี pady ใน constructor ***
+        bottom_btn_frame = tk.Frame(root)
+        # *** แก้ไข: ใส่ pady ตอน pack ***
+        bottom_btn_frame.pack(fill=tk.X, padx=10, pady=(5, 10), side=tk.BOTTOM) # Pack LAST at the bottom
+
+        # Main Check Button (ภายใน bottom_btn_frame)
+        check_button_widget = tk.Button(bottom_btn_frame, text="📊 ตรวจสอบเงื่อนไข & Export", command=check_conditions, bg="#4682B4", fg="white", font=('Tahoma', 11, 'bold'), height=2)
+        check_button_widget.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        # Freq Button (ภายใน bottom_btn_frame)
+        # Assuming run_all_frequencies function exists
+        freq_button_widget = tk.Button(bottom_btn_frame, text="📈 Run Frequency", command=run_all_frequencies, bg="#28a745", fg="white", font=('Tahoma', 11, 'bold'), height=2)
+        freq_button_widget.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+        # --- Progress Bar Frame (Pack ไว้เหนือ bottom_btn_frame) ---
+        # *** แก้ไข: สร้าง Frame โดยไม่มี pady ใน constructor ***
+        progress_frame = tk.Frame(root, padx=10)
+        # *** แก้ไข: ใส่ pady ตอน pack ***
+        # Pack progress frame ลงล่าง (มันจะไปอยู่เหนือ bottom_btn_frame ที่ pack ไปก่อนหน้า)
+        progress_frame.pack(fill=tk.X, pady=(0, 5), side=tk.BOTTOM)
+
+        progress_status_var = tk.StringVar() # Variable to hold status text
+        progress_status_label = tk.Label(progress_frame, textvariable=progress_status_var, font=('Tahoma', 9), anchor='w')
+        progress_status_label.pack(side=tk.LEFT) # Align text left
+
+        # สร้าง Progressbar และใช้ style สีเขียว
+        progressbar = ttk.Progressbar(
+            progress_frame,
+            orient='horizontal',
+            length=300,
+            mode='determinate',
+            style='green.Horizontal.TProgressbar' # ใช้ Style สีเขียว
+        )
+        progressbar.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
+        progress_status_var.set("Status") # Initial status text
+
+        # --- Log Area Frame (เพิ่มระหว่าง Treeview และ Progress/Buttons) ---
+        log_frame = tk.Frame(root, pady=5)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, side=tk.BOTTOM)
+
+        # หัวข้อ Log
+        log_header_frame = tk.Frame(log_frame)
+        log_header_frame.pack(fill=tk.X, side=tk.TOP)
+
+        tk.Label(log_header_frame, text="Log:", font=('Tahoma', 10, 'bold')).pack(side=tk.LEFT)
+
+        # ปุ่มล้าง Log
+        clear_log_button = tk.Button(log_header_frame, text="ล้าง Log", command=lambda: log_text.delete(1.0, tk.END),
+                                    bg="#FF6347", fg="white", font=('Tahoma', 8))
+        clear_log_button.pack(side=tk.RIGHT, padx=5)
+
+        # พื้นที่แสดง Log
+        log_text = tk.Text(log_frame, wrap=tk.WORD, height=8, font=('Consolas', 9))
+        log_text.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+
+        # Scrollbar สำหรับ Log
+        log_scrollbar = tk.Scrollbar(log_text)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        log_text.config(yscrollcommand=log_scrollbar.set)
+        log_scrollbar.config(command=log_text.yview)
+        # --- Start GUI Event Loop ---
+        root.mainloop() # ควรอยู่ท้ายสุดจริงๆ ของไฟล์ .py
+
+        print(f"--- QUOTA_SAMPLER_INFO: QuotaSamplerApp mainloop finished. ---")
+
+    except Exception as e:
+        # ดักจับ Error ที่อาจเกิดขึ้นระหว่างการสร้างหรือรัน App
+        print(f"QUOTA_SAMPLER_ERROR: An error occurred during QuotaSamplerApp execution: {e}")
+        # แสดง Popup ถ้ามีปัญหา
+        if 'root' not in locals() or not root.winfo_exists(): # สร้าง root ชั่วคราวถ้ายังไม่มี
+            root_temp = tk.Tk()
+            root_temp.withdraw()
+            messagebox.showerror("Application Error (Quota Sampler)",
+                               f"An unexpected error occurred:\n{e}", parent=root_temp)
+            root_temp.destroy()
+        else:
+            messagebox.showerror("Application Error (Quota Sampler)",
+                               f"An unexpected error occurred:\n{e}", parent=root) # ใช้ root ที่มีอยู่ถ้าเป็นไปได้
+        sys.exit(f"Error running QuotaSamplerApp: {e}") # อาจจะ exit หรือไม่ก็ได้ ขึ้นกับการออกแบบ
 
 
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        main = QtWidgets.QVBoxLayout(central)
-        main.setContentsMargins(16, 16, 16, 16)
-        main.setSpacing(12)
-
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.addWidget(QtWidgets.QLabel("ไฟล์:"))
-        self.file_path_edit = QtWidgets.QLineEdit()
-        self.file_path_edit.setReadOnly(True)
-        top_row.addWidget(self.file_path_edit, 1)
-        self.btn_select_file = QtWidgets.QPushButton("เลือกไฟล์ SPSS")
-        self.btn_help = QtWidgets.QPushButton("วิธีใช้")
-        top_row.addWidget(self.btn_select_file)
-        top_row.addWidget(self.btn_help)
-        main.addLayout(top_row)
-
-        cond_row = QtWidgets.QHBoxLayout()
-        cond_row.addWidget(QtWidgets.QLabel("เงื่อนไข:"))
-        self.condition_input = QtWidgets.QLineEdit()
-        cond_row.addWidget(self.condition_input, 1)
-        self.btn_save = QtWidgets.QPushButton("บันทึก")
-        self.btn_delete = QtWidgets.QPushButton("ลบ")
-        self.btn_load = QtWidgets.QPushButton("โหลด")
-        self.btn_export = QtWidgets.QPushButton("บันทึก")
-        cond_row.addWidget(self.btn_save)
-        cond_row.addWidget(self.btn_delete)
-        cond_row.addWidget(self.btn_load)
-        cond_row.addWidget(self.btn_export)
-        main.addLayout(cond_row)
-
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        main.addWidget(splitter, 1)
-
-        self.conditions_table = QtWidgets.QTableWidget()
-        self.conditions_table.setColumnCount(3)
-        self.conditions_table.setHorizontalHeaderLabels(["ID", "เงื่อนไขที่บันทึกไว้", "Count"])
-        self.conditions_table.horizontalHeader().setStretchLastSection(True)
-        self.conditions_table.verticalHeader().setVisible(False)
-        self.conditions_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-        self.conditions_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.conditions_table.setAlternatingRowColors(True)
-        header = self.conditions_table.horizontalHeader()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self.conditions_table.setColumnWidth(0, 60)
-        self.conditions_table.setColumnWidth(2, 90)
-        self.conditions_table.setMouseTracking(True)
-        self.conditions_table.cellEntered.connect(self._hover_select_row)
-        splitter.addWidget(self.conditions_table)
-
-        log_container = QtWidgets.QWidget()
-        log_layout = QtWidgets.QVBoxLayout(log_container)
-        log_layout.setContentsMargins(0, 0, 0, 0)
-        log_header = QtWidgets.QHBoxLayout()
-        log_header.addWidget(QtWidgets.QLabel("Log:"))
-        self.btn_clear_log = QtWidgets.QPushButton("ล้าง Log")
-        log_header.addStretch(1)
-        log_header.addWidget(self.btn_clear_log)
-        log_layout.addLayout(log_header)
-        self.log_text = QtWidgets.QTextEdit()
-        self.log_text.setReadOnly(True)
-        log_layout.addWidget(self.log_text, 1)
-        splitter.addWidget(log_container)
-        splitter.setSizes([420, 180])
-
-        progress_row = QtWidgets.QHBoxLayout()
-        self.progress_label = QtWidgets.QLabel("สถานะ")
-        self.progress_bar = QtWidgets.QProgressBar()
-        self.progress_bar.setMinimum(0)
-        progress_row.addWidget(self.progress_label)
-        progress_row.addWidget(self.progress_bar, 1)
-        main.addLayout(progress_row)
-
-        action_row = QtWidgets.QHBoxLayout()
-        self.check_button = QtWidgets.QPushButton("ตรวจสอบเงื่อนไข & ส่งออก")
-        self.freq_button = QtWidgets.QPushButton("ทำ Frequency")
-        action_row.addWidget(self.check_button, 1)
-        action_row.addWidget(self.freq_button, 1)
-        main.addLayout(action_row)
-
-        self.apply_styles()
-        self.bind_actions()
-
-    def apply_styles(self):
-        self.setStyleSheet("""
-            QMainWindow { background: #f3f4f6; }
-            QLabel { color: #111827; }
-            QLineEdit {
-                background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px;
-                padding: 6px 10px;
-            }
-            QTextEdit {
-                background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
-                padding: 8px;
-            }
-            QTableWidget {
-                background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px;
-                gridline-color: #e5e7eb;
-            }
-            QHeaderView::section {
-                background: #eef2ff; padding: 6px; border: none; font-weight: 700;
-            }
-            QPushButton {
-                background: #111827; color: white; border: none; padding: 8px 14px;
-                border-radius: 8px; font-weight: 600;
-            }
-            QPushButton:hover { background: #0b1220; }
-        """)
-        self.btn_select_file.setStyleSheet("background:#10b981;color:#0f172a;")
-        self.btn_help.setStyleSheet("background:#f97316;color:white;")
-        self.btn_save.setStyleSheet("background:#f59e0b;color:#111827;")
-        self.btn_delete.setStyleSheet("background:#ef4444;color:white;")
-        self.btn_load.setStyleSheet("background:#60a5fa;color:#0b1220;")
-        self.btn_export.setStyleSheet("background:#60a5fa;color:#0b1220;")
-        self.check_button.setStyleSheet("background:#2563eb;color:white;font-weight:700;")
-        self.freq_button.setStyleSheet("background:#16a34a;color:white;font-weight:700;")
-
-    def bind_actions(self):
-        self.btn_help.clicked.connect(show_help)
-        self.btn_select_file.clicked.connect(load_file)
-        self.btn_save.clicked.connect(save_condition)
-        self.btn_delete.clicked.connect(delete_condition)
-        self.btn_load.clicked.connect(import_conditions)
-        self.btn_export.clicked.connect(export_conditions)
-        self.check_button.clicked.connect(check_conditions)
-        self.freq_button.clicked.connect(run_all_frequencies)
-        self.btn_clear_log.clicked.connect(self.log_text.clear)
-
-    def _hover_select_row(self, row, _col):
-        # ไฮไลต์ทั้งแถวเมื่อเอาเมาส์ชี้
-        if row >= 0:
-            self.conditions_table.selectRow(row)
-
-    def _dialog(self, title, message, kind="info", buttons=("OK",)):
-        dlg = SweetAlert(title, message, kind=kind, buttons=buttons, parent=self)
-        dlg.exec()
-        return dlg.result
-
-    def show_info(self, title, message):
-        self._dialog(title, message, kind="info")
-
-    def show_warning(self, title, message):
-        self._dialog(title, message, kind="warning")
-
-    def show_error(self, title, message):
-        self._dialog(title, message, kind="error")
-
-    def ask_yes_no(self, title, message, **_kwargs):
-        # _kwargs รองรับพารามิเตอร์เดิม (เช่น icon=) ที่ส่งมาจาก Tkinter
-        result = self._dialog(title, message, kind="question", buttons=("Yes", "No"))
-        return result == "Yes"
-
-    def ask_yes_no_cancel(self, title, message):
-        result = self._dialog(title, message, kind="question", buttons=("Yes", "No", "Cancel"))
-        if result == "Yes":
-            return True
-        if result == "No":
-            return False
-        return None
-
-    def _filetypes_to_filter(self, filetypes):
-        if not filetypes:
-            return "All files (*.*)"
-        parts = []
-        for label, pattern in filetypes:
-            parts.append(f"{label} ({pattern})")
-        return ";;".join(parts)
-
-    def open_file_dialog(self, title="Open File", filetypes=None, filter_text=None):
-        file_filter = filter_text or self._filetypes_to_filter(filetypes)
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, title, "", file_filter)
-        return path
-
-    def save_file_dialog(self, defaultextension=None, filetypes=None, title="Save File", initialfile=None, filter_text=None):
-        file_filter = filter_text or self._filetypes_to_filter(filetypes)
-        default_name = initialfile or ""
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, title, default_name, file_filter)
-        if path and defaultextension and not path.lower().endswith(defaultextension):
-            path = f"{path}{defaultextension}"
-        return path
-
-    def get_selected_conditions(self):
-        rows = sorted({i.row() for i in self.conditions_table.selectedItems()})
-        conds = []
-        for r in rows:
-            item = self.conditions_table.item(r, 1)
-            if item:
-                conds.append(item.text())
-        return conds
-
-
-def run_this_app(working_dir=None):
-    global ui, file_var, condition_var, progress_status_var, check_button_widget, freq_button_widget
-    app = QtWidgets.QApplication(sys.argv)
-    app.setFont(QtGui.QFont("Tahoma", 10))
-
-    ui = QuotaSamplerWindow()
-    file_var = UiVar(getter=ui.file_path_edit.text, setter=ui.file_path_edit.setText)
-    condition_var = UiVar(getter=ui.condition_input.text, setter=ui.condition_input.setText)
-    progress_status_var = UiVar(getter=ui.progress_label.text, setter=ui.progress_label.setText)
-    check_button_widget = ui.check_button
-    freq_button_widget = ui.freq_button
-
-    ui.show()
-    sys.exit(app.exec())
-
-
+# --- ส่วน Run Application เมื่อรันไฟล์นี้โดยตรง (สำหรับ Test) ---
 if __name__ == "__main__":
+    print("--- Running QuotaSamplerApp.py directly for testing ---")
+    # (ถ้ามีการตั้งค่า DPI ด้านบน มันจะทำงานอัตโนมัติ)
+
+    # เรียกฟังก์ชัน Entry Point ที่เราสร้างขึ้น
     run_this_app()
+
+    print("--- Finished direct execution of QuotaSamplerApp.py ---")
+# <<< END OF CHANGES >>>
