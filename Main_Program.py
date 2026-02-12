@@ -84,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.46"
+CURRENT_VERSION = "1.1.47"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -827,7 +827,7 @@ PROGRAMS = [
         "name": "Program BrandSence V1",
         "description": "เอาไว้รัน Program BrandSence",
         "type": "local_py_module",
-        "module_path": "123_Program_Run_Brandsence_Add_C All", # <--- ปรับชื่อ module_path
+        "module_path": "123_Program_Run_Brandsence2026", # <--- ปรับชื่อ module_path
         "entry_point": "run_this_app",
         "icon": "BrandS.ico",
         "category": "Statistic", # <--- เพิ่ม category

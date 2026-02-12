@@ -9,6 +9,9 @@ import pyreadstat
 import numpy as np
 import os
 import openpyxl
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 
 # --- (คงเดิม) Imports for Factor/Regression Analysis ---
 import statsmodels.api as sm
@@ -18,6 +21,7 @@ import io
 import sys
 from scipy.linalg import inv, eigh
 from sklearn.preprocessing import StandardScaler
+import time
 
 
 class SpssProcessorApp(bstrap.Window):
@@ -42,6 +46,10 @@ class SpssProcessorApp(bstrap.Window):
         self.t2b_choice_var = bstrap.StringVar(value="5+4")
         self.index1_labels = {}
         self.filter_labels = {}
+        self.spss_value_labels = {}
+        self.spss_variable_labels = {}
+        self.e_group_mode_var = bstrap.StringVar(value="default")
+        self.e_group_entry_var = bstrap.StringVar(value="")
 
         # --- GUI Setup ---
         self.setup_gui()
@@ -100,12 +108,26 @@ class SpssProcessorApp(bstrap.Window):
         # --- Step 2 Frame ---
         step2_frame = bstrap.Labelframe(left_frame, text=" ขั้นตอนที่ 2: วิเคราะห์และส่งออก ", bootstyle="info", padding=10)
         step2_frame.pack(fill="x", pady=10)
-        bstrap.Label(step2_frame, text="Filter สำหรับสรุป Excel:").pack(side="top", anchor="w")
+        bstrap.Label(step2_frame, text="Filter สำหรับสรุป Excel (คั่นด้วย , หากหลายตัว):").pack(side="top", anchor="w")
         self.filter_entry = bstrap.Entry(step2_frame, state="disabled")
         self.filter_entry.pack(side="top", fill="x", pady=(5, 10))
 
+        # --- E Group Option ---
+        e_group_frame = bstrap.Labelframe(step2_frame, text=" Part E: Correlation Mode ", bootstyle="secondary", padding=5)
+        e_group_frame.pack(fill="x", pady=(0, 5))
+        rb_e_default = bstrap.Radiobutton(e_group_frame, text="Default (ใช้ E ทุกตัวแยกกัน)", variable=self.e_group_mode_var, value="default", bootstyle="info", command=self._toggle_e_group_entry)
+        rb_e_default.pack(anchor="w")
+        rb_e_group = bstrap.Radiobutton(e_group_frame, text="Group Attribute (เช่น 4+5)", variable=self.e_group_mode_var, value="group", bootstyle="info", command=self._toggle_e_group_entry)
+        rb_e_group.pack(anchor="w")
+        e_entry_frame = bstrap.Frame(e_group_frame)
+        e_entry_frame.pack(fill="x", pady=(3, 0))
+        bstrap.Label(e_entry_frame, text="ระบุ E ที่จะรวม:").pack(side="left", padx=(10, 5))
+        self.e_group_entry = bstrap.Entry(e_entry_frame, textvariable=self.e_group_entry_var, state="disabled", width=15)
+        self.e_group_entry.pack(side="left")
+        bstrap.Label(e_entry_frame, text="(เช่น 4+5)", bootstyle="secondary").pack(side="left", padx=5)
+
         # --- Label Definition Button ---
-        self.btn_define_labels = bstrap.Button(step2_frame, text="กำหนด Label สำหรับ Index และ Filter", command=self.open_label_editor, bootstyle="primary", width=25, state="disabled")
+        self.btn_define_labels = bstrap.Button(step2_frame, text="กำหนด Label สำหรับ Index", command=self.open_label_editor, bootstyle="primary", width=25, state="disabled")
         self.btn_define_labels.pack(pady=5, fill="x", ipady=5)
 
         self.cb_save_all_sheets = bstrap.Checkbutton(
@@ -147,6 +169,282 @@ class SpssProcessorApp(bstrap.Window):
         """หยุดการทำงาน Progress Bar"""
         self.progress.stop()
 
+    def _format_filter_val(self, var_name, value):
+        """แปลงค่าตัวเลขเป็น SPSS value label (ถ้ามี)"""
+        val_labels = self.spss_value_labels.get(var_name, {})
+        label = val_labels.get(value)
+        if label is None:
+            try:
+                label = val_labels.get(float(value))
+            except (ValueError, TypeError):
+                pass
+        if label is None:
+            try:
+                label = val_labels.get(int(float(value)))
+            except (ValueError, TypeError):
+                pass
+        if label:
+            return f"{var_name}={label}"
+        return f"{var_name}={value}"
+
+    def _get_var_group_label(self, var_prefix, group_num):
+        """ดึง SPSS variable label สำหรับ group ของตัวแปร S/P"""
+        SPE_PAT = re.compile(r".*?#(\d+)\$(\d+)$")
+        orig_vars = self.vars_to_transform.get(var_prefix, [])
+        for var in orig_vars:
+            match = SPE_PAT.match(var)
+            if match and int(match.group(1)) == group_num:
+                lbl = self.spss_variable_labels.get(var)
+                if lbl:
+                    return lbl
+        return f"{var_prefix}_{group_num}"
+
+    def _run_ca_for_subset(self, var_prefix, df_subset):
+        """รัน CA บน subset ของข้อมูล คืน list of lists (rows)"""
+        if df_subset is None or df_subset.empty:
+            return None
+        cols = sorted(
+            [c for c in df_subset.columns
+             if c.startswith(f'{var_prefix}_')
+             and 'cor' not in c and 'agree' not in c],
+            key=lambda x: int(x.split('_')[1]))
+        if not cols or 'Index1' not in df_subset.columns:
+            return None
+
+        idx1_vals = sorted(
+            df_subset['Index1'].dropna().unique())
+        if len(idx1_vals) < 2 or len(cols) < 2:
+            return None
+
+        cont = np.zeros((len(cols), len(idx1_vals)))
+        for j, iv in enumerate(idx1_vals):
+            sub = df_subset[df_subset['Index1'] == iv]
+            for i, col in enumerate(cols):
+                cont[i, j] = sub[col].mean()
+
+        cont = np.nan_to_num(cont, nan=0.0)
+        if cont.sum() == 0:
+            return None
+
+        N = cont
+        n = N.sum()
+        P = N / n
+        r = P.sum(axis=1)
+        c = P.sum(axis=0)
+        r[r == 0] = 1e-10
+        c[c == 0] = 1e-10
+
+        Dr = np.diag(1.0 / np.sqrt(r))
+        Dc = np.diag(1.0 / np.sqrt(c))
+        S = Dr @ (P - np.outer(r, c)) @ Dc
+        U, sigma, Vt = np.linalg.svd(S, full_matrices=False)
+
+        n_ax = min(2, len(sigma))
+        sv = sigma[:n_ax]
+        ev = sv ** 2
+        ti = (sigma ** 2).sum()
+        cr = ev / ti if ti > 0 else np.zeros(n_ax)
+
+        row_sc = Dr @ U[:, :n_ax] @ np.diag(sv)
+        col_sc = Dc @ Vt[:n_ax, :].T @ np.diag(sv)
+
+        row_labels = []
+        for cn in cols:
+            g = int(cn.split('_')[1])
+            row_labels.append(
+                self._get_var_group_label(var_prefix, g))
+
+        col_labels = []
+        for iv in idx1_vals:
+            code = int(iv)
+            lbl = self.index1_labels.get(code, str(code))
+            col_labels.append(f"({lbl})")
+
+        axes = [f'Axis{i+1}' for i in range(n_ax)]
+
+        rows = []
+        rows.append(['Axis information', '', '', ''])
+        rows.append(['', 'Singular value',
+                      'Eigen value', 'Contribution ratio'])
+        for i in range(n_ax):
+            rows.append([axes[i], sv[i], ev[i], cr[i]])
+        rows.append(['', '', '', ''])
+        rows.append(['', '', '', ''])
+
+        rows.append(['Row category score', '', '', ''])
+        rh = [''] + axes
+        while len(rh) < 4:
+            rh.append('')
+        rows.append(rh)
+        for i, lbl in enumerate(row_labels):
+            rw = [lbl]
+            for ax in range(n_ax):
+                rw.append(row_sc[i, ax])
+            while len(rw) < 4:
+                rw.append('')
+            rows.append(rw)
+        rows.append(['', '', '', ''])
+        rows.append(['', '', '', ''])
+
+        rows.append(['Column category score', '', '', ''])
+        ch = [''] + axes
+        while len(ch) < 4:
+            ch.append('')
+        rows.append(ch)
+        for i, lbl in enumerate(col_labels):
+            rw = [lbl]
+            for ax in range(n_ax):
+                rw.append(col_sc[i, ax])
+            while len(rw) < 4:
+                rw.append('')
+            rows.append(rw)
+
+        return rows
+
+    def _get_filter_val_label(self, fvar, val):
+        """ดึง SPSS value label ของค่า filter"""
+        vl = self.spss_value_labels.get(fvar, {})
+        lbl = vl.get(val)
+        if lbl is None:
+            try:
+                lbl = vl.get(int(float(val)))
+            except (ValueError, TypeError):
+                pass
+        if lbl is None:
+            try:
+                lbl = vl.get(float(val))
+            except (ValueError, TypeError):
+                pass
+        if lbl:
+            return str(lbl)
+        try:
+            return str(int(val))
+        except (ValueError, TypeError):
+            return str(val)
+
+    def _write_ca_sheet(self, workbook, sheet_name, var_prefix):
+        """เขียนผล CA แบบ side-by-side ตาม filter ลง worksheet
+        พร้อมสีเหลือง header + เส้นตาราง"""
+        df = self.transformed_df
+        if df is None:
+            return
+
+        ws = workbook.create_sheet(title=sheet_name)
+
+        filter_text = self.filter_entry.get().strip()
+        cross_filters = [
+            f.strip() for f in filter_text.split(',')
+            if f.strip()]
+
+        blocks = []
+        if not cross_filters:
+            blocks.append(('Total', df))
+        else:
+            for fvar in cross_filters:
+                if fvar not in df.columns:
+                    continue
+                blocks.append(('Total', df))
+                uvals = sorted(
+                    df[fvar].dropna().unique())
+                for val in uvals:
+                    lbl = self._get_filter_val_label(
+                        fvar, val)
+                    subset = df[df[fvar] == val]
+                    blocks.append((lbl, subset))
+
+        if not blocks:
+            return
+
+        yellow = PatternFill(
+            start_color='FFD700', end_color='FFD700',
+            fill_type='solid')
+        peach = PatternFill(
+            start_color='FFDAB9', end_color='FFDAB9',
+            fill_type='solid')
+        bold_font = Font(bold=True)
+        center_al = Alignment(horizontal='center')
+        right_al = Alignment(horizontal='right')
+        thin = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin'))
+
+        section_headers = {
+            'Axis information',
+            'Row category score',
+            'Column category score'}
+        sub_headers = {
+            'Singular value', 'Eigen value',
+            'Contribution ratio', 'Axis1', 'Axis2'}
+
+        bw = 4
+        gap = 1
+        col_off = 0
+
+        for title, subset in blocks:
+            ca_rows = self._run_ca_for_subset(
+                var_prefix, subset)
+            if ca_rows is None:
+                continue
+
+            cell = ws.cell(
+                row=1, column=col_off + 1,
+                value=title)
+            cell.fill = yellow
+            cell.font = bold_font
+            cell.border = thin
+
+            for r_idx, row_data in enumerate(ca_rows):
+                first_val = row_data[0] if row_data else ''
+                is_section = first_val in section_headers
+                is_sub = (first_val == '' and any(
+                    v in sub_headers
+                    for v in row_data if isinstance(v, str)))
+                is_blank = all(
+                    v == '' for v in row_data)
+
+                is_axis_data = (first_val in
+                    ('Axis1', 'Axis2') and not is_sub)
+
+                for c_idx, val in enumerate(row_data):
+                    cell = ws.cell(
+                        row=r_idx + 2,
+                        column=col_off + c_idx + 1)
+                    if val != '':
+                        cell.value = val
+                    if not is_blank:
+                        cell.border = thin
+                    if is_section:
+                        cell.font = bold_font
+                        cell.fill = peach
+                        if first_val == 'Axis information':
+                            cell.alignment = center_al
+                    elif is_sub:
+                        cell.fill = peach
+                        cell.font = bold_font
+                        cell.alignment = center_al
+                    elif is_axis_data and c_idx == 0:
+                        cell.alignment = right_al
+                    if isinstance(val, float):
+                        cell.number_format = '0.0000000'
+
+            cl = get_column_letter(col_off + 1)
+            ws.column_dimensions[cl].width = 40
+            for c in range(1, bw):
+                cl = get_column_letter(col_off + c + 1)
+                ws.column_dimensions[cl].width = 18
+
+            col_off += bw + gap
+
+    def _toggle_e_group_entry(self):
+        """เปิด/ปิดช่อง Entry สำหรับ E Group ตาม mode ที่เลือก"""
+        if self.e_group_mode_var.get() == "group":
+            self.e_group_entry.config(state="normal")
+        else:
+            self.e_group_entry.config(state="disabled")
+            self.e_group_entry_var.set("")
+
     def reset_state(self):
         """รีเซ็ตสถานะของโปรแกรมทั้งหมดเพื่อเริ่มใหม่"""
         self.df = None
@@ -162,6 +460,10 @@ class SpssProcessorApp(bstrap.Window):
         self.t2b_choice_var.set("5+4")
         self.index1_labels = {}
         self.filter_labels = {}
+        self.spss_value_labels = {}
+        self.spss_variable_labels = {}
+        self.e_group_mode_var.set("default")
+        self.e_group_entry_var.set("")
 
         self.btn_analyze_export.config(state="disabled")
         self.btn_define_labels.config(state="disabled")
@@ -210,14 +512,26 @@ class SpssProcessorApp(bstrap.Window):
                 else:
                     raise ValueError("ไม่พบ PathFile ในไฟล์การตั้งค่า")
 
-                if 'Filter_Var' in settings_df.columns and not pd.isna(settings_df['Filter_Var'].iloc[0]):
-                    filter_value = str(settings_df['Filter_Var'].iloc[0])
-                    self.filter_entry.config(state="normal")
-                    self.filter_entry.delete(0, 'end')
-                    self.filter_entry.insert(0, filter_value)
+                if 'Filter_Var' in settings_df.columns:
+                    filter_values = settings_df['Filter_Var'].dropna().tolist()
+                    filter_values = [str(v).strip() for v in filter_values if str(v).strip()]
+                    if filter_values:
+                        self.filter_entry.config(state="normal")
+                        self.filter_entry.delete(0, 'end')
+                        self.filter_entry.insert(0, ', '.join(filter_values))
 
                 if 'T2B_Choice' in settings_df.columns and not pd.isna(settings_df['T2B_Choice'].iloc[0]):
                     self.t2b_choice_var.set(str(settings_df['T2B_Choice'].iloc[0]))
+
+                if 'E_Group' in settings_df.columns and not pd.isna(settings_df['E_Group'].iloc[0]):
+                    e_group_val = str(settings_df['E_Group'].iloc[0]).strip()
+                    if e_group_val.lower() == 'default' or e_group_val == '':
+                        self.e_group_mode_var.set("default")
+                        self.e_group_entry_var.set("")
+                    else:
+                        self.e_group_mode_var.set("group")
+                        self.e_group_entry_var.set(e_group_val)
+                        self.e_group_entry.config(state="normal")
 
                 self.c_vars_to_compute = settings_df['C'].dropna().tolist() if 'C' in settings_df.columns else []
                 self.vars_to_transform = {}
@@ -233,7 +547,9 @@ class SpssProcessorApp(bstrap.Window):
                     index1_labels_df = labels_df[['Index1_Code', 'Index1_Label']].dropna()
                     self.index1_labels = dict(zip(index1_labels_df['Index1_Code'].astype(int), index1_labels_df['Index1_Label']))
 
-                filter_var = self.filter_entry.get().strip()
+                filter_text_for_label = self.filter_entry.get().strip()
+                filter_vars_list = [f.strip() for f in filter_text_for_label.split(',') if f.strip()]
+                filter_var = filter_vars_list[0] if filter_vars_list else ''
                 if filter_var and 'Filter_Code' in labels_df.columns and 'Filter_Label' in labels_df.columns:
                      self.filter_labels['var_name'] = filter_var
                      filter_labels_df = labels_df[['Filter_Code', 'Filter_Label']].dropna()
@@ -288,6 +604,10 @@ class SpssProcessorApp(bstrap.Window):
             self.df, meta = pyreadstat.read_sav(filepath)
             self.original_filepath = filepath
             self.spss_original_order = meta.column_names
+            if hasattr(meta, 'variable_value_labels'):
+                self.spss_value_labels = meta.variable_value_labels
+            if hasattr(meta, 'column_names_to_labels'):
+                self.spss_variable_labels = meta.column_names_to_labels
             self.df = self.df[self.spss_original_order]
             self.update_status(f"โหลดไฟล์สำเร็จ! {len(self.df)} แถว", "success")
             self.stop_progress()
@@ -313,10 +633,27 @@ class SpssProcessorApp(bstrap.Window):
         self.start_progress()
         self.update_status(f"กำลังโหลด: {os.path.basename(filepath)}...")
         try:
-            self.transformed_df, _ = pyreadstat.read_sav(filepath)
+            self.transformed_df, meta_cc = pyreadstat.read_sav(filepath)
+            if hasattr(meta_cc, 'variable_value_labels'):
+                self.spss_value_labels = meta_cc.variable_value_labels
+            if hasattr(meta_cc, 'column_names_to_labels'):
+                self.spss_variable_labels = meta_cc.column_names_to_labels
             
             base, _ = os.path.splitext(filepath)
             self.original_filepath = base.replace(" Compute C", "")
+            orig_sav = self.original_filepath + ".sav"
+            if os.path.exists(orig_sav):
+                try:
+                    _, meta_orig = pyreadstat.read_sav(
+                        orig_sav, metadataonly=True)
+                    if hasattr(meta_orig, 'variable_value_labels'):
+                        self.spss_value_labels.update(
+                            meta_orig.variable_value_labels)
+                    if hasattr(meta_orig, 'column_names_to_labels'):
+                        self.spss_variable_labels.update(
+                            meta_orig.column_names_to_labels)
+                except Exception:
+                    pass
             
             self.update_status(f"โหลดไฟล์สำเร็จ! {len(self.transformed_df)} แถว", "success")
             self.stop_progress()
@@ -558,19 +895,45 @@ class SpssProcessorApp(bstrap.Window):
 
     def run_full_transformation_and_save(self):
         self.start_progress()
+        self.show_log_panel("กำลังประมวลผลข้อมูล (Step 1)...")
+        start_time = time.time()
+
+        self.log_message("=" * 50)
+        self.log_message("เริ่มกระบวนการประมวลผลข้อมูล")
+        self.log_message("=" * 50)
+        self.log_message(f"Compute C: {len(self.computed_c_cols)} ตัวแปร")
+        self.log_message("")
+
+        self.log_message("[1/3] กำลัง Recode ตัวแปร A...")
         self.update_status("กำลัง Recode ตัวแปร A...")
         if not self._recode_a_variables_logic():
+            self.log_message("   ✗ Recode A ผิดพลาด")
             self.update_status("Recode A ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ Recode A สำเร็จ ({len(self.za_cols)} ตัวแปร ZA)")
 
+        self.log_message("")
+        self.log_message("[2/3] กำลังแปลงข้อมูล (Variables to Cases)...")
         self.update_status("กำลังแปลงข้อมูล (Variables to Cases)...")
         if not self._run_full_transformation_logic():
+            self.log_message("   ✗ แปลงข้อมูลผิดพลาด")
             self.update_status("แปลงข้อมูลผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ แปลงข้อมูลสำเร็จ ({len(self.transformed_df)} แถว)")
 
+        self.log_message("")
+        self.log_message("[3/3] กำลังบันทึกไฟล์ .sav...")
         self.update_status("แปลงข้อมูลสำเร็จ. กำลังบันทึกไฟล์อัตโนมัติ...", "success")
         if not self._auto_save_spss(self.transformed_df):
+            self.log_message("   ✗ บันทึกไม่สำเร็จ")
             self.update_status("บันทึก .sav อัตโนมัติไม่สำเร็จ", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message("   ✓ บันทึก .sav สำเร็จ")
 
-        self.show_message_in_display("ประมวลผลข้อมูลสำเร็จ\n\nกรุณาใส่ Filter (ถ้ามี) และกด 'วิเคราะห์และส่งออก Excel'")
+        elapsed = time.time() - start_time
+        self.log_message("")
+        self.log_message("=" * 50)
+        self.log_message(f"ประมวลผลข้อมูลเสร็จสมบูรณ์ (ใช้เวลา {elapsed:.1f} วินาที)")
+        self.log_message("=" * 50)
+        self.log_message("")
+        self.log_message("กรุณาใส่ Filter (ถ้ามี) และกด 'วิเคราะห์และส่งออก Excel'")
 
         self.btn_analyze_export.config(state="normal")
         self.btn_define_labels.config(state="normal")
@@ -580,23 +943,52 @@ class SpssProcessorApp(bstrap.Window):
 
     def run_processing_with_loaded_settings(self):
         self.start_progress()
+        self.show_log_panel("กำลังประมวลผลข้อมูล (จากไฟล์ตั้งค่า)...")
+        start_time = time.time()
 
-        self.update_status(f"กำลัง Compute C จากการตั้งค่า...")
+        self.log_message("=" * 50)
+        self.log_message("เริ่มกระบวนการประมวลผลจากไฟล์ตั้งค่า")
+        self.log_message("=" * 50)
+        self.log_message("")
+
+        self.log_message("[1/4] กำลัง Compute C...")
+        self.update_status("กำลัง Compute C จากการตั้งค่า...")
         if not self._compute_c_variables_logic():
+            self.log_message("   ✗ Compute C ผิดพลาด")
             self.update_status("Compute C ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
-        self.update_status(f"Compute C สำเร็จ! สร้าง {len(self.computed_c_cols)} ตัวแปร.", "success")
+        self.log_message(f"   ✓ Compute C สำเร็จ ({len(self.computed_c_cols)} ตัวแปร)")
 
+        self.log_message("")
+        self.log_message("[2/4] กำลัง Recode ตัวแปร A...")
         self.update_status("กำลัง Recode ตัวแปร A...")
         if not self._recode_a_variables_logic():
+            self.log_message("   ✗ Recode A ผิดพลาด")
             self.update_status("Recode A ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ Recode A สำเร็จ ({len(self.za_cols)} ตัวแปร ZA)")
 
+        self.log_message("")
+        self.log_message("[3/4] กำลังแปลงข้อมูล (Variables to Cases)...")
         self.update_status("กำลังแปลงข้อมูล (Variables to Cases)...")
         if not self._run_full_transformation_logic():
+            self.log_message("   ✗ แปลงข้อมูลผิดพลาด")
             self.update_status("แปลงข้อมูลผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ แปลงข้อมูลสำเร็จ ({len(self.transformed_df)} แถว)")
 
+        self.log_message("")
+        self.log_message("[4/4] กำลังบันทึกไฟล์ .sav...")
         self.update_status("แปลงข้อมูลสำเร็จ. กำลังบันทึกไฟล์อัตโนมัติ...", "success")
         if not self._auto_save_spss(self.transformed_df):
+            self.log_message("   ✗ บันทึกไม่สำเร็จ")
             self.update_status("บันทึก .sav อัตโนมัติไม่สำเร็จ", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message("   ✓ บันทึก .sav สำเร็จ")
+
+        elapsed = time.time() - start_time
+        self.log_message("")
+        self.log_message("=" * 50)
+        self.log_message(f"ประมวลผลเสร็จ (ใช้เวลา {elapsed:.1f} วินาที)")
+        self.log_message("=" * 50)
+        self.log_message("")
+        self.log_message("กำลังเริ่มวิเคราะห์และส่งออกอัตโนมัติ...")
 
         self.update_status("ประมวลผลข้อมูลสำเร็จ. เริ่มการวิเคราะห์และส่งออกอัตโนมัติ...", "info")
         self.after(100, lambda: self.run_analysis_and_export(automated=True))
@@ -798,6 +1190,26 @@ class SpssProcessorApp(bstrap.Window):
         )
         message_label.pack(side="top", anchor="nw", padx=20, pady=20)
 
+    def show_log_panel(self, title="Processing Log"):
+        """แสดง Live Log Panel ในพื้นที่ด้านขวา"""
+        for widget in self.right_frame.winfo_children():
+            widget.destroy()
+        header = bstrap.Label(self.right_frame, text=title, font=("Helvetica", 14, "bold"), bootstyle="info")
+        header.pack(anchor="w", padx=10, pady=(10, 5))
+        self.log_text = scrolledtext.ScrolledText(self.right_frame, wrap="word", state="disabled")
+        self.log_text.configure(font=("Consolas", 10), foreground="#E6E6E6", background="#1F2D3A", insertbackground="#E6E6E6")
+        self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def log_message(self, message):
+        """เพิ่มข้อความลงใน Log Panel พร้อมเลื่อนลงล่าง"""
+        if not hasattr(self, 'log_text') or self.log_text is None:
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", message + "\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+        self.update_idletasks()
+
     def _load_factor_output_text_from_excel(self):
         filepath = self.last_excel_filepath
         if not filepath or not os.path.exists(filepath):
@@ -956,7 +1368,6 @@ class SpssProcessorApp(bstrap.Window):
         scrollbar.pack(side="right", fill="y")
 
         index1_entries = {}
-        filter_entries = {}
 
         index1_frame = bstrap.Labelframe(scrollable_frame, text=" Labels for Index1 ", padding=10, bootstyle="info")
         index1_frame.pack(fill="x", pady=(0, 10))
@@ -974,37 +1385,11 @@ class SpssProcessorApp(bstrap.Window):
                 entry.insert(0, self.index1_labels[code])
             index1_entries[code] = entry
 
-        filter_var = self.filter_entry.get().strip()
-        if filter_var and filter_var in self.transformed_df.columns:
-            filter_frame = bstrap.Labelframe(scrollable_frame, text=f" Labels for {filter_var} ", padding=10, bootstyle="info")
-            filter_frame.pack(fill="x", pady=10)
-
-            unique_filter_vals = sorted(self.transformed_df[filter_var].dropna().unique())
-            bstrap.Label(filter_frame, text="Code", font="-weight bold").grid(row=0, column=0, padx=5, pady=2)
-            bstrap.Label(filter_frame, text="Label", font="-weight bold").grid(row=0, column=1, padx=5, pady=2)
-
-            for i, code in enumerate(unique_filter_vals):
-                code = int(code)
-                bstrap.Label(filter_frame, text=str(code)).grid(row=i+1, column=0, padx=5, pady=2, sticky='e')
-                entry = bstrap.Entry(filter_frame, width=40)
-                entry.grid(row=i+1, column=1, padx=5, pady=2, sticky='w')
-                if code in self.filter_labels.get('labels', {}):
-                     entry.insert(0, self.filter_labels['labels'][code])
-                filter_entries[code] = entry
-
         def save_labels():
             self.index1_labels.clear()
             for code, entry in index1_entries.items():
                 if label_text := entry.get().strip():
                     self.index1_labels[code] = label_text
-
-            self.filter_labels.clear()
-            if filter_var:
-                self.filter_labels['var_name'] = filter_var
-                self.filter_labels['labels'] = {}
-                for code, entry in filter_entries.items():
-                    if label_text := entry.get().strip():
-                        self.filter_labels['labels'][code] = label_text
 
             messagebox.showinfo("สำเร็จ", "บันทึก Labels เรียบร้อยแล้ว", parent=editor_window)
             editor_window.destroy()
@@ -1021,38 +1406,134 @@ class SpssProcessorApp(bstrap.Window):
         self.start_progress()
 
         primary_filter = "Index1"
-        cross_filter = self.filter_entry.get().strip()
+        filter_text = self.filter_entry.get().strip()
+        cross_filters = [f.strip() for f in filter_text.split(',') if f.strip()]
 
-        if not cross_filter and not automated:
+        if not cross_filters and not automated:
             proceed = messagebox.askyesno("ยืนยัน", "ยังไม่ได้ระบุ Filter ไขว้\nต้องการดำเนินการต่อหรือไม่?", parent=self)
             if not proceed:
                 self.stop_progress()
                 self.update_status("ยกเลิกโดยผู้ใช้", "warning")
                 return
 
-        self.update_status("กำลังสร้างข้อมูลสรุป...")
-        summary_df = self._create_summary_df_logic(primary_filter=primary_filter, cross_filter=cross_filter)
-        if summary_df is None:
-            self.stop_progress(); return
+        if not cross_filters:
+            cross_filters = ['']
 
-        try:
-            summary_df = self._calculate_and_add_t2b_values(
-                summary_df,
+        self.show_log_panel("กำลังวิเคราะห์ข้อมูล...")
+        start_time = time.time()
+
+        self.log_message("=" * 50)
+        self.log_message("เริ่มกระบวนการวิเคราะห์และส่งออก")
+        self.log_message("=" * 50)
+        self.log_message(f"Primary Filter: {primary_filter}")
+        cf_display = ', '.join(cross_filters) if cross_filters[0] else '(ไม่ระบุ)'
+        self.log_message(f"Cross Filter(s): {cf_display}")
+        self.log_message(f"E Correlation Mode: {self.e_group_mode_var.get()}")
+        self.log_message("")
+
+        total_filters = len(cross_filters)
+        steps_per_filter = 3
+        total_steps = total_filters * steps_per_filter + 1
+        current_step = 0
+
+        all_summary_parts = []
+        all_results = OrderedDict()
+        all_output_parts = []
+
+        for idx, cross_filter in enumerate(cross_filters):
+            f_label = cross_filter if cross_filter else '(ไม่ระบุ)'
+            if total_filters > 1:
+                self.log_message(f"━━━ Filter {idx+1}/{total_filters}: {f_label} ━━━")
+                self.log_message("")
+
+            # --- Summary ---
+            current_step += 1
+            self.update_status(f"สร้าง Summary ({f_label})...")
+            self.log_message(f"[{current_step}/{total_steps}] กำลังสร้าง Summary ({f_label})...")
+            part_summary = self._create_summary_df_logic(
                 primary_filter=primary_filter,
                 cross_filter=cross_filter
             )
-        except Exception as e:
-            messagebox.showwarning("T2B Warning", f"ไม่สามารถคำนวณค่า T2B ได้: {e}")
+            if part_summary is None:
+                self.log_message("   ✗ สร้าง Summary ไม่สำเร็จ")
+                if total_filters == 1:
+                    self.stop_progress(); return
+                current_step += 2
+                continue
+            self.log_message(f"   ✓ Summary สำเร็จ ({len(part_summary)} แถว)")
 
-        self.update_status("กำลังรัน Factor & Regression...")
-        results_for_saving, full_output_text = self._run_factor_regression_logic(primary_filter=primary_filter, cross_filter=cross_filter)
-        if results_for_saving is None:
+            # --- T2B ---
+            current_step += 1
+            self.log_message("")
+            self.log_message(f"[{current_step}/{total_steps}] กำลังคำนวณ T2B ({f_label})...")
+            try:
+                part_summary = self._calculate_and_add_t2b_values(
+                    part_summary,
+                    primary_filter=primary_filter,
+                    cross_filter=cross_filter
+                )
+                self.log_message("   ✓ T2B สำเร็จ")
+            except Exception as e:
+                self.log_message(f"   ⚠ ข้ามการคำนวณ T2B: {e}")
+
+            # --- Factor & Regression ---
+            current_step += 1
+            self.log_message("")
+            self.update_status(f"รัน Factor & Regression ({f_label})...")
+            self.log_message(f"[{current_step}/{total_steps}] กำลังรัน Factor & Regression ({f_label})...")
+            part_results, part_output = self._run_factor_regression_logic(
+                primary_filter=primary_filter,
+                cross_filter=cross_filter
+            )
+            if part_results is None:
+                self.log_message("   ✗ Factor/Regression ไม่สำเร็จ")
+                if total_filters == 1:
+                    self.stop_progress(); return
+                continue
+            self.log_message(f"   ✓ วิเคราะห์สำเร็จ ({len(part_results)} กลุ่ม)")
+
+            # --- ตัด Overall และ Index1-only ออกจาก filter ตัวที่ 2 เป็นต้นไป ---
+            if idx > 0 and part_summary is not None:
+                dup_mask = part_summary['Filter'].apply(
+                    lambda x: x == 'Overall' or (x.startswith('Index1=') and '+' not in x)
+                )
+                part_summary = part_summary[~dup_mask].reset_index(drop=True)
+                if part_results:
+                    dup_keys = [k for k in part_results if k == 'Overall' or (k.startswith('Index1=') and '+' not in k)]
+                    for k in dup_keys:
+                        part_results.pop(k, None)
+
+            all_summary_parts.append(part_summary)
+            all_results.update(part_results or {})
+            all_output_parts.append(part_output or '')
+            self.log_message("")
+
+        # --- รวมผลลัพธ์ทั้งหมด ---
+        if not all_summary_parts:
+            self.log_message("✗ ไม่มีผลลัพธ์ที่สร้างได้")
             self.stop_progress(); return
 
-        self.update_status("กำลังบันทึกผลลัพธ์ลง Excel...")
-        self.save_all_results_to_excel(summary_df, results_for_saving, full_output_text)
+        final_summary = pd.concat(all_summary_parts, ignore_index=True)
+        final_output = '\n'.join(all_output_parts)
 
-        self.display_analysis_tabs(full_output_text)
+        # --- บันทึก Excel ---
+        current_step += 1
+        self.log_message("")
+        self.update_status("กำลังบันทึกผลลัพธ์ลง Excel...")
+        self.log_message(f"[{current_step}/{total_steps}] กำลังบันทึกผลลัพธ์ลง Excel...")
+        self.save_all_results_to_excel(final_summary, all_results, final_output)
+        self.log_message("   ✓ บันทึก Excel สำเร็จ")
+
+        elapsed = time.time() - start_time
+        self.log_message("")
+        self.log_message("=" * 50)
+        self.log_message(f"เสร็จสมบูรณ์ (ใช้เวลา {elapsed:.1f} วินาที)")
+        self.log_message("=" * 50)
+        self.log_message("")
+        self.log_message("กำลังโหลดหน้าแสดงผลการวิเคราะห์...")
+        self.update_idletasks()
+
+        self.after(1500, lambda: self.display_analysis_tabs(final_output))
 
         self.stop_progress()
         self.update_status("วิเคราะห์และส่งออกเสร็จสมบูรณ์", "success")
@@ -1066,8 +1547,20 @@ class SpssProcessorApp(bstrap.Window):
                 messagebox.showwarning("คำเตือน", "ไม่พบข้อมูลคอลัมน์ S, P, C, E สำหรับสร้างสรุป")
                 return None
             corr_df = self.transformed_df.copy()
-            if 'E_4' in corr_df.columns and 'E_5' in corr_df.columns:
-                corr_df['E_45'] = (corr_df['E_4'] + corr_df['E_5']) / 2
+
+            # --- E Group Mode: merge E columns ถ้าผู้ใช้เลือก group ---
+            e_group_mode = self.e_group_mode_var.get()
+            e_group_nums = []
+            if e_group_mode == "group" and self.e_group_entry_var.get().strip():
+                e_group_input = self.e_group_entry_var.get().strip()
+                e_group_nums = [int(x.strip()) for x in e_group_input.split('+') if x.strip().isdigit()]
+                if len(e_group_nums) >= 2:
+                    group_e_cols = [f'E_{n}' for n in e_group_nums if f'E_{n}' in corr_df.columns]
+                    if len(group_e_cols) >= 2:
+                        merged_name = 'E_' + ''.join(str(n) for n in e_group_nums)
+                        corr_df[merged_name] = corr_df[group_e_cols].mean(axis=1)
+                        for col in group_e_cols:
+                            corr_df.drop(columns=col, inplace=True)
 
             df_for_summary = self.transformed_df
             groups_to_summarize = OrderedDict()
@@ -1079,7 +1572,7 @@ class SpssProcessorApp(bstrap.Window):
             if primary_filter and primary_filter in df_for_summary.columns:
                 primary_values = sorted(df_for_summary[primary_filter].dropna().unique())
                 for p_val in primary_values:
-                    filter_name = f"{primary_filter}={p_val}"
+                    filter_name = self._format_filter_val(primary_filter, p_val)
                     if filter_name not in groups_to_summarize:
                             groups_to_summarize[filter_name] = df_for_summary[df_for_summary[primary_filter] == p_val]
                             corr_groups[filter_name] = corr_df[corr_df[primary_filter] == p_val]
@@ -1087,14 +1580,14 @@ class SpssProcessorApp(bstrap.Window):
             if cross_filter and cross_filter in df_for_summary.columns:
                 cross_values = sorted(df_for_summary[cross_filter].dropna().unique())
                 for c_val in cross_values:
-                    filter_name_cross = f"{cross_filter}={c_val}"
+                    filter_name_cross = self._format_filter_val(cross_filter, c_val)
                     if filter_name_cross not in groups_to_summarize:
                             groups_to_summarize[filter_name_cross] = df_for_summary[df_for_summary[cross_filter] == c_val]
                             corr_groups[filter_name_cross] = corr_df[corr_df[cross_filter] == c_val]
 
                     if primary_filter and primary_filter in df_for_summary.columns:
                         for p_val in primary_values:
-                            nested_name = f"{primary_filter}={p_val}+{cross_filter}={c_val}"
+                            nested_name = f"{self._format_filter_val(primary_filter, p_val)}+{self._format_filter_val(cross_filter, c_val)}"
                             subset = df_for_summary[(df_for_summary[primary_filter] == p_val) & (df_for_summary[cross_filter] == c_val)]
                             groups_to_summarize[nested_name] = subset
                             corr_groups[nested_name] = corr_df[(corr_df[primary_filter] == p_val) & (corr_df[cross_filter] == c_val)]
@@ -1111,9 +1604,13 @@ class SpssProcessorApp(bstrap.Window):
                         summary_row_df['Filter'] = name
 
                         index1_val = 0
-                        match = re.search(r'Index1=(\d+)', name)
-                        if match:
-                            index1_val = int(match.group(1))
+                        if name != 'Overall' and 'Index1' in df_group.columns:
+                            unique_idx = df_group['Index1'].dropna().unique()
+                            if len(unique_idx) == 1:
+                                try:
+                                    index1_val = int(unique_idx[0])
+                                except (ValueError, TypeError):
+                                    pass
 
                         summary_row_df['Index1'] = index1_val
                         summary_list.append(summary_row_df)
@@ -1128,27 +1625,27 @@ class SpssProcessorApp(bstrap.Window):
                 filter_str = row['Filter']
                 if filter_str == 'Overall': return 'Overall'
 
-                index1_val_match = re.search(r'Index1=(\d+)', filter_str)
-                current_filter_var = self.filter_entry.get().strip()
-                filter_val_match = None
-                if current_filter_var and current_filter_var in filter_str:
-                    filter_val_match = re.search(rf'{re.escape(current_filter_var)}=(\d+)', filter_str)
+                parts = filter_str.split('+')
+                labels_found = []
+                for part in parts:
+                    if '=' in part:
+                        var_name, val_part = part.split('=', 1)
+                        if var_name == 'Index1':
+                            try:
+                                code = int(float(val_part))
+                                lbl = self.index1_labels.get(code)
+                                if lbl:
+                                    labels_found.append(lbl)
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        labels_found.append(val_part)
+                    else:
+                        labels_found.append(part)
 
-                index1_label = None
-                if index1_val_match:
-                    code = int(index1_val_match.group(1))
-                    index1_label = self.index1_labels.get(code)
-
-                filter_label = None
-                if filter_val_match:
-                    code = int(filter_val_match.group(1))
-                    if self.filter_labels.get('var_name') == current_filter_var:
-                        filter_label = self.filter_labels.get('labels', {}).get(code)
-
-                if index1_label and filter_label: return f"{index1_label} - {filter_label}"
-                elif index1_label: return index1_label
-                elif filter_label: return filter_label
-                else: return filter_str
+                if labels_found:
+                    return ' - '.join(labels_found)
+                return filter_str
 
             final_summary_df['Labe Index1'] = final_summary_df.apply(map_labels, axis=1)
 
@@ -1160,7 +1657,8 @@ class SpssProcessorApp(bstrap.Window):
             p_cols = sorted([c for c in cols_to_average if c.startswith('P_')], key=lambda x: int(x.split('_')[1]))
 
             if 'A' in corr_df.columns:
-                e_corr_map = {'CorE_11': 'E_1', 'CorE_12': 'E_2', 'CorE_13': 'E_3', 'CorE_14': 'E_45', 'CorE_15': 'E_6'}
+                e_cols_for_corr = sorted([c for c in corr_df.columns if re.match(r'^E_\d+$', c)], key=lambda x: int(x.split('_')[1][:1]))
+                e_corr_map = {f'CorE_{i+1}': col for i, col in enumerate(e_cols_for_corr)}
                 source_e_cols = [col for col in e_corr_map.values() if col in corr_df.columns]
                 rename_dict = {v: k for k, v in e_corr_map.items()}
 
@@ -1230,7 +1728,7 @@ class SpssProcessorApp(bstrap.Window):
         good_codes = [5, 4] if t2b_choice == "5+4" else [1, 2]
 
         if cross_filter is None:
-            cross_filter = self.filter_entry.get().strip()
+            cross_filter = ''
 
         groups_to_summarize = OrderedDict()
         groups_to_summarize['Overall'] = self.transformed_df
@@ -1239,20 +1737,20 @@ class SpssProcessorApp(bstrap.Window):
         if primary_filter and primary_filter in self.transformed_df.columns:
             primary_values = sorted(self.transformed_df[primary_filter].dropna().unique())
             for p_val in primary_values:
-                filter_name = f"{primary_filter}={p_val}"
+                filter_name = self._format_filter_val(primary_filter, p_val)
                 if filter_name not in groups_to_summarize:
                     groups_to_summarize[filter_name] = self.transformed_df[self.transformed_df[primary_filter] == p_val]
 
         if cross_filter and cross_filter in self.transformed_df.columns:
             cross_values = sorted(self.transformed_df[cross_filter].dropna().unique())
             for c_val in cross_values:
-                filter_name_cross = f"{cross_filter}={c_val}"
+                filter_name_cross = self._format_filter_val(cross_filter, c_val)
                 if filter_name_cross not in groups_to_summarize:
                     groups_to_summarize[filter_name_cross] = self.transformed_df[self.transformed_df[cross_filter] == c_val]
 
                 if primary_filter and primary_filter in self.transformed_df.columns:
                     for p_val in primary_values:
-                        nested_name = f"{primary_filter}={p_val}+{cross_filter}={c_val}"
+                        nested_name = f"{self._format_filter_val(primary_filter, p_val)}+{self._format_filter_val(cross_filter, c_val)}"
                         subset = self.transformed_df[
                             (self.transformed_df[primary_filter] == p_val) &
                             (self.transformed_df[cross_filter] == c_val)
@@ -1311,19 +1809,19 @@ class SpssProcessorApp(bstrap.Window):
             if primary_filter:
                 primary_values = sorted(df_for_analysis[primary_filter].dropna().unique())
                 for p_val in primary_values:
-                    filter_name = f"{primary_filter}={p_val}"
+                    filter_name = self._format_filter_val(primary_filter, p_val)
                     groups_to_analyze[filter_name] = df_for_analysis[df_for_analysis[primary_filter] == p_val]
 
             if cross_filter:
                 cross_values = sorted(df_for_analysis[cross_filter].dropna().unique())
                 for c_val in cross_values:
-                    filter_name_cross = f"{cross_filter}={c_val}"
+                    filter_name_cross = self._format_filter_val(cross_filter, c_val)
                     if filter_name_cross not in groups_to_analyze:
                         groups_to_analyze[filter_name_cross] = df_for_analysis[df_for_analysis[cross_filter] == c_val]
 
                     if primary_filter:
                         for p_val in primary_values:
-                            nested_name = f"{primary_filter}={p_val}+{cross_filter}={c_val}"
+                            nested_name = f"{self._format_filter_val(primary_filter, p_val)}+{self._format_filter_val(cross_filter, c_val)}"
                             subset = df_for_analysis[(df_for_analysis[primary_filter] == p_val) & (df_for_analysis[cross_filter] == c_val)]
                             groups_to_analyze[nested_name] = subset
 
@@ -1381,10 +1879,22 @@ class SpssProcessorApp(bstrap.Window):
             }
             settings_df = pd.DataFrame({k: pd.Series(v) for k, v in settings_lists.items()})
 
-            settings_df.insert(0, 'Filter_Var', self.filter_entry.get().strip())
+            # --- E Group setting ---
+            e_group_setting = "Default"
+            if self.e_group_mode_var.get() == "group" and self.e_group_entry_var.get().strip():
+                e_group_setting = self.e_group_entry_var.get().strip()
+
+            # --- Multiple Filter_Var (แต่ละตัวอยู่คนละแถว) ---
+            filter_text = self.filter_entry.get().strip()
+            cross_filters = [f.strip() for f in filter_text.split(',') if f.strip()]
+            max_len = max(len(settings_df), len(cross_filters), 1)
+            settings_df = settings_df.reindex(range(max_len))
+
+            settings_df.insert(0, 'Filter_Var', pd.Series(cross_filters))
+            settings_df.insert(0, 'E_Group', e_group_setting)
             settings_df.insert(0, 'T2B_Choice', self.t2b_choice_var.get())
             settings_df.insert(0, 'PathFile', self.original_filepath)
-            settings_df.loc[1:, ['PathFile', 'T2B_Choice', 'Filter_Var']] = ''
+            settings_df.loc[1:, ['PathFile', 'T2B_Choice', 'E_Group']] = ''
 
             # --- Part 2: Label Sheet ---
             index1_label_data = list(self.index1_labels.items())
@@ -1488,7 +1998,7 @@ class SpssProcessorApp(bstrap.Window):
                     if header is None: continue
 
                     format_str = None
-                    if header in ['S', 'P', 'A level', 'A score', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
+                    if header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
                         (header.startswith(('S_', 'P_', 'E_')) and 'cor' not in header):
                         format_str = '0.00'
                     elif header.startswith('C_'):
@@ -1501,6 +2011,21 @@ class SpssProcessorApp(bstrap.Window):
                     if format_str:
                         for row in range(2, worksheet.max_row + 1):
                             worksheet.cell(row=row, column=col_idx).number_format = format_str
+
+                color_scale_cols = ['Index', 'B.S', 'B.P', 'B.C', 'B.E']
+                max_row = worksheet.max_row
+                for col_idx, header in enumerate(headers, 1):
+                    if header in color_scale_cols and max_row > 1:
+                        col_letter = get_column_letter(col_idx)
+                        cell_range = f"{col_letter}2:{col_letter}{max_row}"
+                        rule = ColorScaleRule(
+                            start_type='min', start_color='F8696B',
+                            mid_type='percentile', mid_value=50,
+                            mid_color='FFEB84',
+                            end_type='max', end_color='63BE7B'
+                        )
+                        worksheet.conditional_formatting.add(
+                            cell_range, rule)
 
                 self.transformed_df.to_excel(writer, sheet_name='Sheet Dummy', index=False)
                 if rawdata_df is not None:
@@ -1515,10 +2040,32 @@ class SpssProcessorApp(bstrap.Window):
                 output_df = pd.DataFrame(safe_lines, columns=["Analysis Log"])
                 output_df.to_excel(writer, sheet_name="Factor_Output", index=False)
 
+                for ca_prefix, ca_sheet in [
+                        ('S', 'Correspondence(S)'),
+                        ('P', 'Correspondence(P)')]:
+                    self._write_ca_sheet(
+                        workbook, ca_sheet, ca_prefix)
+
+                desired = [
+                    'Summary',
+                    'Correspondence(S)',
+                    'Correspondence(P)',
+                    'Rawdata']
+                for idx, name in enumerate(desired):
+                    if name in workbook.sheetnames:
+                        workbook.move_sheet(
+                            name, offset=idx
+                            - workbook.sheetnames.index(name))
+
             if self.save_all_sheets_var.get():
                 self.update_status("กำลังลบชีทที่ไม่จำเป็น...", "info")
                 workbook = openpyxl.load_workbook(filepath)
-                sheets_to_delete = [s for s in workbook.sheetnames if s not in ['Summary', 'Rawdata']]
+                keep = {'Summary', 'Rawdata',
+                        'Correspondence(S)',
+                        'Correspondence(P)'}
+                sheets_to_delete = [
+                    s for s in workbook.sheetnames
+                    if s not in keep]
                 for sheet_name in sheets_to_delete:
                     workbook.remove(workbook[sheet_name])
                 workbook.save(filepath)
@@ -1549,10 +2096,16 @@ class SpssProcessorApp(bstrap.Window):
         if c_cols: final_summary_df['C'] = final_summary_df[c_cols].mean(axis=1)
         if e_cols: final_summary_df['E'] = final_summary_df[e_cols].mean(axis=1)
 
-        main_order = ['Code Index1', 'Labe Index1', 'Filter', 'S', 'P', 'A level', 'A score', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E']
+        idx_val = 0
+        for avg_col, beta_col in [('S', 'B.S'), ('P', 'B.P'), ('C', 'B.C'), ('E', 'B.E')]:
+            if avg_col in final_summary_df.columns and beta_col in final_summary_df.columns:
+                idx_val = idx_val + final_summary_df[avg_col] * final_summary_df[beta_col]
+        final_summary_df['Index'] = idx_val / 100
+
+        main_order = ['Code Index1', 'Labe Index1', 'Filter', 'S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E']
         final_summary_df.rename(columns={'Index1':'Code Index1'}, inplace=True)
 
-        core_cols = sorted([c for c in final_summary_df.columns if c.startswith('CorE_')])
+        core_cols = sorted([c for c in final_summary_df.columns if c.startswith('CorE_')], key=lambda x: int(x.split('_')[1]))
         cor_s_cols = sorted([c for c in final_summary_df.columns if c.startswith('cor_S_')], key=lambda x: int(x.split('_')[-1]))
         cor_p_cols = sorted([c for c in final_summary_df.columns if c.startswith('cor_P_')], key=lambda x: int(x.split('_')[-1]))
         agree_s_names = sorted([c for c in final_summary_df.columns if c.startswith('agree_S_')], key=lambda x: int(x.split('_')[-1]))
