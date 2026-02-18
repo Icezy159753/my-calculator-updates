@@ -1,4 +1,4 @@
-from PyQt6 import QtCore, QtGui, QtWidgets
+﻿from PyQt6 import QtCore, QtGui, QtWidgets
 import pandas as pd
 import pyreadstat
 import re
@@ -1323,7 +1323,7 @@ def select_variables_for_frequency():
     # เตรียมข้อมูลสำหรับแสดง
     all_columns = current_df.columns.tolist()
     ma_sets = {}
-    ma_pattern = re.compile(r'(.+)_O(\\d+)$', flags=re.IGNORECASE)
+    ma_pattern = re.compile(r'(.+)_O(\d+)$', flags=re.IGNORECASE)
     for col_name in all_columns:
         match = ma_pattern.match(col_name)
         if match:
@@ -1609,7 +1609,7 @@ def run_all_frequencies():
 
                     # เพิ่มแถว Total (Base)
                     total_row_ma = pd.DataFrame({'Code': ['Base Total'], 'ข้อ': [''], 'Base N': [valid_respondent_count], 'Base %': [100.0 if valid_respondent_count > 0 else 0.0]})
-                    freq_table_ma = pd.concat([total_row_ma, freq_table_ma], ignore_index=True)
+                    freq_table_ma = total_row_ma if freq_table_ma.empty else pd.concat([total_row_ma, freq_table_ma], ignore_index=True)
 
                     # สร้าง Label สุดท้ายสำหรับตาราง
                     var_label_ma_final = f"{var_label_ma} (Base: {valid_respondent_count} respondents who answered)"
@@ -1702,7 +1702,7 @@ def run_all_frequencies():
 
                     # เพิ่มแถว Total
                     total_row = pd.DataFrame({'Code': ['Base Total'], 'ข้อ': [''], 'Base N': [total_n], 'Base %': [100.0 if total_n > 0 else 0.0]})
-                    freq_table = pd.concat([total_row, freq_table], ignore_index=True)
+                    freq_table = total_row if freq_table.empty else pd.concat([total_row, freq_table], ignore_index=True)
 
                     # เก็บผลลัพธ์
                     frequency_results[item_name] = (variable_label, freq_table)
