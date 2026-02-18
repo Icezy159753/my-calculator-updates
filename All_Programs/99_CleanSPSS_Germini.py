@@ -7,6 +7,8 @@ import os
 import sys
 import subprocess
 import numpy as np
+import traceback
+import faulthandler
 # import traceback # Optional: for detailed error logging
 # --- ฟังก์ชัน parse_list_range (จำเป็นสำหรับ expand_wildcard ที่อัปเดต) ---
 
@@ -78,6 +80,25 @@ class UiVar:
         self._value = value if value is not None else ""
         if self._setter:
             self._setter(self._value)
+
+def _report_fatal_error(title, message):
+    """พยายามรายงานข้อผิดพลาดโดยไม่ให้แอปล้มซ้ำ"""
+    try:
+        if ui is not None:
+            ui.show_error(title, message)
+            return
+    except Exception:
+        pass
+    print(f"{title}: {message}")
+
+def _append_runtime_log(message):
+    try:
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_debug.log")
+        ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+    except Exception:
+        pass
 
 class SweetAlert(QtWidgets.QDialog):
     def __init__(self, title, message, kind="info", buttons=("OK",), parent=None):
@@ -1122,6 +1143,10 @@ def import_conditions():
         # import traceback
         # ui.show_error("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}\n{traceback.format_exc()}") # Detailed error for debug
         ui.show_error("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว: {e}")
+    except BaseException as be:
+        add_log(f"❌ เกิดข้อผิดพลาดระดับระบบระหว่างนำเข้าเงื่อนไข: {be}", "ERROR")
+        add_log(traceback.format_exc(), "ERROR")
+        _report_fatal_error("Error", f"โหลดไฟล์เงื่อนไขล้มเหลว (BaseException): {be}")
 # --- สิ้นสุดฟังก์ชัน import_conditions ---
 
 
@@ -2208,8 +2233,14 @@ def run_all_frequencies():
         # Catch-all for other unexpected errors during Excel writing
         error_msg = f"เกิดข้อผิดพลาดที่ไม่คาดคิดระหว่างการเขียนไฟล์ Excel"
         add_log(f"\n❌ เกิดข้อผิดพลาดร้ายแรงในการ Export: {error_msg}", "ERROR"); add_log(f"รายละเอียด: {e}")
-        import traceback; add_log(traceback.format_exc(), "ERROR") # Log full traceback for debugging
+        add_log(traceback.format_exc(), "ERROR") # Log full traceback for debugging
         ui.show_error("Export ล้มเหลว", f"{error_msg}: {e}")
+    except BaseException as be:
+        error_msg = "พบข้อผิดพลาดระดับระบบระหว่าง Export (BaseException)"
+        add_log(f"\n❌ {error_msg}", "ERROR")
+        add_log(f"รายละเอียด: {be}", "ERROR")
+        add_log(traceback.format_exc(), "ERROR")
+        ui.show_error("Export ล้มเหลว", f"{error_msg}: {be}")
     finally:
         # --- Reset Progress Bar and Status ---
         # (ทำไปแล้วใน finally block ของการคำนวณ แต่ทำซ้ำเผื่อกรณี error ตอน export)
@@ -2258,6 +2289,7 @@ def add_log(message, level="INFO"):
 class QuotaSamplerWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
+        self._allow_close = False
         self.setWindowTitle("โปรแกรมตรวจสอบเงื่อนไข SPSS V1.4 (Modern)")
         self.resize(1100, 720)
         try:
@@ -2388,20 +2420,60 @@ class QuotaSamplerWindow(QtWidgets.QMainWindow):
         self.freq_button.setStyleSheet("background:#16a34a;color:white;font-weight:700;")
 
     def bind_actions(self):
-        self.btn_help.clicked.connect(show_help)
-        self.btn_select_file.clicked.connect(load_file)
-        self.btn_save.clicked.connect(save_condition)
-        self.btn_delete.clicked.connect(delete_condition)
-        self.btn_load.clicked.connect(import_conditions)
-        self.btn_export.clicked.connect(export_conditions)
-        self.check_button.clicked.connect(check_conditions)
-        self.freq_button.clicked.connect(run_all_frequencies)
+        self.btn_help.clicked.connect(self._guard_action(show_help, "แสดงวิธีใช้"))
+        self.btn_select_file.clicked.connect(self._guard_action(load_file, "เลือกไฟล์ SPSS"))
+        self.btn_save.clicked.connect(self._guard_action(save_condition, "บันทึกเงื่อนไข"))
+        self.btn_delete.clicked.connect(self._guard_action(delete_condition, "ลบเงื่อนไข"))
+        self.btn_load.clicked.connect(self._guard_action(import_conditions, "โหลดเงื่อนไข"))
+        self.btn_export.clicked.connect(self._guard_action(export_conditions, "ส่งออกเงื่อนไข"))
+        self.check_button.clicked.connect(self._guard_action(check_conditions, "ตรวจสอบเงื่อนไข"))
+        self.freq_button.clicked.connect(self._guard_action(run_all_frequencies, "ทำ Frequency"))
         self.btn_clear_log.clicked.connect(self.log_text.clear)
 
+    def _guard_action(self, fn, action_name):
+        def wrapped():
+            try:
+                fn()
+            except SystemExit as e:
+                add_log(f"❌ Action '{action_name}' ถูกยับยั้ง SystemExit: {e}", "ERROR")
+                self.show_error("โปรแกรมถูกยับยั้งไม่ให้ปิด", f"พบ SystemExit ระหว่าง '{action_name}'\nรายละเอียด: {e}")
+            except Exception as e:
+                add_log(f"❌ Action '{action_name}' ล้มเหลว: {e}", "ERROR")
+                add_log(traceback.format_exc(), "ERROR")
+                self.show_error("เกิดข้อผิดพลาด", f"เกิดข้อผิดพลาดระหว่าง '{action_name}':\n{e}")
+            except BaseException as be:
+                add_log(f"❌ Action '{action_name}' ล้มเหลวระดับระบบ: {be}", "ERROR")
+                add_log(traceback.format_exc(), "ERROR")
+                _report_fatal_error("เกิดข้อผิดพลาดร้ายแรง", f"เกิด BaseException ระหว่าง '{action_name}':\n{be}")
+        return wrapped
+
+    def closeEvent(self, event):
+        _append_runtime_log("Main window closeEvent received")
+        if self._allow_close:
+            event.accept()
+            return
+        try:
+            should_close = self.ask_yes_no("ยืนยันการปิดโปรแกรม", "ต้องการปิดโปรแกรมหรือไม่?")
+            if should_close:
+                self._allow_close = True
+                _append_runtime_log("Main window closeEvent accepted by user")
+                event.accept()
+            else:
+                _append_runtime_log("Main window closeEvent ignored by user")
+                event.ignore()
+        except Exception as e:
+            _append_runtime_log(f"closeEvent fallback accept due to error: {e}")
+            event.accept()
+
     def _hover_select_row(self, row, _col):
-        # ไฮไลต์ทั้งแถวเมื่อเอาเมาส์ชี้
-        if row >= 0:
-            self.conditions_table.selectRow(row)
+        # ไฮไลต์ทั้งแถวเมื่อเอาเมาส์ชี้ (กัน recursion จาก cellEntered -> selectRow -> cellEntered)
+        if row < 0:
+            return
+        selection_model = self.conditions_table.selectionModel()
+        if selection_model and selection_model.isRowSelected(row, QtCore.QModelIndex()):
+            return
+        blocker = QtCore.QSignalBlocker(self.conditions_table)
+        self.conditions_table.selectRow(row)
 
     def _dialog(self, title, message, kind="info", buttons=("OK",)):
         dlg = SweetAlert(title, message, kind=kind, buttons=buttons, parent=self)
@@ -2463,8 +2535,32 @@ class QuotaSamplerWindow(QtWidgets.QMainWindow):
 
 def run_this_app(working_dir=None):
     global ui, file_var, condition_var, progress_status_var, check_button_widget, freq_button_widget
+
+    def _global_excepthook(exc_type, exc_value, exc_tb):
+        try:
+            err_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            add_log("❌ Unhandled exception in application event loop", "ERROR")
+            add_log(err_text, "ERROR")
+            _append_runtime_log(f"Unhandled exception: {exc_value}")
+            _append_runtime_log(err_text)
+            _report_fatal_error("เกิดข้อผิดพลาดที่ไม่ได้ถูกดักจับ", str(exc_value))
+        except Exception:
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _global_excepthook
+
     app = QtWidgets.QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
     app.setFont(QtGui.QFont("Tahoma", 10))
+
+    # Capture low-level crashes (segfault/access violation) to runtime_debug.log
+    try:
+        fault_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_debug.log")
+        fault_log_fp = open(fault_log_path, "a", encoding="utf-8")
+        faulthandler.enable(file=fault_log_fp, all_threads=True)
+        _append_runtime_log("faulthandler enabled")
+    except Exception as e:
+        _append_runtime_log(f"faulthandler enable failed: {e}")
 
     ui = QuotaSamplerWindow()
     file_var = UiVar(getter=ui.file_path_edit.text, setter=ui.file_path_edit.setText)
@@ -2473,6 +2569,7 @@ def run_this_app(working_dir=None):
     check_button_widget = ui.check_button
     freq_button_widget = ui.freq_button
 
+    app.aboutToQuit.connect(lambda: _append_runtime_log("QApplication.aboutToQuit fired"))
     ui.show()
     sys.exit(app.exec())
 

@@ -1,0 +1,121 @@
+[2026-02-18 13:51:49] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00007a0c (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2569 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2573 in <module>
+Windows fatal exception: stack overflow
+
+Current thread 0x00007a0c (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2471 in _hover_select_row
+  ...
+[2026-02-18 14:04:50] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00003514 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2574 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2578 in <module>
+[2026-02-18 14:18:54] Main window closeEvent received
+[2026-02-18 14:18:56] Main window closeEvent ignored by user
+[2026-02-18 14:18:58] Main window closeEvent received
+[2026-02-18 14:19:12] Main window closeEvent accepted by user
+[2026-02-18 14:19:12] QApplication.aboutToQuit fired
