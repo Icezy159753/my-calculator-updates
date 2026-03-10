@@ -28,7 +28,7 @@ except Exception:
 
 datas = [item for item in datas if os.path.exists(item[0])]
 binaries = []
-hiddenimports = ['statsmodels.api', 'ttkbootstrap.tableview', 'xlsxwriter', 'scipy._cyutility', 'ttkbootstrap.scrolled', 'ttkbootstrap', 'openpyxl.utils.dataframe', 'pyspssio', 'natsort', 'docx', 'openpyxl', 'pyperclip', 'tkinter.scrolledtext', 'xlswriter', 'pandas', 'seaborn', 'matplotlib.backends.backend_tkagg', 'seaborn', 'pandas', 'numpy', 'xlsxwriter', 'pyreadstat', 'pyreadstat._readstat_writer', 'worker', 'PyQt6', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.QtPrintSupport', 'sip', 'gspread', 'google.auth', 'google.auth.transport.requests', 'google.oauth2.service_account', 'google_auth_oauthlib', 'googleapiclient.discovery']
+hiddenimports = ['statsmodels.api', 'ttkbootstrap.tableview', 'xlsxwriter', 'scipy._cyutility', 'ttkbootstrap.scrolled', 'ttkbootstrap', 'openpyxl.utils.dataframe', 'pyspssio', 'natsort', 'docx', 'openpyxl', 'pyperclip', 'tkinter.scrolledtext', 'xlswriter', 'pandas', 'seaborn', 'matplotlib.backends.backend_tkagg', 'matplotlib.backends.backend_qtagg', 'matplotlib.backends.qt_compat', 'seaborn', 'pandas', 'numpy', 'xlsxwriter', 'pyreadstat', 'pyreadstat._readstat_writer', 'worker', 'PyQt6', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.QtPrintSupport', 'sip', 'gspread', 'google.auth', 'google.auth.transport.requests', 'google.oauth2.service_account', 'google_auth_oauthlib', 'googleapiclient.discovery']
 datas += collect_data_files('pyspssio')
 datas += collect_data_files('googleapiclient')
 datas += collect_data_files('certifi')
@@ -37,6 +37,7 @@ binaries += collect_dynamic_libs('savReaderWriter.spssio')
 datas += collect_data_files('savReaderWriter.spssio')
 binaries += collect_dynamic_libs('pyspssio')
 hiddenimports += collect_submodules('savReaderWriter')
+hiddenimports += collect_submodules('matplotlib.backends')
 hiddenimports += collect_submodules('ttkbootstrap')
 hiddenimports += collect_submodules('factor_analyzer')
 hiddenimports += collect_submodules('scipy')
