@@ -1,7 +1,8 @@
 import sys
 import os
 import re
-
+import uuid  # เพิ่มบรรทัดนี้
+from xml.sax.saxutils import escape
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QLineEdit, QTextEdit, QFileDialog, 
                              QMessageBox, QListWidget, QTableWidget, QTableWidgetItem, 
@@ -751,85 +752,118 @@ class SPSSTableClonerApp(QMainWindow):
         self.table_target.setRowCount(0)
 
     def process_file(self):
-        try:
-            content = self.file_content
-            if not content:
-                QMessageBox.warning(self, "Warning", "กรุณาอัปโหลดไฟล์ Project (.mtd) ก่อน")
-                return
+            try:
+                content = self.file_content
+                if not content:
+                    QMessageBox.warning(self, "Warning", "กรุณาอัปโหลดไฟล์ Project (.mtd) ก่อน")
+                    return
 
-            match_table = re.search(r'(<Table [^>]*?>.*?</Table>)', content, re.DOTALL)
-            if not match_table: raise Exception("ไม่พบโครงสร้างตารางในไฟล์")
-            original_xml = match_table.group(1)
-            
-            mdm = re.findall(r'MdmName="([^"]+)"', original_xml)
-            v_mdm = [m for m in mdm if m.strip()]
-            if v_mdm: source_v = v_mdm[0]
-            else:
-                nms = re.findall(r'<Axis[^>]+Name="([^"]+)"', original_xml)
-                rsv = ["Side", "Top", "Bottom", "Dim", "Base", "Mean", "Median"]
-                vn = [n for n in nms if n not in rsv]
-                if vn: source_v = vn[0]
-                else: raise Exception("ระบุตัวแปรต้นแบบไม่ได้")
-
-            nm_match = re.search(r'Name="([^"]+)"', original_xml)
-            if not nm_match: raise Exception("หา attribute Name ไม่เจอ")
-            orig_name = nm_match.group(1)
-            
-            node_patt = re.compile(r'(<Node [^>]*?Table="' + re.escape(orig_name) + r'"[^>]*?/>)')
-            match_node = node_patt.search(content)
-            orig_node = match_node.group(1) if match_node else '<Node Name="xx" Description="xx" Table="xx"/>'
-            
-            final_vars = []
-            for i in range(self.table_target.rowCount()):
-                n = self.table_target.item(i, 0).text().strip()
-                d = self.table_target.item(i, 1).text().strip()
-                if n: final_vars.append({'name': n, 'desc': d})
-
-            if not final_vars:
-                QMessageBox.warning(self, "Warning", "ไม่มีรายการตัวแปร")
-                return
-
-            gen_tabs = ""
-            gen_nodes = ""
-            for v in final_vars:
-                new_n = v['name']
-                clean_n = new_n.replace('$', '')
-                new_tb_name = f"Table_{clean_n}"
+                # หาโครงสร้าง <Table> ต้นแบบ
+                match_table = re.search(r'(<Table [^>]*?>.*?</Table>)', content, re.DOTALL)
+                if not match_table: raise Exception("ไม่พบโครงสร้างตารางในไฟล์")
+                original_xml = match_table.group(1)
                 
-                t_desc = v['desc'] if v['desc'] else new_n
-                n_desc = f"{new_n} : {v['desc']}" if v['desc'] else new_n
-                
-                tmp = original_xml
-                tmp = tmp.replace(f'"{source_v}"', f'"{new_n}"')
-                tmp = tmp.replace(f'>{source_v}<', f'>{new_n}<')
-                tmp = tmp.replace(f'Name="{orig_name}"', f'Name="{new_tb_name}"')
-                tmp = tmp.replace('IsPopulated="true"', 'IsPopulated="false"')
-                if 'Description="' in tmp:
-                    tmp = re.sub(r'Description="[^"]*"', f'Description="{t_desc}"', tmp, count=1)
-                gen_tabs += "\n" + tmp
-                
-                tmp_n = orig_node
-                tmp_n = tmp_n.replace(f'Table="{orig_name}"', f'Table="{new_tb_name}"')
-                tmp_n = tmp_n.replace(f'Name="{orig_name}"', f'Name="{new_tb_name}"')
-                if 'Description="' in tmp_n:
-                    tmp_n = re.sub(r'Description="[^"]*"', f'Description="{n_desc}"', tmp_n, count=1)
+                # หาชื่อตัวแปรต้นแบบ
+                mdm = re.findall(r'MdmName="([^"]+)"', original_xml)
+                v_mdm = [m for m in mdm if m.strip()]
+                if v_mdm: source_v = v_mdm[0]
                 else:
-                    tmp_n = tmp_n.replace('<Node ', f'<Node Description="{n_desc}" ')
-                gen_nodes += "\n" + tmp_n
+                    nms = re.findall(r'<Axis[^>]+Name="([^"]+)"', original_xml)
+                    rsv = ["Side", "Top", "Bottom", "Dim", "Base", "Mean", "Median"]
+                    vn = [n for n in nms if n not in rsv]
+                    if vn: source_v = vn[0]
+                    else: raise Exception("ระบุตัวแปรต้นแบบไม่ได้")
 
-            if '</Tables>' in content:
-                content = content.replace('</Tables>', gen_tabs + '\n</Tables>')
-            if '</GroupedTables>' in content:
-                last_g = content.rfind('</GroupedTables>')
-                content = content[:last_g] + gen_nodes + content[last_g:]
+                # หาชื่อตาราง (Name attribute) ต้นแบบ
+                nm_match = re.search(r'Name="([^"]+)"', original_xml)
+                if not nm_match: raise Exception("หา attribute Name ไม่เจอ")
+                orig_name = nm_match.group(1)
                 
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save File", "Fixed.mtd", "SPSS Metadata (*.mtd)")
-            if save_path:
-                with open(save_path, 'w', encoding='utf-8') as f: f.write(content)
-                QMessageBox.information(self, "Success", f"เสร็จสิ้น! (Template: {source_v})")
+                # หาโครงสร้าง <Node> ต้นแบบ
+                node_patt = re.compile(r'(<Node [^>]*?Table="' + re.escape(orig_name) + r'"[^>]*?/>)')
+                match_node = node_patt.search(content)
+                orig_node = match_node.group(1) if match_node else '<Node Name="xx" Description="xx" Table="xx"/>'
+                
+                final_vars = []
+                for i in range(self.table_target.rowCount()):
+                    n = self.table_target.item(i, 0).text().strip()
+                    d = self.table_target.item(i, 1).text().strip()
+                    if n: final_vars.append({'name': n, 'desc': d})
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+                if not final_vars:
+                    QMessageBox.warning(self, "Warning", "ไม่มีรายการตัวแปร")
+                    return
+
+                gen_tabs = ""
+                gen_nodes = ""
+                
+                # ฟังก์ชันสำหรับ Generate GUID ใหม่ทุกครั้งที่เจอแท็ก Id
+                def generate_new_guid(match):
+                    return f'Id="{{{str(uuid.uuid4()).upper()}}}"'
+
+                for v in final_vars:
+                    new_n = v['name']
+                    clean_n = new_n.replace('$', '')
+                    new_tb_name = f"Table_{clean_n}"
+                    
+                    # เตรียมข้อความ Description (ก่อนนำไปคลีน)
+                    raw_t_desc = v['desc'] if v['desc'] else new_n
+                    raw_n_desc = f"{new_n} : {v['desc']}" if v['desc'] else new_n
+                    
+                    # [สำคัญ!] แปลงอักขระพิเศษให้ปลอดภัยกับ XML (เช่น & เป็น &amp;)
+                    t_desc = escape(raw_t_desc, {'"': '&quot;', "'": '&apos;'})
+                    n_desc = escape(raw_n_desc, {'"': '&quot;', "'": '&apos;'})
+                    
+                    # --- จัดการ Table XML ---
+                    tmp = original_xml
+                    tmp = tmp.replace(f'"{source_v}"', f'"{new_n}"')
+                    tmp = tmp.replace(f'>{source_v}<', f'>{new_n}<')
+                    tmp = tmp.replace(f'Name="{orig_name}"', f'Name="{new_tb_name}"')
+                    tmp = tmp.replace('IsPopulated="true"', 'IsPopulated="false"')
+                    
+                    # [สำคัญ!] ใช้ Regex กวาดเปลี่ยน Id "ทุกจุด" ที่อยู่ในโครงสร้าง Table นี้ให้เป็นของใหม่ทั้งหมด
+                    tmp = re.sub(r'Id="\{?[A-Fa-f0-9\-]+\}?"', generate_new_guid, tmp)
+                    
+                    if 'Description="' in tmp:
+                        tmp = re.sub(r'Description="[^"]*"', f'Description="{t_desc}"', tmp, count=1)
+                    
+                    gen_tabs += "\n" + tmp
+                    
+                    # --- จัดการ Node XML ---
+                    tmp_n = orig_node
+                    tmp_n = tmp_n.replace(f'Table="{orig_name}"', f'Table="{new_tb_name}"')
+                    tmp_n = tmp_n.replace(f'Name="{orig_name}"', f'Name="{new_tb_name}"')
+                    
+                    # เปลี่ยน Id ของ Node
+                    tmp_n = re.sub(r'Id="\{?[A-Fa-f0-9\-]+\}?"', generate_new_guid, tmp_n)
+                    
+                    if 'Description="' in tmp_n:
+                        tmp_n = re.sub(r'Description="[^"]*"', f'Description="{n_desc}"', tmp_n, count=1)
+                    else:
+                        tmp_n = tmp_n.replace('<Node ', f'<Node Description="{n_desc}" ')
+                        
+                    # กันเหนียว: ถ้า orig_node เดิมไม่มี Id ให้บังคับสร้างใส่เข้าไป
+                    if 'Id="' not in tmp_n:
+                        tmp_n = tmp_n.replace('<Node ', f'<Node Id="{{{str(uuid.uuid4()).upper()}}}" ')
+                        
+                    gen_nodes += "\n" + tmp_n
+
+                # แทนที่ข้อมูลกลับเข้าไป
+                if '</Tables>' in content:
+                    content = content.replace('</Tables>', gen_tabs + '\n</Tables>')
+                if '</GroupedTables>' in content:
+                    last_g = content.rfind('</GroupedTables>')
+                    content = content[:last_g] + gen_nodes + content[last_g:]
+                    
+                # บันทึกไฟล์
+                save_path, _ = QFileDialog.getSaveFileName(self, "Save File", "Fixed.mtd", "SPSS Metadata (*.mtd)")
+                if save_path:
+                    with open(save_path, 'w', encoding='utf-8') as f: 
+                        f.write(content)
+                    QMessageBox.information(self, "Success", f"เสร็จสิ้น! (Template: {source_v})")
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", str(e))
 
 
 

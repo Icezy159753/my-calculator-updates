@@ -9,6 +9,7 @@ import subprocess
 import numpy as np
 import traceback
 import faulthandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 # import traceback # Optional: for detailed error logging
 # --- ฟังก์ชัน parse_list_range (จำเป็นสำหรับ expand_wildcard ที่อัปเดต) ---
 
@@ -20,6 +21,7 @@ lower_df_columns_set = set()
 lower_to_original_map = {}
 current_df = None
 condition_counts = {} # <--- เพิ่มตัวแปรนี้
+condition_compiled_expr = {} # cache expression ที่แปลงแล้วต่อเงื่อนไข
 spss_meta = None # <--- เพิ่มตัวแปร global สำหรับเก็บ Metadata
 STRICT_MODE = True  # ถ้าต้องการปิดโหมดเข้มงวดให้ตั้งเป็น False
 
@@ -208,7 +210,7 @@ def calculate_single_count(condition, df, original_cols, lower_cols_set, lower_t
 
         expanded = expand_wildcard(condition, original_cols, lower_to_orig_map)
         converted = auto_convert(expanded, lower_to_orig_map)
-        count = len(df.query(converted))
+        count = int(df.eval(converted).sum())
         return count
 
     except Exception as e:
@@ -527,6 +529,14 @@ def auto_convert(expr, lower_to_orig_map):
     return expr
 # --- สิ้นสุดฟังก์ชัน auto_convert ที่อัปเดตแล้ว ---
 
+def compile_condition_expression(cond, original_cols, lower_cols_set, lower_to_orig_map):
+    """Validate + expand wildcard + convert เป็น expression สำหรับ eval/query"""
+    error_msg = validate_condition(cond, original_cols, lower_cols_set, lower_to_orig_map)
+    if error_msg:
+        raise ValueError(f"รูปแบบผิด: {error_msg}")
+    expanded = expand_wildcard(cond, original_cols, lower_to_orig_map)
+    return auto_convert(expanded, lower_to_orig_map)
+
 # --- ตรวจสอบและแก้ไข extract_cols_from_raw_condition ---
 def extract_cols_from_raw_condition(expr, original_cols, lower_cols_set, lower_to_orig_map): # <--- ตรวจสอบว่ารับ map นี้
     """ดึงคอลัมน์ที่ใช้จากเงื่อนไขดิบ (Case-Insensitive matching, Original case output)"""
@@ -577,32 +587,22 @@ def extract_cols_from_raw_condition(expr, original_cols, lower_cols_set, lower_t
 
 def compute_counts(df, original_cols, lower_cols_set, lower_to_orig_map):
     """คำนวณ counts สำหรับ saved_conditions"""
+    global condition_compiled_expr
     counts = {}
     errors = {}
+    compiled_map = {}
     if df is None:
         # Return counts for conditions, marking all as 'N/A' or similar if no DF
         for cond in saved_conditions: counts[cond] = 'N/A'
+        condition_compiled_expr = {}
         return counts, "DataFrame ไม่ได้โหลด"
 
     # Process each saved condition
     for cond in saved_conditions:
         try:
-            # 1. Validate
-            error_msg = validate_condition(cond, original_cols, lower_cols_set, lower_to_orig_map)
-            if error_msg:
-                errors[cond] = f"รูปแบบผิด: {error_msg}"
-                counts[cond] = "Error"
-                continue # Skip to next condition
-
-            # 2. Expand Wildcard
-            expanded = expand_wildcard(cond, original_cols, lower_to_orig_map)
-
-            # 3. Auto Convert (remaining parts)
-            converted = auto_convert(expanded, lower_to_orig_map)
-            # print(f"DEBUG Compute: Raw='{cond}'\nExp='{expanded}'\nConv='{converted}'") # Debug
-
-            # 4. Query DataFrame
-            counts[cond] = len(df.query(converted))
+            converted = compile_condition_expression(cond, original_cols, lower_cols_set, lower_to_orig_map)
+            compiled_map[cond] = converted
+            counts[cond] = int(df.eval(converted).sum())
 
         except Exception as e:
             # Log detailed error for debugging if needed
@@ -611,6 +611,7 @@ def compute_counts(df, original_cols, lower_cols_set, lower_to_orig_map):
             errors[cond] = f"ประมวลผลผิดพลาด: {e}"
             counts[cond] = "Error"
 
+    condition_compiled_expr = compiled_map
     error_summary = "\n".join([f"- '{c}': {m}" for c, m in errors.items()]) if errors else None
     return counts, error_summary
 
@@ -777,33 +778,41 @@ def update_table(counts=None):
     if ui is None:
         return
     table = ui.conditions_table
+    # ปิด repaint และ sorting ระหว่างใส่ข้อมูล เพื่อประสิทธิภาพ
+    table.setUpdatesEnabled(False)
+    table.setSortingEnabled(False)
     table.setRowCount(0)
-    for idx, cond in enumerate(saved_conditions, start=1):
-        cnt = counts.get(cond, '') if counts is not None else ''
-        row = table.rowCount()
-        table.insertRow(row)
+    font_bold = QtGui.QFont()
+    font_bold.setBold(True)
+    brush_red = QtGui.QBrush(QtGui.QColor("#d11f1f"))
+    brush_orange = QtGui.QBrush(QtGui.QColor("#e67e22"))
+    brush_gray = QtGui.QBrush(QtGui.QColor("#6b7280"))
+    align_center = QtCore.Qt.AlignmentFlag.AlignCenter
 
-        id_item = QtWidgets.QTableWidgetItem(str(idx))
+    table.setRowCount(len(saved_conditions))
+    for idx, cond in enumerate(saved_conditions):
+        cnt = counts.get(cond, '') if counts is not None else ''
+
+        id_item = QtWidgets.QTableWidgetItem(str(idx + 1))
         cond_item = QtWidgets.QTableWidgetItem(cond)
         cnt_item = QtWidgets.QTableWidgetItem(str(cnt))
 
-        id_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        cnt_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        font_bold = QtGui.QFont()
-        font_bold.setBold(True)
+        id_item.setTextAlignment(align_center)
+        cnt_item.setTextAlignment(align_center)
 
         if isinstance(cnt, (int, float)) and cnt > 0:
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#d11f1f")))
+            cnt_item.setForeground(brush_red)
             cnt_item.setFont(font_bold)
         elif str(cnt) == "Error":
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#e67e22")))
+            cnt_item.setForeground(brush_orange)
         elif str(cnt) == "N/A":
-            cnt_item.setForeground(QtGui.QBrush(QtGui.QColor("#6b7280")))
+            cnt_item.setForeground(brush_gray)
 
-        table.setItem(row, 0, id_item)
-        table.setItem(row, 1, cond_item)
-        table.setItem(row, 2, cnt_item)
+        table.setItem(idx, 0, id_item)
+        table.setItem(idx, 1, cond_item)
+        table.setItem(idx, 2, cnt_item)
+
+    table.setUpdatesEnabled(True)
 
 def show_help():
     """แสดงคำอธิบายวิธีใช้งาน"""
@@ -814,7 +823,7 @@ def show_help():
 # --- ฟังก์ชัน load_file (เวอร์ชันแก้ไข Log ไม่ให้ซ้ำ และใช้ global UI vars) ---
 def load_file():
     """เลือกและโหลดไฟล์ SPSS, อัปเดต Global Vars (รวม Metadata) และ UI"""
-    global current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, spss_meta, file_var
+    global current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, condition_compiled_expr, spss_meta, file_var
 
     if ui is None:
         return
@@ -872,6 +881,7 @@ def load_file():
         # Reset global state on failure
         current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map = None, [], set(), {}
         condition_counts = {}
+        condition_compiled_expr = {}
         spss_meta = None
         file_var.set("")
         update_table()
@@ -883,6 +893,7 @@ def load_file():
         lower_df_columns_set = {c.lower() for c in original_df_columns_list}
         lower_to_original_map = {c.lower(): c for c in original_df_columns_list}
         condition_counts = {}
+        condition_compiled_expr = {}
         ui.show_info("สำเร็จ", f"โหลดไฟล์ SPSS:\n{os.path.basename(path)}\nเรียบร้อยแล้ว (ใช้ Encoding: {successful_encoding}) ({len(df)} แถว)")
 
         # Recalculate counts...
@@ -899,7 +910,7 @@ def load_file():
 
 def save_condition():
     """บันทึกเงื่อนไขและคำนวณ Count เฉพาะรายการใหม่"""
-    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts # เพิ่ม condition_counts
+    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, condition_compiled_expr # เพิ่ม condition_counts
     cond = condition_var.get().strip()
     if not cond:
         ui.show_warning("แจ้งเตือน", "กรุณากรอกเงื่อนไขก่อนบันทึก")
@@ -925,7 +936,12 @@ def save_condition():
     # 2. Calculate count ONLY for the new condition (if data is loaded)
     new_count = "N/A" # Default if no data
     if current_df is not None:
-         new_count = calculate_single_count(cond, current_df, original_df_columns_list, lower_df_columns_set, lower_to_original_map)
+         try:
+             converted = compile_condition_expression(cond, original_df_columns_list, lower_df_columns_set, lower_to_original_map)
+             condition_compiled_expr[cond] = converted
+             new_count = int(current_df.eval(converted).sum())
+         except Exception:
+             new_count = "Error"
 
     # 3. Store the new count in the dictionary
     condition_counts[cond] = new_count
@@ -937,7 +953,7 @@ def save_condition():
 
 def delete_condition():
     """ลบเงื่อนไขที่เลือกและอัปเดต UI"""
-    global current_df, saved_conditions, condition_counts # เพิ่ม condition_counts
+    global current_df, saved_conditions, condition_counts, condition_compiled_expr # เพิ่ม condition_counts
 
     if ui is None:
         return
@@ -959,6 +975,7 @@ def delete_condition():
     # 2. Remove corresponding entries from condition_counts dictionary
     for cond_text in conditions_to_delete_texts:
          condition_counts.pop(cond_text, None) # ใช้ pop(key, None) เพื่อไม่ให้เกิด error ถ้า key ไม่มีอยู่แล้ว
+         condition_compiled_expr.pop(cond_text, None)
 
     # 3. Update UI using the modified condition_counts
     update_table(condition_counts)
@@ -985,11 +1002,95 @@ def export_conditions():
         ui.show_info("สำเร็จ", f"บันทึกเงื่อนไข {len(saved_conditions)} รายการไปยัง:\n{os.path.basename(path)}\nเรียบร้อยแล้ว")
     except Exception as e:
         ui.show_error("Error", f"บันทึกไฟล์เงื่อนไขล้มเหลว: {e}")
+def _calc_one(args):
+    """คำนวณ count สำหรับ 1 เงื่อนไข — ใช้กับ ThreadPoolExecutor"""
+    cond, df, original_cols, lower_cols_set, lower_to_orig_map = args
+    try:
+        converted = compile_condition_expression(cond, original_cols, lower_cols_set, lower_to_orig_map)
+        count = int(df.eval(converted).sum())
+        return cond, count, None, converted
+    except Exception as e:
+        return cond, "Error", str(e), None
+
+# --- QThread Worker สำหรับคำนวณ Count ใน background ---
+_count_worker = None  # global reference เพื่อป้องกัน GC
+
+class CountWorker(QtCore.QThread):
+    """คำนวณ count ทุกเงื่อนไขใน background thread ไม่บล็อก UI"""
+    progress_signal = QtCore.pyqtSignal(int, int)   # (current, total)
+    finished_signal = QtCore.pyqtSignal(dict, list) # (counts_result, error_list)
+
+    def __init__(self, conditions, df, original_cols, lower_to_orig_map, parent=None):
+        super().__init__(parent)
+        self.conditions = conditions
+        self.df = df
+        self.original_cols = original_cols
+        self.lower_cols_set = {c.lower() for c in original_cols}
+        self.lower_to_orig_map = lower_to_orig_map
+        self.compiled_map = {}
+
+    def run(self):
+        counts_result = {}
+        error_list = []
+        total = len(self.conditions)
+        completed = 0
+        n_workers = min(4, os.cpu_count() or 4)
+        args_list = [
+            (cond, self.df, self.original_cols, self.lower_cols_set, self.lower_to_orig_map)
+            for cond in self.conditions
+        ]
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_calc_one, args): args[0] for args in args_list}
+            for future in as_completed(futures):
+                cond_out, count, err, converted = future.result()
+                counts_result[cond_out] = count
+                if converted:
+                    self.compiled_map[cond_out] = converted
+                if err:
+                    error_list.append(f"- '{cond_out}': {err}")
+                completed += 1
+                if completed % 10 == 0 or completed == total:
+                    self.progress_signal.emit(completed, total)
+        self.finished_signal.emit(counts_result, error_list)
+
+def _on_count_progress(current, total):
+    if ui is not None:
+        ui.progress_bar.setValue(current)
+        progress_status_var.set(f"Calculating counts {current}/{total}")
+
+def _on_count_worker_done(counts_result, error_list, op_text):
+    global condition_counts, condition_compiled_expr, _count_worker
+    condition_counts = counts_result
+    if _count_worker is not None and hasattr(_count_worker, "compiled_map"):
+        condition_compiled_expr = dict(_count_worker.compiled_map)
+    else:
+        condition_compiled_expr = {}
+    if ui is not None:
+        ui.progress_bar.setValue(0)
+        progress_status_var.set("Idle")
+        update_table(condition_counts)
+        ui.show_info("สำเร็จ", f"{op_text}เงื่อนไขเรียบร้อยแล้ว")
+        if error_list:
+            ui.show_warning("พบข้อผิดพลาด",
+                            "พบข้อผิดพลาดในการคำนวณ Count:\n" + "\n".join(error_list))
+    _count_worker = None
+
+def _start_count_worker(conditions, op_text):
+    global _count_worker
+    _count_worker = CountWorker(
+        conditions, current_df, original_df_columns_list, lower_to_original_map
+    )
+    _count_worker.progress_signal.connect(_on_count_progress)
+    _count_worker.finished_signal.connect(
+        lambda counts, errors: _on_count_worker_done(counts, errors, op_text)
+    )
+    _count_worker.start()
+
 # --- ฟังก์ชัน import_conditions ที่อัปเดตแล้ว พร้อม Progress Bar ตอนคำนวณ Count ---
 def import_conditions():
     """โหลดเงื่อนไขจากไฟล์ Excel, ล้าง Counts เดิม, และคำนวณใหม่พร้อม Progress Bar (ถ้ามีข้อมูล)"""
     # Access global variables needed
-    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts
+    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, condition_compiled_expr
 
     path = ui.open_file_dialog(filetypes=[("Excel files", "*.xlsx")], title="เลือกไฟล์เงื่อนไข")
     if not path: return # User cancelled
@@ -1054,6 +1155,7 @@ def import_conditions():
 
         # --- Clear existing counts because conditions list is changing ---
         condition_counts = {}
+        condition_compiled_expr = {}
 
         # --- Update saved_conditions list based on user choice ---
         if choice: # Yes = Replace
@@ -1067,71 +1169,17 @@ def import_conditions():
                      added_count +=1
              op_text = f"เพิ่มเงื่อนไขใหม่ {added_count} รายการ"
 
-        # --- Recalculate all counts WITH PROGRESS BAR (if data loaded) ---
-        counts_result = {} # Dictionary to store results of this calculation
-        error_summary_list = [] # List to collect error messages
-
-        # Only calculate counts if data is actually loaded and there are conditions
+        # เริ่ม background worker ถ้ามีข้อมูล หรืออัปเดตตารางทันทีถ้าไม่มีข้อมูล
         if current_df is not None and saved_conditions:
             total_conditions_to_calc = len(saved_conditions)
-            # --- Setup Progress Bar ---
             ui.progress_bar.setMaximum(total_conditions_to_calc)
             ui.progress_bar.setValue(0)
-            progress_status_var.set(f"Calculating counts (0/{total_conditions_to_calc})...")
-            # Optional: Disable relevant buttons (Need references to buttons)
-            # e.g., import_button.config(state=tk.DISABLED)
-            # e.g., check_button_widget.config(state=tk.DISABLED)
-            process_events() # Show initial progress state
-
-            try: # Use finally to ensure UI elements are reset
-                # --- Loop to calculate counts for all conditions ---
-                for i, cond in enumerate(saved_conditions):
-                    current_status = "Error" # Default status for progress bar
-                    try:
-                        # Perform steps: Validate -> Expand -> Convert -> Query -> Get Count
-                        error_msg = validate_condition(cond, original_df_columns_list, lower_df_columns_set, lower_to_original_map)
-                        if error_msg: raise ValueError(f"รูปแบบผิด: {error_msg}")
-
-                        expanded = expand_wildcard(cond, original_df_columns_list, lower_to_original_map)
-                        converted = auto_convert(expanded, lower_to_original_map)
-                        count = len(current_df.query(converted))
-                        counts_result[cond] = count
-                        current_status = count # Update status for progress display
-
-                    except Exception as e:
-                        # Store error if calculation fails for this condition
-                        counts_result[cond] = "Error"
-                        error_summary_list.append(f"- '{cond}': {e}")
-                        current_status = "Error"
-
-                    # --- Update Progress Bar and Status Label ---
-                    ui.progress_bar.setValue(i + 1)
-                    # Simplified status message as requested previously
-                    progress_status_var.set(f"Calculating counts {i + 1}/{total_conditions_to_calc}")
-                    process_events() # IMPORTANT: Update UI within the loop
-                # --- End Calculation Loop ---
-
-            finally:
-                # --- Reset Progress Bar and Status ---
-                ui.progress_bar.setValue(0)
-                progress_status_var.set("Idle")
-                # Optional: Re-enable buttons
-                # e.g., import_button.config(state=tk.NORMAL)
-                # e.g., check_button_widget.config(state=tk.NORMAL)
-                process_events() # Ensure final UI state is shown
-
-            # Update global counts dictionary with the fresh results
-            condition_counts = counts_result
-
-        # --- Update the UI table ---
-        # Pass the newly calculated counts (or the empty dict if no data/no conditions)
-        update_table(condition_counts)
-        ui.show_info("สำเร็จ", f"{op_text}เงื่อนไขเรียบร้อยแล้ว")
-
-        # Show errors encountered during recalculation (if any)
-        if error_summary_list:
-             error_summary_str = "\n".join(error_summary_list)
-             ui.show_warning("พบข้อผิดพลาด", f"พบข้อผิดพลาดในการคำนวณ Count หลังนำเข้า:\n{error_summary_str}")
+            progress_status_var.set(f"Calculating counts 0/{total_conditions_to_calc}...")
+            process_events()
+            _start_count_worker(list(saved_conditions), op_text)
+        else:
+            update_table(condition_counts)
+            ui.show_info("สำเร็จ", f"{op_text}เงื่อนไขเรียบร้อยแล้ว")
 
     # --- Exception Handling for File Operations ---
     except FileNotFoundError:
@@ -1159,7 +1207,7 @@ def check_conditions():
     และ Query ข้อมูลเฉพาะเงื่อนไขที่มี Count > 0 เท่านั้น
     """
     # Access global variables
-    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts
+    global current_df, saved_conditions, original_df_columns_list, lower_df_columns_set, lower_to_original_map, condition_counts, condition_compiled_expr
 
     # --- Pre-checks ---
     if current_df is None:
@@ -1205,14 +1253,13 @@ def check_conditions():
             process_events()
 
             try:
-                # ทำการ Validate -> Expand -> Convert เพื่อสร้าง query string
-                # ขั้นตอนนี้ยังจำเป็นเพื่อให้ได้ query string ที่ถูกต้องสำหรับดึงข้อมูล
-                error_msg = validate_condition(cond, original_df_columns_list, lower_df_columns_set, lower_to_original_map)
-                if error_msg:
-                    raise ValueError(f"รูปแบบไม่ถูกต้อง (ตอนเตรียม Export): {error_msg}")
-
-                expanded = expand_wildcard(cond, original_df_columns_list, lower_to_original_map)
-                converted = auto_convert(expanded, lower_to_original_map)
+                # ใช้ expression ที่ cache ไว้ก่อน เพื่อลดงาน parse/convert ซ้ำ
+                converted = condition_compiled_expr.get(cond)
+                if not converted:
+                    converted = compile_condition_expression(
+                        cond, original_df_columns_list, lower_df_columns_set, lower_to_original_map
+                    )
+                    condition_compiled_expr[cond] = converted
 
                 # Query DataFrame เพื่อดึงผลลัพธ์
                 sub_df = current_df.query(converted)
@@ -1274,7 +1321,7 @@ def calculate_single_count(condition, df, original_cols, lower_cols_set, lower_t
 
         expanded = expand_wildcard(condition, original_cols, lower_to_orig_map)
         converted = auto_convert(expanded, lower_to_orig_map)
-        count = len(df.query(converted))
+        count = int(df.eval(converted).sum())
         return count
 
     except Exception as e:

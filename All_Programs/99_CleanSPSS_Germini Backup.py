@@ -470,11 +470,13 @@ def compute_counts(df, original_cols, lower_cols_set, lower_to_orig_map):
     return counts, error_summary
 
 # --- Function for Excel Export with Index, Counts, and Backlinks ---
+# --- Function for Excel Export with Index, Counts, and Backlinks ---
 def open_multi_excel(df_dict, counts_dict, filename_base="Result"):
     """
     ส่งออก DataFrame หลายอันไปยังชีทต่างๆ ในไฟล์ Excel เดียว
     พร้อมสร้าง Index Sheet ที่มี ID, Condition, Sheet Name, Count, และ Hyperlink
     และเพิ่ม Hyperlink ในแต่ละชีทข้อมูลเพื่อกลับมายัง Index Sheet
+    (เวอร์ชันแก้ไข: ปรับปรุงการสร้างชื่อชีทให้ไม่เกิน 31 ตัวอักษร)
     Args:
         df_dict (dict): Dictionary ที่มี key เป็น condition string และ value เป็น DataFrame ผลลัพธ์.
         counts_dict (dict): Dictionary ที่มี key เป็น condition string และ value เป็น count (หรือ "Error"/"N/A").
@@ -514,14 +516,27 @@ def open_multi_excel(df_dict, counts_dict, filename_base="Result"):
 
             # วนลูปเฉพาะเงื่อนไขที่มี DataFrame ผลลัพธ์ (คือมี Count > 0)
             for cond, df_ in df_dict.items():
-                # สร้างชื่อชีทที่ไม่ซ้ำ
-                base_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', cond)[:25]
-                sheet_name = f"Cond{sheet_idx}_{base_sheet_name}"
-                original_sheet_name = sheet_name
+                # --- [แก้ไข] สร้างชื่อชีทที่ถูกต้องและไม่ซ้ำ (ไม่เกิน 31 ตัวอักษร) ---
+                # 1. ทำความสะอาด condition string และสร้างส่วนหลักของชื่อ
+                safe_cond_part = re.sub(r'[\\/*?:\[\]]', '_', cond)
+                prefix = f"Cond{sheet_idx}" # เช่น "Cond1", "Cond12"
+
+                # 2. คำนวณความยาวสูงสุดที่เหลือสำหรับ condition และสร้างชื่อพื้นฐาน
+                # 31 คือขีดจำกัด, -1 สำหรับ '_' ที่จะคั่นกลาง
+                max_len_for_cond = 31 - len(prefix) - 1
+                base_sheet_name = f"{prefix}_{safe_cond_part[:max_len_for_cond]}"
+
+                # 3. จัดการกรณีชื่อซ้ำโดยการเติม suffix (_1, _2, ...)
+                sheet_name = base_sheet_name
                 name_count = 1
                 while sheet_name in generated_sheet_names:
-                    sheet_name = f"{original_sheet_name[:25]}_{name_count}"
+                    suffix = f"_{name_count}"
+                    # คำนวณความยาวของชื่อพื้นฐานใหม่เพื่อให้พอดีกับ suffix
+                    max_len_for_base = 31 - len(suffix)
+                    sheet_name = f"{base_sheet_name[:max_len_for_base]}{suffix}"
                     name_count += 1
+                # --- [สิ้นสุดการแก้ไข] ---
+                
                 generated_sheet_names[sheet_name] = True
 
                 # เก็บข้อมูลสำหรับ Index (รวม Count จาก counts_dict)
@@ -606,8 +621,6 @@ def open_multi_excel(df_dict, counts_dict, filename_base="Result"):
                 messagebox.showerror("ไม่สามารถเปิดไฟล์", f"เกิดข้อผิดพลาดในการเปิดไฟล์: {e}\n\nกรุณาเปิดไฟล์ด้วยตนเองที่:\n{save_path}")
 
     except Exception as e:
-         # import traceback
-         # messagebox.showerror("ส่งออก Excel ล้มเหลว", f"{e}\n{traceback.format_exc()}")
          messagebox.showerror("ส่งออก Excel ล้มเหลว", f"เกิดข้อผิดพลาดระหว่างการเขียนไฟล์ Excel: {e}")
 # --- สิ้นสุดฟังก์ชัน open_multi_excel ---
 
@@ -998,6 +1011,7 @@ def import_conditions():
 
 
 
+# --- ฟังก์ชัน check_conditions ที่ปรับปรุงใหม่ทั้งหมดเพื่อความเร็วสูงสุด ---
 # --- ฟังก์ชัน check_conditions ที่ปรับปรุงใหม่ทั้งหมดเพื่อความเร็วสูงสุด ---
 def check_conditions():
     """

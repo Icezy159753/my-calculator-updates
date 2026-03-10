@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 import re
 import pyreadstat
 import numpy as np
@@ -15,7 +15,6 @@ from factor_analyzer import FactorAnalyzer
 from collections import OrderedDict
 import io
 import sys
-import json
 from scipy.linalg import inv, eigh
 from sklearn.preprocessing import StandardScaler
 import time
@@ -415,18 +414,12 @@ class SpssProcessorApp(QMainWindow):
         self.id_vars = []
         self.last_excel_filepath = None
         self.original_filepath = None
-        self.agree_json_filepath_override = None
         self.save_all_sheets_var = _BoolVar(value=True)
         self.t2b_choice_var = _Var(value="5+4")
         self.index1_labels = {}
         self.filter_labels = {}
         self.spss_value_labels = {}
         self.spss_variable_labels = {}
-        self.compute_sav_column_labels = {}
-        self.compute_sav_value_labels = {}
-        self.sandp_label_overrides = []
-        self.agree_summary_cache_df = None
-        self.is_reanalyze_mode = False
         self.e_group_mode_var = _Var(value="default")
         self.e_group_entry_var = _Var(value="")
         self.log_text = None
@@ -1082,17 +1075,11 @@ class SpssProcessorApp(QMainWindow):
         self.id_vars = []
         self.last_excel_filepath = None
         self.original_filepath = None
-        self.agree_json_filepath_override = None
         self.t2b_choice_var.set("5+4")
         self.index1_labels = {}
         self.filter_labels = {}
         self.spss_value_labels = {}
         self.spss_variable_labels = {}
-        self.compute_sav_column_labels = {}
-        self.compute_sav_value_labels = {}
-        self.sandp_label_overrides = []
-        self.agree_summary_cache_df = None
-        self.is_reanalyze_mode = False
         self.e_group_mode_var.set("default")
         self._rb_e_default.setChecked(True)
         self.e_group_entry_var.set("")
@@ -1159,7 +1146,6 @@ class SpssProcessorApp(QMainWindow):
         Workflow 3: โหลดไฟล์ที่ผ่านการประมวลผลแล้ว (Compute C) เพื่อวิเคราะห์ซ้ำ
         """
         self.reset_state()
-        self.is_reanalyze_mode = True
         if not self.load_processed_spss_file():
             return
 
@@ -1188,34 +1174,8 @@ class SpssProcessorApp(QMainWindow):
             self.reset_state()
             return
 
-        json_filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "เลือกไฟล์ Agree Original JSON (จำเป็น)",
-            "",
-            "JSON File (*.json)")
-        if not json_filepath:
-            self.update_status("ยกเลิกการเลือกไฟล์ JSON", "warning")
-            QMessageBox.warning(
-                self, "ต้องใช้ไฟล์ JSON",
-                "โหมดวิเคราะห์ซ้ำต้องเลือกไฟล์ Agree Original JSON")
-            self.reset_state()
-            return
-        self.agree_json_filepath_override = json_filepath
-
         self.update_status(
             "โหลดไฟล์ Compute C + Setting สำเร็จ", "success")
-        if self._load_agree_summary_cache_from_json():
-            cache_cols = len([
-                c for c in self.agree_summary_cache_df.columns
-                if c.startswith('agree_')
-            ]) if self.agree_summary_cache_df is not None else 0
-            self.update_status(
-                f"Add Agree Original แล้ว ({cache_cols} คอลัมน์)",
-                "success")
-            QMessageBox.information(
-                self,
-                "สำเร็จ",
-                f"Add Agree Original แล้ว\nโหลดค่า Agree จาก JSON ({cache_cols} คอลัมน์)")
         self.show_message_in_display(
             "โหลดไฟล์สำเร็จ\n\nกรุณาตรวจสอบ Filter แล้วกด "
             "'วิเคราะห์และส่งออก Excel'")
@@ -1247,10 +1207,10 @@ class SpssProcessorApp(QMainWindow):
             self.df, meta = pyreadstat.read_sav(filepath)
             self.original_filepath = filepath
             self.spss_original_order = meta.column_names
-            var_labels, value_labels = \
-                self._extract_spss_metadata(meta)
-            self.spss_variable_labels = var_labels
-            self.spss_value_labels = value_labels
+            if hasattr(meta, 'variable_value_labels'):
+                self.spss_value_labels = meta.variable_value_labels
+            if hasattr(meta, 'column_names_to_labels'):
+                self.spss_variable_labels = meta.column_names_to_labels
             self.df = self.df[self.spss_original_order]
             self.update_status(f"โหลดไฟล์สำเร็จ! {len(self.df)} แถว", "success")
             self.stop_progress()
@@ -1277,10 +1237,10 @@ class SpssProcessorApp(QMainWindow):
         self.update_status(f"กำลังโหลด: {os.path.basename(filepath)}...")
         try:
             self.transformed_df, meta_cc = pyreadstat.read_sav(filepath)
-            var_labels, value_labels = \
-                self._extract_spss_metadata(meta_cc)
-            self.spss_variable_labels = var_labels
-            self.spss_value_labels = value_labels
+            if hasattr(meta_cc, 'variable_value_labels'):
+                self.spss_value_labels = meta_cc.variable_value_labels
+            if hasattr(meta_cc, 'column_names_to_labels'):
+                self.spss_variable_labels = meta_cc.column_names_to_labels
 
             # โหมด Re-analyze ใช้ไฟล์ Compute C เป็นฐานหลัก
             # ไม่พึ่งพาไฟล์ SPSS Original
@@ -1415,7 +1375,6 @@ class SpssProcessorApp(QMainWindow):
                 settings_df, key)
 
         self.filter_labels = {}
-        self.sandp_label_overrides = []
         if 'Label' in xls.sheet_names:
             labels_df = pd.read_excel(
                 xls, sheet_name='Label')
@@ -1452,13 +1411,6 @@ class SpssProcessorApp(QMainWindow):
                         'Filter_Code'].astype(int),
                     filter_labels_df['Filter_Label']))
 
-            if 'SandP_Label' in labels_df.columns:
-                self.sandp_label_overrides = [
-                    str(v).strip()
-                    for v in labels_df['SandP_Label'].tolist()
-                    if pd.notna(v) and str(v).strip()
-                ]
-
         return spss_filepath_from_settings
 
     def _try_load_original_spss_for_reanalyze(
@@ -1477,12 +1429,14 @@ class SpssProcessorApp(QMainWindow):
             try:
                 self.df, meta_orig = pyreadstat.read_sav(cand)
                 self.spss_original_order = meta_orig.column_names
-                var_labels, value_labels = \
-                    self._extract_spss_metadata(meta_orig)
-                self.spss_value_labels.update(
-                    value_labels)
-                self.spss_variable_labels.update(
-                    var_labels)
+                if hasattr(meta_orig,
+                           'variable_value_labels'):
+                    self.spss_value_labels.update(
+                        meta_orig.variable_value_labels)
+                if hasattr(meta_orig,
+                           'column_names_to_labels'):
+                    self.spss_variable_labels.update(
+                        meta_orig.column_names_to_labels)
                 loaded = True
                 return
             except Exception:
@@ -1491,232 +1445,6 @@ class SpssProcessorApp(QMainWindow):
             self.update_status(
                 "ไม่พบไฟล์ SPSS ต้นฉบับสำหรับคำนวณ T2B",
                 "warning")
-
-    def _get_base_output_path(self):
-        """หา base path กลางจากไฟล์ต้นทางปัจจุบัน"""
-        if not self.original_filepath:
-            return None
-
-        base, ext = os.path.splitext(self.original_filepath)
-        if ext.lower() == '.sav' and base.endswith(" Compute C"):
-            base = base[:-10]
-        return base
-
-    def _get_bs_output_filepath(self):
-        """หา path ของไฟล์ Excel output หลักจากไฟล์ต้นทางปัจจุบัน"""
-        base = self._get_base_output_path()
-        if not base:
-            return None
-        return f"{base} BS Output.xlsx"
-
-    def _get_agree_json_filepath(self):
-        """หา path ของไฟล์ JSON ที่เก็บ Agree Original"""
-        if self.agree_json_filepath_override and \
-                os.path.exists(self.agree_json_filepath_override):
-            return self.agree_json_filepath_override
-        base = self._get_base_output_path()
-        if not base:
-            return None
-        return f"{base} Agree Original.json"
-
-    def _save_agree_summary_to_json(self, summary_df):
-        """บันทึกค่า agree_* จาก Summary ลง JSON"""
-        if summary_df is None or summary_df.empty:
-            return False
-
-        agree_cols = [
-            c for c in summary_df.columns
-            if str(c).startswith('agree_')]
-        if not agree_cols:
-            return False
-
-        key_candidates = ['Filter', 'Index1']
-        key_cols = [
-            c for c in key_candidates
-            if c in summary_df.columns]
-        if not key_cols:
-            return False
-
-        payload_df = summary_df[
-            key_cols + agree_cols
-        ].reset_index(drop=True)
-        payload_df = payload_df.where(
-            pd.notna(payload_df), None)
-
-        json_filepath = self._get_agree_json_filepath()
-        if not json_filepath:
-            return False
-
-        payload = {
-            'key_columns': key_cols,
-            'agree_columns': agree_cols,
-            'records': payload_df.to_dict(orient='records')
-        }
-        with open(
-                json_filepath,
-                'w',
-                encoding='utf-8') as f:
-            json.dump(
-                payload,
-                f,
-                ensure_ascii=False,
-                indent=2)
-
-        self.agree_summary_cache_df = payload_df
-        return True
-
-    def _load_agree_summary_cache_from_json(self):
-        """โหลดค่า agree_* จาก JSON มาไว้ใน cache"""
-        self.agree_summary_cache_df = None
-        json_filepath = self._get_agree_json_filepath()
-        if not json_filepath or not os.path.exists(json_filepath):
-            return False
-
-        try:
-            with open(
-                    json_filepath,
-                    'r',
-                    encoding='utf-8') as f:
-                payload = json.load(f)
-        except Exception:
-            return False
-
-        records = payload.get('records', [])
-        key_cols = payload.get('key_columns', [])
-        agree_cols = payload.get('agree_columns', [])
-        if not records or not agree_cols:
-            return False
-
-        if not key_cols:
-            sample = records[0] if records else {}
-            key_cols = [
-                c for c in ['Filter', 'Index1']
-                if c in sample]
-        if not key_cols:
-            return False
-
-        cache_df = pd.DataFrame(records)
-        required_cols = key_cols + agree_cols
-        if not all(col in cache_df.columns for col in required_cols):
-            return False
-
-        # โหมดวางทั้งชุด: ต้องคงลำดับและจำนวนแถวเดิมจาก JSON
-        self.agree_summary_cache_df = cache_df[
-            required_cols
-        ].reset_index(drop=True)
-        return not self.agree_summary_cache_df.empty
-
-    def _apply_agree_summary_cache(self, summary_df):
-        """เติม/แทนค่า agree_* ใน summary จาก cache JSON"""
-        if summary_df is None or summary_df.empty:
-            return summary_df, 0
-        if self.agree_summary_cache_df is None \
-                or self.agree_summary_cache_df.empty:
-            return summary_df, 0
-
-        def _norm_filter(v):
-            txt = str(v).strip().replace(" ", "").lower()
-            # normalize numeric tokens in filter text (e.g. 1.0 -> 1)
-            txt = re.sub(r'(?<=\=)(-?\d+)\.0\b', r'\1', txt)
-            txt = re.sub(r'^(-?\d+)\.0$', r'\1', txt)
-            return txt
-
-        if 'Filter' not in summary_df.columns \
-                or 'Filter' not in self.agree_summary_cache_df.columns:
-            return summary_df, 0
-
-        cache_agree_cols = [
-            c for c in self.agree_summary_cache_df.columns
-            if c.startswith('agree_')]
-        if not cache_agree_cols:
-            return summary_df, 0
-
-        left = summary_df.copy()
-        right = self.agree_summary_cache_df.copy()
-        left['__fkey'] = left['Filter'].map(_norm_filter)
-        right['__fkey'] = right['Filter'].map(_norm_filter)
-        cache_base = right[
-            ['__fkey'] + cache_agree_cols
-        ].drop_duplicates(subset=['__fkey'])
-        merged = left.merge(
-            cache_base,
-            on='__fkey',
-            how='left',
-            suffixes=('', '__json'))
-
-        applied_count = 0
-        for col in cache_agree_cols:
-            json_col = f"{col}__json"
-            if json_col not in merged.columns:
-                continue
-            if col not in merged.columns:
-                merged[col] = np.nan
-            before_notna = merged[col].notna()
-            merged[col] = np.where(
-                merged[json_col].notna(),
-                merged[json_col],
-                merged[col])
-            applied_count += int(
-                (merged[col].notna() & ~before_notna).sum())
-            merged.drop(columns=[json_col], inplace=True)
-
-        cleanup_cols = [
-            c for c in ['__fkey', '__ikey']
-            if c in merged.columns]
-        if cleanup_cols:
-            merged.drop(columns=cleanup_cols, inplace=True)
-
-        return merged, applied_count
-
-    def _summary_has_missing_agree_values(self, summary_df):
-        if summary_df is None or summary_df.empty:
-            return False
-        expected = []
-        expected.extend(
-            f"agree_{c}" for c in summary_df.columns
-            if c.startswith('S_')
-            and 'cor' not in c and 'agree' not in c)
-        expected.extend(
-            f"agree_{c}" for c in summary_df.columns
-            if c.startswith('P_')
-            and 'cor' not in c and 'agree' not in c)
-        if not expected:
-            return False
-        for col in expected:
-            if col not in summary_df.columns:
-                return True
-            if summary_df[col].isna().any():
-                return True
-        return False
-
-    def _apply_agree_summary_cache_by_position(self, summary_df):
-        """โหมด Re-analyze: แปะ agree_* ทั้งชุดตามลำดับแถว (ไม่ map key)"""
-        if summary_df is None or summary_df.empty:
-            return summary_df, 0, "empty_summary"
-        if self.agree_summary_cache_df is None \
-                or self.agree_summary_cache_df.empty:
-            return summary_df, 0, "empty_cache"
-
-        cache_agree_cols = [
-            c for c in self.agree_summary_cache_df.columns
-            if c.startswith('agree_')]
-        if not cache_agree_cols:
-            return summary_df, 0, "no_agree_cols"
-
-        out = summary_df.copy()
-        for col in cache_agree_cols:
-            if col not in out.columns:
-                out[col] = np.nan
-
-        cache_rows = len(self.agree_summary_cache_df)
-        out_rows = len(out)
-        if cache_rows != out_rows:
-            return out, 0, f"row_mismatch:{cache_rows}:{out_rows}"
-
-        out.loc[:, cache_agree_cols] = self.agree_summary_cache_df[
-            cache_agree_cols
-        ].to_numpy()
-        return out, len(cache_agree_cols) * out_rows, "ok"
 
     # ===================================================================
     # VARIABLE SELECTION GUI
@@ -2273,72 +2001,9 @@ class SpssProcessorApp(QMainWindow):
             final_ordered_cols.extend(sorted_new_keys)
 
             self.transformed_df = self.transformed_df[[c for c in final_ordered_cols if c in self.transformed_df.columns]]
-            self._build_compute_sav_metadata(maps)
             return True
         except Exception as e:
             QMessageBox.critical(self, "ผิดพลาด", f"เกิดข้อผิดพลาดระหว่างการแปลงข้อมูล: {e}"); return False
-
-    def _build_compute_sav_metadata(self, maps):
-        """เตรียม SPSS metadata (column labels + value labels) สำหรับไฟล์ Compute C"""
-        self.compute_sav_column_labels = {}
-        self.compute_sav_value_labels = {}
-        if self.transformed_df is None or self.transformed_df.empty:
-            return
-
-        out_cols = set(self.transformed_df.columns)
-
-        def _copy_meta(target_col, source_col):
-            if target_col not in out_cols or not source_col:
-                return
-            src_lbl = self.spss_variable_labels.get(source_col)
-            if src_lbl:
-                self.compute_sav_column_labels[target_col] = str(src_lbl)
-            src_vl = self.spss_value_labels.get(source_col)
-            if isinstance(src_vl, dict) and src_vl:
-                self.compute_sav_value_labels[target_col] = src_vl
-
-        # 1) คอลัมน์ ID ดั้งเดิม
-        for col in self.id_vars:
-            _copy_meta(col, col)
-
-        # 2) Index1 และ A/ZA
-        if 'Index1' in out_cols:
-            self.compute_sav_column_labels['Index1'] = 'Index1'
-            if self.index1_labels:
-                self.compute_sav_value_labels['Index1'] = {
-                    int(k): str(v)
-                    for k, v in self.index1_labels.items()
-                }
-
-        src_a = None
-        if maps.get('A'):
-            first_idx = sorted(maps['A'].keys())[0]
-            src_a = maps['A'].get(first_idx)
-        _copy_meta('A', src_a)
-        if 'ZA' in out_cols:
-            base_lbl = self.spss_variable_labels.get(src_a, 'A')
-            self.compute_sav_column_labels['ZA'] = f"ZA from {base_lbl}"
-
-        # 3) S/P/E: เอา label+value labels จากตัวแปรต้นทางตัวแรกของแต่ละกลุ่ม
-        for prefix in ['S', 'P', 'E']:
-            group_map = maps.get(prefix, {})
-            for grp in sorted(group_map.keys()):
-                tgt = f"{prefix}_{grp}"
-                src_candidates = [
-                    group_map[grp][idx]
-                    for idx in sorted(group_map[grp].keys())
-                ]
-                src = src_candidates[0] if src_candidates else None
-                _copy_meta(tgt, src)
-
-        # 4) ค่าเฉลี่ยรวม
-        for agg_col, agg_label in [
-                ('N_S', 'Mean score of S'),
-                ('N_P', 'Mean score of P'),
-                ('N_C', 'Mean score of C'),
-                ('N_E', 'Mean score of E')]:
-            if agg_col in out_cols:
-                self.compute_sav_column_labels[agg_col] = agg_label
 
     def _auto_save_spss(self, dataframe_to_save):
         if dataframe_to_save is None:
@@ -2352,68 +2017,12 @@ class SpssProcessorApp(QMainWindow):
             base, _ = os.path.splitext(self.original_filepath)
             new_filepath = f"{base} Compute C.sav"
 
-            write_kwargs = {}
-            if self.compute_sav_column_labels:
-                ordered_labels = [
-                    self.compute_sav_column_labels.get(col, col)
-                    for col in dataframe_to_save.columns
-                ]
-                write_kwargs['column_labels'] = ordered_labels
-            if self.compute_sav_value_labels:
-                valid_value_labels = {
-                    col: labels
-                    for col, labels in self.compute_sav_value_labels.items()
-                    if col in dataframe_to_save.columns
-                    and isinstance(labels, dict)
-                    and labels
-                }
-                if valid_value_labels:
-                    write_kwargs['variable_value_labels'] = valid_value_labels
-
-            pyreadstat.write_sav(
-                dataframe_to_save,
-                new_filepath,
-                **write_kwargs)
+            pyreadstat.write_sav(dataframe_to_save, new_filepath)
             self.update_status(f"บันทึกไฟล์ใหม่ที่: {new_filepath}", "success")
             return True
         except Exception as e:
             QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถบันทึกไฟล์อัตโนมัติได้: {e}")
             return False
-
-    def _extract_spss_metadata(self, meta):
-        """สกัด variable labels + value labels ให้ครบที่สุดจาก meta"""
-        var_labels = {}
-        value_labels = {}
-
-        # Variable labels
-        cn2l = getattr(meta, 'column_names_to_labels', None)
-        if isinstance(cn2l, dict) and cn2l:
-            var_labels.update(cn2l)
-        else:
-            col_names = getattr(meta, 'column_names', None) or []
-            col_labels = getattr(meta, 'column_labels', None) or []
-            if col_names and col_labels:
-                for i, col in enumerate(col_names):
-                    if i < len(col_labels):
-                        lbl = col_labels[i]
-                        if lbl is not None and str(lbl).strip():
-                            var_labels[col] = str(lbl)
-
-        # Value labels (preferred direct map)
-        vvl = getattr(meta, 'variable_value_labels', None)
-        if isinstance(vvl, dict) and vvl:
-            value_labels.update(vvl)
-        else:
-            # Fallback: variable_to_label + value_labels
-            var_to_label = getattr(meta, 'variable_to_label', None) or {}
-            label_sets = getattr(meta, 'value_labels', None) or {}
-            if isinstance(var_to_label, dict) and isinstance(label_sets, dict):
-                for var_name, label_set_name in var_to_label.items():
-                    labels = label_sets.get(label_set_name)
-                    if isinstance(labels, dict) and labels:
-                        value_labels[var_name] = labels
-
-        return var_labels, value_labels
 
     def display_table(self, dataframe):
         """แสดง DataFrame ใน QTableWidget"""
@@ -2708,23 +2317,6 @@ class SpssProcessorApp(QMainWindow):
         all_summary_parts = []
         all_results = OrderedDict()
         all_output_parts = []
-        use_json_agree_cache = False
-        if self.is_reanalyze_mode:
-            use_json_agree_cache = \
-                self._load_agree_summary_cache_from_json()
-            if use_json_agree_cache:
-                self.log_message(
-                    "โหลด Agree Original จาก JSON สำเร็จ")
-            else:
-                self.log_message(
-                    "ไม่พบ Agree Original JSON (ยกเลิก: โหมดนี้ห้ามคำนวณใหม่)")
-                self.stop_progress()
-                self.update_status(
-                    "ไม่พบ Agree Original JSON", "danger")
-                QMessageBox.critical(
-                    self, "ผิดพลาด",
-                    "โหมดวิเคราะห์ซ้ำต้องใช้ค่า Agree จาก JSON เท่านั้น")
-                return
 
         for idx, cross_filter in enumerate(cross_filters):
             f_label = cross_filter if cross_filter else '(ไม่ระบุ)'
@@ -2753,17 +2345,12 @@ class SpssProcessorApp(QMainWindow):
             self.log_message("")
             self.log_message(f"[{current_step}/{total_steps}] กำลังคำนวณ T2B ({f_label})...")
             try:
-                if use_json_agree_cache:
-                    # Re-analyze ใช้ JSON อย่างเดียว (ไม่คำนวณใหม่)
-                    self.log_message(
-                        "   ✓ ข้ามการคำนวณ T2B (จะวาง Agree จาก JSON ทั้งชุดหลังรวมผล)")
-                else:
-                    part_summary = self._calculate_and_add_t2b_values(
-                        part_summary,
-                        primary_filter=primary_filter,
-                        cross_filter=cross_filter
-                    )
-                    self.log_message("   ✓ T2B สำเร็จ")
+                part_summary = self._calculate_and_add_t2b_values(
+                    part_summary,
+                    primary_filter=primary_filter,
+                    cross_filter=cross_filter
+                )
+                self.log_message("   ✓ T2B สำเร็จ")
             except Exception as e:
                 self.log_message(f"   ⚠ ข้ามการคำนวณ T2B: {e}")
 
@@ -2806,28 +2393,6 @@ class SpssProcessorApp(QMainWindow):
 
         final_summary = pd.concat(all_summary_parts, ignore_index=True)
         final_output = '\n'.join(all_output_parts)
-
-        if use_json_agree_cache:
-            final_summary, copied_cells, copy_status = \
-                self._apply_agree_summary_cache_by_position(
-                    final_summary)
-            if copy_status != "ok":
-                self.stop_progress()
-                self.update_status("วาง Agree จาก JSON ไม่สำเร็จ", "danger")
-                if copy_status.startswith("row_mismatch:"):
-                    _, c_rows, s_rows = copy_status.split(":")
-                    QMessageBox.critical(
-                        self, "ผิดพลาด",
-                        "จำนวนแถวไม่ตรงกันระหว่าง JSON กับ Summary\n"
-                        f"JSON={c_rows} แถว, Summary={s_rows} แถว\n"
-                        "โหมดวิเคราะห์ซ้ำถูกตั้งให้วาง Agree ทั้งชุดแบบไม่ map")
-                else:
-                    QMessageBox.critical(
-                        self, "ผิดพลาด",
-                        "ไม่สามารถวาง Agree Original จาก JSON ได้")
-                return
-            self.log_message(
-                f"✓ Add Agree Original แล้ว (วางตรงตามลำดับ {copied_cells} ค่า)")
 
         # --- บันทึก Excel ---
         current_step += 1
@@ -3229,22 +2794,12 @@ class SpssProcessorApp(QMainWindow):
             # --- Part 2: Label Sheet ---
             index1_label_data = list(self.index1_labels.items())
             filter_label_data = list(self.filter_labels.get('labels', {}).items())
-            sandp_df_for_save = self._build_sandp_df()
-            if self.sandp_label_overrides:
-                sandp_label_data = list(self.sandp_label_overrides)
-            else:
-                sandp_label_data = sandp_df_for_save[
-                    'DescriptionEN'
-                ].dropna().astype(str).tolist() \
-                    if 'DescriptionEN' in sandp_df_for_save.columns \
-                    else []
 
             label_dict = {
                 'Index1_Code': [item[0] for item in index1_label_data],
                 'Index1_Label': [item[1] for item in index1_label_data],
                 'Filter_Code': [item[0] for item in filter_label_data],
-                'Filter_Label': [item[1] for item in filter_label_data],
-                'SandP_Label': sandp_label_data
+                'Filter_Label': [item[1] for item in filter_label_data]
             }
             labels_df = pd.DataFrame({k: pd.Series(v) for k, v in label_dict.items()})
 
@@ -3259,151 +2814,6 @@ class SpssProcessorApp(QMainWindow):
         except Exception as e:
             self.update_status("บันทึกการตั้งค่าผิดพลาด", "danger")
             QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถบันทึกไฟล์การตั้งค่าได้: {e}")
-
-    def _build_sandp_df(self):
-        """สร้างข้อมูลชีท SandP จากตัวแปรที่เลือก S/P"""
-        spe_pat = re.compile(r".*?#(\d+)\$(\d+)$")
-
-        def _group_to_label(var_list, prefix):
-            group_src = {}
-            for var in var_list:
-                m = spe_pat.match(str(var))
-                if not m:
-                    continue
-                grp = int(m.group(1))
-                idx = int(m.group(2))
-                group_src.setdefault(grp, []).append((idx, str(var)))
-
-            rows = []
-            sorted_groups = sorted(group_src.keys())
-            for seq, grp in enumerate(sorted_groups, start=1):
-                src_var = sorted(group_src[grp], key=lambda x: x[0])[0][1]
-                src_label = self.spss_variable_labels.get(src_var, src_var)
-                rows.append({
-                    'Variable': f'{prefix.upper()}_{seq}',
-                    'DescriptionTH': '',
-                    'DescriptionEN': str(src_label) if src_label else '',
-                    'Rank_list': '',
-                    'Spcode': '',
-                    'Important': ''
-                })
-            return rows
-
-        rows = []
-        rows.extend(_group_to_label(
-            self.vars_to_transform.get('S', []), 'S'))
-        rows.extend(_group_to_label(
-            self.vars_to_transform.get('P', []), 'P'))
-
-        if self.sandp_label_overrides:
-            for idx, lbl in enumerate(self.sandp_label_overrides):
-                if idx >= len(rows):
-                    break
-                if str(lbl).strip():
-                    rows[idx]['DescriptionEN'] = str(lbl).strip()
-
-        cols = [
-            'Variable', 'DescriptionTH', 'DescriptionEN',
-            'Rank_list', 'Spcode', 'Important'
-        ]
-        if not rows:
-            return pd.DataFrame(columns=cols)
-        return pd.DataFrame(rows, columns=cols)
-
-    def _format_sandp_sheet(self, workbook):
-        """จัดรูปแบบชีท SandP ให้เหมือนเทมเพลต"""
-        if 'SandP' not in workbook.sheetnames:
-            return
-
-        ws = workbook['SandP']
-        header_fill = PatternFill(
-            start_color='4F81BD',
-            end_color='4F81BD',
-            fill_type='solid')
-        header_font = Font(color='FFFFFF', bold=True)
-        thin = Border(
-            left=Side(style='thin', color='7F7F7F'),
-            right=Side(style='thin', color='7F7F7F'),
-            top=Side(style='thin', color='7F7F7F'),
-            bottom=Side(style='thin', color='7F7F7F'))
-
-        # Body colors by column (A..F)
-        body_fills = {
-            1: PatternFill(start_color='DCE6F1',
-                           end_color='DCE6F1',
-                           fill_type='solid'),
-            2: PatternFill(start_color='F2E6D9',
-                           end_color='F2E6D9',
-                           fill_type='solid'),
-            3: PatternFill(start_color='F2E6D9',
-                           end_color='F2E6D9',
-                           fill_type='solid'),
-            4: PatternFill(start_color='E4DFEC',
-                           end_color='E4DFEC',
-                           fill_type='solid'),
-            5: PatternFill(start_color='EBDDE2',
-                           end_color='EBDDE2',
-                           fill_type='solid'),
-            6: PatternFill(start_color='F2E6D9',
-                           end_color='F2E6D9',
-                           fill_type='solid')
-        }
-
-        max_row = max(ws.max_row, 2)
-        max_col = 6
-        for c in range(1, max_col + 1):
-            hcell = ws.cell(row=1, column=c)
-            hcell.fill = header_fill
-            hcell.font = header_font
-            hcell.border = thin
-            hcell.alignment = Alignment(
-                horizontal='left',
-                vertical='center')
-
-            fill = body_fills[c]
-            for r in range(2, max_row + 1):
-                cell = ws.cell(row=r, column=c)
-                cell.fill = fill
-                cell.border = thin
-                if c == 1:
-                    cell.alignment = Alignment(
-                        horizontal='left',
-                        vertical='center')
-                elif c in (4, 5, 6):
-                    cell.alignment = Alignment(
-                        horizontal='center',
-                        vertical='center')
-                else:
-                    cell.alignment = Alignment(
-                        horizontal='left',
-                        vertical='center')
-
-        widths = {
-            1: 14,  # Variable
-            2: 16,  # DescriptionTH
-            3: 30,  # DescriptionEN
-            4: 16,  # Rank_list
-            5: 12,  # Spcode
-            6: 12   # Important
-        }
-        for c, w in widths.items():
-            ws.column_dimensions[get_column_letter(c)].width = w
-
-        ws.auto_filter.ref = f"A1:F{max_row}"
-        ws.freeze_panes = 'A2'
-
-    def _apply_sheet_tab_colors(self, workbook):
-        """ตั้งสีแท็บชีทให้ตรงโทนเทมเพลต"""
-        tab_map = {
-            'Summary': '00B0F0',
-            'SandP': '00B0F0',
-            'Correspondence(S)': 'FF0000',
-            'Correspondence(P)': 'FF0000',
-            'Rawdata': '7030A0'
-        }
-        for sname, color in tab_map.items():
-            if sname in workbook.sheetnames:
-                workbook[sname].sheet_properties.tabColor = color
 
     def save_all_results_to_excel(self, summary_df, results_dict, full_output_text):
         """บันทึกข้อมูลสรุปและผลวิเคราะห์ทั้งหมดลงในไฟล์ Excel ไฟล์เดียวโดยอัตโนมัติ"""
@@ -3470,19 +2880,10 @@ class SpssProcessorApp(QMainWindow):
 
                 summary_df = pd.merge(summary_df, template_df[['Filter'] + beta_cols_to_add], on='Filter', how='left')
 
-            # เก็บค่า agree_* จาก Summary ลง JSON เฉพาะรอบปกติ
-            # (โหมด Re-analyze ห้ามเขียนทับ JSON เดิม)
-            saved_agree_json = False
-            if not self.is_reanalyze_mode:
-                saved_agree_json = self._save_agree_summary_to_json(
-                    summary_df)
-
             excel_df = self._prepare_final_excel_df(summary_df)
-            sandp_df = self._build_sandp_df()
 
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 excel_df.to_excel(writer, sheet_name='Summary', index=False)
-                sandp_df.to_excel(writer, sheet_name='SandP', index=False)
 
                 workbook = writer.book
                 worksheet = writer.sheets['Summary']
@@ -3540,12 +2941,8 @@ class SpssProcessorApp(QMainWindow):
                     self._write_ca_sheet(
                         workbook, ca_sheet, ca_prefix)
 
-                self._format_sandp_sheet(workbook)
-                self._apply_sheet_tab_colors(workbook)
-
                 desired = [
                     'Summary',
-                    'SandP',
                     'Correspondence(S)',
                     'Correspondence(P)',
                     'Rawdata']
@@ -3558,7 +2955,7 @@ class SpssProcessorApp(QMainWindow):
             if self.save_all_sheets_var.get():
                 self.update_status("กำลังลบชีทที่ไม่จำเป็น...", "info")
                 workbook = openpyxl.load_workbook(filepath)
-                keep = {'Summary', 'SandP', 'Rawdata',
+                keep = {'Summary', 'Rawdata',
                         'Correspondence(S)',
                         'Correspondence(P)'}
                 sheets_to_delete = [
@@ -3566,14 +2963,10 @@ class SpssProcessorApp(QMainWindow):
                     if s not in keep]
                 for sheet_name in sheets_to_delete:
                     workbook.remove(workbook[sheet_name])
-                self._apply_sheet_tab_colors(workbook)
                 workbook.save(filepath)
-                final_message = f"บันทึก Excel (Summary + SandP + Rawdata) เรียบร้อยแล้วที่:\n{filepath}"
+                final_message = f"บันทึก Excel (Summary + Rawdata) เรียบร้อยแล้วที่:\n{filepath}"
             else:
                 final_message = f"บันทึก Excel (Full Report) เรียบร้อยแล้วที่:\n{filepath}"
-
-            if saved_agree_json:
-                final_message += "\n\nบันทึก Agree Original JSON เรียบร้อยแล้ว"
 
             self.update_status("บันทึก Excel สำเร็จ", "success")
             QMessageBox.information(self, "สำเร็จ", final_message)

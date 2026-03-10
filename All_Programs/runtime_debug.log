@@ -119,3 +119,47 @@ Current thread 0x00003514 (most recent call first):
 [2026-02-18 14:18:58] Main window closeEvent received
 [2026-02-18 14:19:12] Main window closeEvent accepted by user
 [2026-02-18 14:19:12] QApplication.aboutToQuit fired
+[2026-03-04 21:05:37] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00006fa0 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2577 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2581 in <module>
+[2026-03-04 21:06:32] Main window closeEvent received
+[2026-03-04 21:06:33] Main window closeEvent accepted by user
+[2026-03-04 21:06:38] QApplication.aboutToQuit fired
+[2026-03-04 21:10:12] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x000071c4 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2577 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2581 in <module>
+[2026-03-04 21:23:40] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00007ef8 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2589 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2593 in <module>
+[2026-03-04 21:32:31] Main window closeEvent received
+[2026-03-04 21:32:32] Main window closeEvent accepted by user
+[2026-03-04 21:32:32] QApplication.aboutToQuit fired
+[2026-03-04 21:35:04] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00001670 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2606 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2610 in <module>
+[2026-03-04 21:36:49] Main window closeEvent received
+[2026-03-04 23:20:39] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x00003768 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2621 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2625 in <module>
+[2026-03-04 23:22:02] Main window closeEvent received
+[2026-03-04 23:22:26] faulthandler enabled
+Windows fatal exception: code 0x8001010d
+
+Current thread 0x000013d4 (most recent call first):
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2621 in run_this_app
+  File "c:\Users\songklod\Desktop\Python\Main_Program\All_Programs\99_CleanSPSS_Germini.py", line 2625 in <module>
