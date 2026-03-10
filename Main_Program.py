@@ -24,6 +24,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 import importlib
 from multiprocessing import Process, freeze_support
 import subprocess
+import argparse
 import requests
 from packaging.version import parse as parse_version
 import getpass
@@ -84,7 +85,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.53"
+CURRENT_VERSION = "1.1.54"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -935,6 +936,19 @@ def run_module_entrypoint(module_name_in_subfolder, entry_point_func_name="main"
         print(f"LAUNCHER_ERROR: Error running module {full_module_name}: {e}")
         show_subprocess_error("Runtime Error", f"เกิดข้อผิดพลาดขณะรัน '{module_name_in_subfolder}':\n{e}")
 
+def parse_module_launch_args(argv):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--run-module")
+    parser.add_argument("--entry-point", default="main")
+    parser.add_argument("--working-dir", default=None)
+    known, _ = parser.parse_known_args(argv)
+    if not known.run_module:
+        return None
+    return {
+        "module": known.run_module,
+        "entry_point": known.entry_point,
+        "working_dir": known.working_dir,
+    }
 
 
 class AppLauncher(QtWidgets.QMainWindow):
@@ -998,8 +1012,12 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.build_content()
 
         self.apply_theme(DEFAULT_APPEARANCE_MODE)
+        QtCore.QTimer.singleShot(0, self._deferred_init_program_grid)
+
+    def _deferred_init_program_grid(self):
+        """Defer heavy card population until the window is shown."""
         self.show_category_programs("All")
-        QtCore.QTimer.singleShot(0, self.update_program_grid)
+        self.update_program_grid()
 
     def build_sidebar(self):
         layout = QtWidgets.QVBoxLayout(self.sidebar_frame)
@@ -1578,6 +1596,8 @@ class AppLauncher(QtWidgets.QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         QtWidgets.QApplication.processEvents()
+        dialog.repaint()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
         self.launch_dialog = dialog
 
     def _tick_launching_animation(self):
@@ -1787,29 +1807,56 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
 
+    def _wait_and_log_session_popen(self, process_to_watch, program_info):
+        program_name = program_info.get("name", "Unknown Program")
+        print(f"MONITOR: เริ่มเฝ้าดูโปรแกรม '{program_name}' (PID: {process_to_watch.pid})")
+
+        start_time = datetime.now()
+
+        try:
+            username = getpass.getuser()
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            user_info = f"{username} ({ip_address})"
+        except Exception:
+            user_info = f"{getpass.getuser()} (IP N/A)"
+
+        process_to_watch.wait()
+
+        end_time = datetime.now()
+        print(f"MONITOR: โปรแกรม '{program_name}' (PID: {process_to_watch.pid}) ถูกปิดแล้ว")
+
+        duration_seconds = int((end_time - start_time).total_seconds())
+        hours, remainder = divmod(duration_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        duration_formatted = f"{hours:02}:{minutes:02}:{seconds:02}"
+
+        self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
+
     def _start_local_module_process(self, module_path, entry_point, kwargs, program_info):
-        """Start child process after UI has had a chance to render the launch overlay."""
         program_name = program_info.get("name", "Unknown Program")
         try:
-            process = Process(
-                target=run_module_entrypoint,
-                args=(module_path, entry_point),
-                kwargs={'script_kwargs': kwargs}
-            )
-            process.start()
-            self.launch_handle = process
-            QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(process))
+            cmd = [sys.executable]
+            if not getattr(sys, "frozen", False):
+                cmd.append(os.path.abspath(__file__))
+            cmd += [
+                "--run-module", module_path,
+                "--entry-point", entry_point,
+            ]
+            if kwargs.get("working_dir"):
+                cmd += ["--working-dir", kwargs["working_dir"]]
 
-            if process.is_alive():
-                monitor_thread = threading.Thread(
-                    target=self._wait_and_log_session,
-                    args=(process, program_info)
-                )
-                monitor_thread.daemon = False
-                monitor_thread.start()
-                self.monitor_threads.append(monitor_thread)
-            else:
-                print(f"LAUNCHER_WARNING: ไม่สามารถเริ่มเฝ้าดู '{program_name}' ได้เนื่องจาก process ไม่ทำงาน")
+            popen_proc = subprocess.Popen(cmd, cwd=self.launcher_base_dir)
+            self.launch_handle = popen_proc
+            QtCore.QTimer.singleShot(600, lambda: self._wait_for_launch_ready(popen_proc))
+
+            monitor_thread = threading.Thread(
+                target=self._wait_and_log_session_popen,
+                args=(popen_proc, program_info)
+            )
+            monitor_thread.daemon = False
+            monitor_thread.start()
+            self.monitor_threads.append(monitor_thread)
         except Exception as e:
             self.close_launching_dialog()
             show_message(
@@ -1844,7 +1891,7 @@ class AppLauncher(QtWidgets.QMainWindow):
                 kwargs = {'working_dir': self.program_dir}
                 # Defer process creation slightly so spinner can start animating first.
                 QtCore.QTimer.singleShot(
-                    80,
+                    260,
                     lambda mp=module_path, ep=entry_point, kw=kwargs, pi=program_info:
                         self._start_local_module_process(mp, ep, kw, pi)
                 )
@@ -1888,6 +1935,17 @@ class AppLauncher(QtWidgets.QMainWindow):
 
 if __name__ == "__main__":
     freeze_support()
+    module_launch = parse_module_launch_args(sys.argv[1:])
+    if module_launch:
+        script_kwargs = {}
+        if module_launch.get("working_dir"):
+            script_kwargs["working_dir"] = module_launch["working_dir"]
+        run_module_entrypoint(
+            module_launch["module"],
+            module_launch["entry_point"],
+            script_kwargs=script_kwargs
+        )
+        sys.exit(0)
 
     launcher_dir_init = os.path.dirname(os.path.abspath(__file__))
     icon_dir_path = os.path.join(launcher_dir_init, ICON_FOLDER)
