@@ -28,7 +28,6 @@ import requests
 from packaging.version import parse as parse_version
 import getpass
 import threading
-import queue
 from datetime import datetime
 import socket # เพิ่มเข้ามาเพื่อดึง IP Address (ถ้าต้องการ)
 import ctypes
@@ -85,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.51"
+CURRENT_VERSION = "1.1.52"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -979,10 +978,6 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.launch_handle = None
         self.launch_wait_started = None
         self.monitor_threads = []
-        self.launch_result_queue = queue.Queue()
-        self.launch_result_timer = QtCore.QTimer(self)
-        self.launch_result_timer.setInterval(60)
-        self.launch_result_timer.timeout.connect(self._drain_launch_results)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -1792,63 +1787,6 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
 
-    def _enqueue_started_local_process(self, module_path, entry_point, kwargs, program_info):
-        try:
-            process = Process(
-                target=run_module_entrypoint,
-                args=(module_path, entry_point),
-                kwargs={'script_kwargs': kwargs}
-            )
-            process.start()
-            self.launch_result_queue.put({
-                "ok": True,
-                "process": process,
-                "program_info": program_info,
-            })
-        except Exception as e:
-            self.launch_result_queue.put({
-                "ok": False,
-                "error": str(e),
-                "program_info": program_info,
-            })
-
-    def _drain_launch_results(self):
-        while True:
-            try:
-                result = self.launch_result_queue.get_nowait()
-            except queue.Empty:
-                self.launch_result_timer.stop()
-                return
-
-            program_info = result.get("program_info", {})
-            program_name = program_info.get("name", "Unknown Program")
-            if not result.get("ok"):
-                self.close_launching_dialog()
-                err = result.get("error", "Unknown error")
-                show_message(
-                    self,
-                    "Process Error",
-                    f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{err}",
-                    QtWidgets.QMessageBox.Icon.Critical
-                )
-                print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {err}")
-                continue
-
-            process = result.get("process")
-            self.launch_handle = process
-            QtCore.QTimer.singleShot(200, lambda p=process: self._wait_for_launch_ready(p))
-
-            if process and process.is_alive():
-                monitor_thread = threading.Thread(
-                    target=self._wait_and_log_session,
-                    args=(process, program_info)
-                )
-                monitor_thread.daemon = False
-                monitor_thread.start()
-                self.monitor_threads.append(monitor_thread)
-            else:
-                print(f"LAUNCHER_WARNING: ไม่สามารถเริ่มเฝ้าดู '{program_name}' ได้เนื่องจาก process ไม่ทำงาน")
-
     def launch_program(self, program_info):
         """
         ฟังก์ชันนี้ถูกแก้ไขเพื่อสร้าง Thread แยกสำหรับเฝ้าดูแต่ละโปรแกรมที่เปิด
@@ -1871,16 +1809,10 @@ class AppLauncher(QtWidgets.QMainWindow):
                 # ส่ง path ของ .exe ไปให้ subprocess ผ่าน environment variable
                 os.environ['MAIN_PROGRAM_DIR'] = self.launcher_base_dir
                 kwargs = {'working_dir': self.program_dir}
-                starter = threading.Thread(
-                    target=self._enqueue_started_local_process,
-                    args=(module_path, entry_point, kwargs, program_info),
-                    daemon=True
-                )
-                starter.start()
-                if not self.launch_result_timer.isActive():
-                    self.launch_result_timer.start()
-                # Launch completion/monitoring is handled by _drain_launch_results.
-                return
+                process = Process(target=run_module_entrypoint, args=(module_path, entry_point), kwargs={'script_kwargs': kwargs})
+                process.start()
+                self.launch_handle = process
+                QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(process))
             except Exception as e:
                 self.close_launching_dialog()
                 show_message(self, "Process Error", f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
