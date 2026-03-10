@@ -31,7 +31,6 @@ import getpass
 import threading
 from datetime import datetime
 import socket # เพิ่มเข้ามาเพื่อดึง IP Address (ถ้าต้องการ)
-import ctypes
 import time
 
 
@@ -85,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.55"
+CURRENT_VERSION = "1.1.56"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -1640,53 +1639,25 @@ class AppLauncher(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+        # In packaged EXE builds, EnumWindows polling can intermittently stall UI.
+        # Use a lightweight readiness heuristic: if child process is still alive
+        # after a short grace period, treat launch as ready and close overlay.
         is_ready = False
         if handle is None:
             is_ready = True
-        else:
-            pid = None
-            if isinstance(handle, Process):
-                pid = handle.pid
-            else:
-                try:
-                    pid = handle.pid
-                except Exception:
-                    pid = None
-
-            if pid:
-                try:
-                    is_ready = self._has_visible_window(pid)
-                except Exception:
-                    is_ready = False
-            else:
+        elif self.launch_wait_started and self.launch_wait_started.elapsed() >= 1200:
+            try:
+                if isinstance(handle, Process):
+                    is_ready = handle.is_alive()
+                else:
+                    is_ready = (handle.poll() is None)
+            except Exception:
                 is_ready = False
 
         if is_ready:
             self.close_launching_dialog()
         else:
-            QtCore.QTimer.singleShot(350, lambda: self._wait_for_launch_ready(handle))
-
-    def _has_visible_window(self, pid):
-        user32 = ctypes.windll.user32
-        visible = False
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-        def enum_proc(hwnd, _):
-            nonlocal visible
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return True
-            lpdw_process_id = ctypes.c_uint()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lpdw_process_id))
-            if lpdw_process_id.value == pid:
-                visible = True
-                return False
-            return True
-
-        user32.EnumWindows(enum_proc, 0)
-        return visible
+            QtCore.QTimer.singleShot(120, lambda: self._wait_for_launch_ready(handle))
 
     def log_session_to_sheet(self, program_name, user_info, start_time, end_time, duration_formatted):
         """
