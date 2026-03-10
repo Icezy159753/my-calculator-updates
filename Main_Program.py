@@ -25,8 +25,8 @@ import importlib
 from multiprocessing import Process, freeze_support
 import subprocess
 import argparse
-import requests
-from packaging.version import parse as parse_version
+# requests และ packaging จะ import แบบ lazy ในฟังก์ชันที่ใช้งาน
+# เพื่อให้โปรแกรมเปิดเร็วขึ้น
 import getpass
 import threading
 from datetime import datetime
@@ -84,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.56"
+CURRENT_VERSION = "1.1.57"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -122,6 +122,7 @@ def _extract_release_assets_by_version(releases):
     return assets_by_version
 
 def _build_patch_chain(assets_by_version, current_version, latest_version):
+    from packaging.version import parse as parse_version
     versions = sorted(assets_by_version.keys(), key=parse_version)
     try:
         start_idx = versions.index(current_version)
@@ -155,6 +156,8 @@ def _normalize_download_url(url):
 
 def check_for_updates(app_window):
     """ตรวจสอบอัปเดตและเรียกใช้ updater"""
+    import requests
+    from packaging.version import parse as parse_version
     print("Checking for updates...")
     try:
         api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
@@ -1263,6 +1266,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         """
         ดึงข้อมูลทุก Release จาก GitHub API แล้วจัดรูปแบบเป็นข้อความ
         """
+        import requests
         history_log = []
         try:
             api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases"
@@ -1664,6 +1668,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         ส่งข้อมูลเซสชันการใช้งาน (เวลาเริ่ม-จบ, ระยะเวลา) ไปยัง Google Sheet
         (เวอร์ชันนี้ส่งระยะเวลาเป็นรูปแบบ HH:MM:SS)
         """
+        import requests
         if "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE" in GOOGLE_SCRIPT_URL:
             print("LOGGING_WARNING: กรุณาเปลี่ยน GOOGLE_SCRIPT_URL เป็น URL ของ Web App จริง")
             return
@@ -1693,6 +1698,7 @@ class AppLauncher(QtWidgets.QMainWindow):
             self.send_telegram_notification(program_name, user_info, start_time, end_time, duration_formatted)
 
     def send_telegram_notification(self, program_name, user_info, start_time, end_time, duration_formatted):
+        import requests
         if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
             print("TELEGRAM_WARNING: กรุณาใส่ TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID")
             return
@@ -1806,19 +1812,42 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
 
     def _start_local_module_process(self, module_path, entry_point, kwargs, program_info):
-        program_name = program_info.get("name", "Unknown Program")
-        try:
-            cmd = [sys.executable]
-            if not getattr(sys, "frozen", False):
-                cmd.append(os.path.abspath(__file__))
-            cmd += [
-                "--run-module", module_path,
-                "--entry-point", entry_point,
-            ]
-            if kwargs.get("working_dir"):
-                cmd += ["--working-dir", kwargs["working_dir"]]
+        # สร้าง subprocess ใน thread แยก เพื่อไม่ให้ UI (spinner) ค้าง
+        self._pending_popen = None
+        self._pending_popen_error = None
+        self._pending_program_info = program_info
 
-            popen_proc = subprocess.Popen(cmd, cwd=self.launcher_base_dir)
+        def _do_popen():
+            try:
+                cmd = [sys.executable]
+                if not getattr(sys, "frozen", False):
+                    cmd.append(os.path.abspath(__file__))
+                cmd += [
+                    "--run-module", module_path,
+                    "--entry-point", entry_point,
+                ]
+                if kwargs.get("working_dir"):
+                    cmd += ["--working-dir", kwargs["working_dir"]]
+
+                proc = subprocess.Popen(cmd, cwd=self.launcher_base_dir)
+                self._pending_popen = proc
+            except Exception as e:
+                self._pending_popen_error = str(e)
+
+        t = threading.Thread(target=_do_popen, daemon=True)
+        t.start()
+
+        # ใช้ QTimer poll ทุก 50ms เพื่อเช็คว่า Popen สร้างเสร็จหรือยัง (ไม่ block UI)
+        self._popen_poll_timer = QtCore.QTimer()
+        self._popen_poll_timer.setInterval(50)
+        self._popen_poll_timer.timeout.connect(self._check_popen_ready)
+        self._popen_poll_timer.start()
+
+    def _check_popen_ready(self):
+        if self._pending_popen is not None:
+            self._popen_poll_timer.stop()
+            popen_proc = self._pending_popen
+            program_info = self._pending_program_info
             self.launch_handle = popen_proc
             QtCore.QTimer.singleShot(1000, lambda: self._wait_for_launch_ready(popen_proc))
 
@@ -1829,15 +1858,17 @@ class AppLauncher(QtWidgets.QMainWindow):
             monitor_thread.daemon = False
             monitor_thread.start()
             self.monitor_threads.append(monitor_thread)
-        except Exception as e:
+        elif self._pending_popen_error is not None:
+            self._popen_poll_timer.stop()
+            program_name = self._pending_program_info.get("name", "Unknown Program")
             self.close_launching_dialog()
             show_message(
                 self,
                 "Process Error",
-                f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}",
+                f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{self._pending_popen_error}",
                 QtWidgets.QMessageBox.Icon.Critical
             )
-            print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {e}")
+            print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {self._pending_popen_error}")
 
     def launch_program(self, program_info):
         """
