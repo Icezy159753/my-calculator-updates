@@ -85,7 +85,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.54"
+CURRENT_VERSION = "1.1.55"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -1012,12 +1012,13 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.build_content()
 
         self.apply_theme(DEFAULT_APPEARANCE_MODE)
-        QtCore.QTimer.singleShot(0, self._deferred_init_program_grid)
+        # Let window paint first, then populate heavy card grid.
+        QtCore.QTimer.singleShot(150, self._deferred_init_program_grid)
 
     def _deferred_init_program_grid(self):
         """Defer heavy card population until the window is shown."""
         self.show_category_programs("All")
-        self.update_program_grid()
+        QtCore.QTimer.singleShot(0, self.update_program_grid)
 
     def build_sidebar(self):
         layout = QtWidgets.QVBoxLayout(self.sidebar_frame)
@@ -1663,7 +1664,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         if is_ready:
             self.close_launching_dialog()
         else:
-            QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(handle))
+            QtCore.QTimer.singleShot(350, lambda: self._wait_for_launch_ready(handle))
 
     def _has_visible_window(self, pid):
         user32 = ctypes.windll.user32
@@ -1848,7 +1849,7 @@ class AppLauncher(QtWidgets.QMainWindow):
 
             popen_proc = subprocess.Popen(cmd, cwd=self.launcher_base_dir)
             self.launch_handle = popen_proc
-            QtCore.QTimer.singleShot(600, lambda: self._wait_for_launch_ready(popen_proc))
+            QtCore.QTimer.singleShot(1000, lambda: self._wait_for_launch_ready(popen_proc))
 
             monitor_thread = threading.Thread(
                 target=self._wait_and_log_session_popen,
@@ -1911,7 +1912,7 @@ class AppLauncher(QtWidgets.QMainWindow):
                 self.show_launching_dialog(program_name)
                 popen_proc = subprocess.Popen(command, shell=True, cwd=self.launcher_base_dir)
                 self.launch_handle = popen_proc
-                QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(popen_proc))
+                QtCore.QTimer.singleShot(350, lambda: self._wait_for_launch_ready(popen_proc))
             except Exception as e:
                 self.close_launching_dialog()
                 show_message(self, "Error", f"ไม่สามารถเปิดโปรแกรม '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
@@ -2009,7 +2010,7 @@ if __name__ == "__main__":
     show_changelog_if_exists(window)
     # ---------------------------------------------
     # Delay update check so startup/UI interactions stay responsive first.
-    QtCore.QTimer.singleShot(6000, lambda: check_for_updates(window))
+    QtCore.QTimer.singleShot(15000, lambda: check_for_updates(window))
     try:
         main_icon_relative_path = os.path.join(ICON_FOLDER, "I_Main.ico")
         main_icon_actual_path = resource_path(main_icon_relative_path)
