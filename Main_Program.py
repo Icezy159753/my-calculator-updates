@@ -84,7 +84,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.52"
+CURRENT_VERSION = "1.1.53"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -1787,6 +1787,39 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
 
+    def _start_local_module_process(self, module_path, entry_point, kwargs, program_info):
+        """Start child process after UI has had a chance to render the launch overlay."""
+        program_name = program_info.get("name", "Unknown Program")
+        try:
+            process = Process(
+                target=run_module_entrypoint,
+                args=(module_path, entry_point),
+                kwargs={'script_kwargs': kwargs}
+            )
+            process.start()
+            self.launch_handle = process
+            QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(process))
+
+            if process.is_alive():
+                monitor_thread = threading.Thread(
+                    target=self._wait_and_log_session,
+                    args=(process, program_info)
+                )
+                monitor_thread.daemon = False
+                monitor_thread.start()
+                self.monitor_threads.append(monitor_thread)
+            else:
+                print(f"LAUNCHER_WARNING: ไม่สามารถเริ่มเฝ้าดู '{program_name}' ได้เนื่องจาก process ไม่ทำงาน")
+        except Exception as e:
+            self.close_launching_dialog()
+            show_message(
+                self,
+                "Process Error",
+                f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}",
+                QtWidgets.QMessageBox.Icon.Critical
+            )
+            print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {e}")
+
     def launch_program(self, program_info):
         """
         ฟังก์ชันนี้ถูกแก้ไขเพื่อสร้าง Thread แยกสำหรับเฝ้าดูแต่ละโปรแกรมที่เปิด
@@ -1809,10 +1842,13 @@ class AppLauncher(QtWidgets.QMainWindow):
                 # ส่ง path ของ .exe ไปให้ subprocess ผ่าน environment variable
                 os.environ['MAIN_PROGRAM_DIR'] = self.launcher_base_dir
                 kwargs = {'working_dir': self.program_dir}
-                process = Process(target=run_module_entrypoint, args=(module_path, entry_point), kwargs={'script_kwargs': kwargs})
-                process.start()
-                self.launch_handle = process
-                QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(process))
+                # Defer process creation slightly so spinner can start animating first.
+                QtCore.QTimer.singleShot(
+                    80,
+                    lambda mp=module_path, ep=entry_point, kw=kwargs, pi=program_info:
+                        self._start_local_module_process(mp, ep, kw, pi)
+                )
+                return
             except Exception as e:
                 self.close_launching_dialog()
                 show_message(self, "Process Error", f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
@@ -1914,7 +1950,8 @@ if __name__ == "__main__":
     # --- เรียกใช้ฟังก์ชันแสดง Changelog ที่นี่! ---
     show_changelog_if_exists(window)
     # ---------------------------------------------
-    QtCore.QTimer.singleShot(1000, lambda: check_for_updates(window))
+    # Delay update check so startup/UI interactions stay responsive first.
+    QtCore.QTimer.singleShot(6000, lambda: check_for_updates(window))
     try:
         main_icon_relative_path = os.path.join(ICON_FOLDER, "I_Main.ico")
         main_icon_actual_path = resource_path(main_icon_relative_path)
