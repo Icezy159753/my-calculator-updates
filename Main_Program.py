@@ -20,6 +20,91 @@ if getattr(sys, 'frozen', False):
     del _base_dirs, _base_dir, _spss_home_path
 # =============================================================================
 
+# =============================================================================
+# === Fast-Path: เปิดโปรแกรมย่อยโดยไม่โหลด PyQt6 (เร็วขึ้นมาก) ===
+# เมื่อถูกเรียกด้วย --run-module จะ import เฉพาะ module ที่ต้องการแล้ว exit ทันที
+# ไม่ต้องโหลด PyQt6, pandas, numpy, matplotlib ฯลฯ ที่ไม่ได้ใช้
+# =============================================================================
+def _fast_launch_submodule():
+    """Fast path: ตรวจ --run-module แล้วรันตรงๆ โดยข้าม import หนักทั้งหมด"""
+    if "--run-module" not in sys.argv:
+        return False
+
+    import argparse
+    import importlib
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--run-module")
+    parser.add_argument("--entry-point", default="main")
+    parser.add_argument("--working-dir", default=None)
+    known, _ = parser.parse_known_args(sys.argv[1:])
+
+    if not known.run_module:
+        return False
+
+    # ตั้ง sys.path ให้ถูกต้อง
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
+
+    _subfolder = "All_Programs"
+    module_name = known.run_module
+    if not module_name.startswith(_subfolder + "."):
+        full_module_name = f"{_subfolder}.{module_name}"
+    else:
+        full_module_name = module_name
+
+    try:
+        print(f"FAST_LAUNCH: Importing {full_module_name}")
+        module = importlib.import_module(full_module_name)
+        ep_name = known.entry_point
+        if hasattr(module, ep_name):
+            kwargs = {}
+            if known.working_dir:
+                kwargs["working_dir"] = known.working_dir
+            print(f"FAST_LAUNCH: Running {ep_name}()")
+            getattr(module, ep_name)(**kwargs)
+        else:
+            print(f"FAST_LAUNCH_ERROR: '{ep_name}' not found in '{full_module_name}'")
+            _fast_show_error("Launch Error",
+                f"ไม่พบฟังก์ชันหลัก '{ep_name}'\nในโมดูล '{module_name}'.")
+    except ImportError as e:
+        import traceback; traceback.print_exc()
+        _fast_show_error("Launch Error",
+            f"ไม่สามารถโหลดโมดูล '{module_name}' ได้:\n{e}\n\n"
+            f"ตรวจสอบว่าไฟล์ .py อยู่ในโฟลเดอร์ '{_subfolder}'")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        _fast_show_error("Runtime Error",
+            f"เกิดข้อผิดพลาดขณะรัน '{module_name}':\n{e}")
+    return True
+
+
+def _fast_show_error(title, message):
+    """แสดง error dialog แบบเบาๆ ใช้ tkinter (ไม่โหลด PyQt6)"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message, parent=root)
+        root.destroy()
+    except Exception:
+        print(f"{title}: {message}")
+
+
+if __name__ == "__main__":
+    from multiprocessing import freeze_support
+    freeze_support()
+    if _fast_launch_submodule():
+        sys.exit(0)
+# =============================================================================
+# === ถ้าไม่ใช่ fast-path ค่อย import ของหนักสำหรับ Launcher UI ===
+# =============================================================================
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 import importlib
 from multiprocessing import Process, freeze_support
@@ -84,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.57"
+CURRENT_VERSION = "1.1.58"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -1937,18 +2022,9 @@ class AppLauncher(QtWidgets.QMainWindow):
 
 
 if __name__ == "__main__":
+    # หมายเหตุ: --run-module ถูกจัดการแล้วโดย _fast_launch_submodule() ที่ต้นไฟล์
+    # (ข้ามการโหลด PyQt6 ทำให้โปรแกรมย่อยเปิดเร็วขึ้นมาก)
     freeze_support()
-    module_launch = parse_module_launch_args(sys.argv[1:])
-    if module_launch:
-        script_kwargs = {}
-        if module_launch.get("working_dir"):
-            script_kwargs["working_dir"] = module_launch["working_dir"]
-        run_module_entrypoint(
-            module_launch["module"],
-            module_launch["entry_point"],
-            script_kwargs=script_kwargs
-        )
-        sys.exit(0)
 
     launcher_dir_init = os.path.dirname(os.path.abspath(__file__))
     icon_dir_path = os.path.join(launcher_dir_init, ICON_FOLDER)

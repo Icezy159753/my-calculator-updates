@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(copy Main_Program_TTK.py Main_Program_TTK_Backup.py)"
+      "Bash(copy Main_Program_TTK.py Main_Program_TTK_Backup.py)",
+      "Bash(ls c:/Users/User/Desktop/Main_Program/venv/Scripts/*.exe)",
+      "Bash(where python:*)",
+      "Bash(where python3:*)",
+      "Bash(\"C:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" -c \":*)",
+      "Bash(\"C:\\\\Users\\\\User\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python.exe\" -c \":*)",
+      "Bash(\"C:/Users/User/AppData/Local/Python/bin/python.exe\" --version)",
+      "Bash(\"C:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(\"C:/Users/User/AppData/Local/Python/bin/python.exe\" -m venv \"c:/Users/User/Desktop/Main_Program/venv\")",
+      "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" --version)",
+      "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" -m pip install --upgrade pip)",
+      "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/pip.exe\" install:*)"
     ],
     "deny": [],
     "ask": []
