@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.58"
+CURRENT_VERSION = "1.1.59"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -863,6 +863,17 @@ PROGRAMS = [
         "module_path": "120_bpi", # <--- ปรับชื่อ module_path
         "entry_point": "run_this_app",
         "icon": "BPI.ico",
+        "category": "Statistic", # <--- เพิ่ม category
+        "enabled": True
+    },  
+    {
+        "id": "โปรแกรมรัน BrandSpace Well-being Index V1",
+        "name": "โปรแกรมรัน BrandSpace Well-being Index V1",
+        "description": "เอาไว้รัน BrandSpace Well-being Index จากไฟล์ SPSS",
+        "type": "local_py_module",
+        "module_path": "148_BrandSpace", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "Brandspace.ico",
         "category": "Statistic", # <--- เพิ่ม category
         "enabled": True
     },  
