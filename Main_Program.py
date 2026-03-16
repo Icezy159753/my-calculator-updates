@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.59"
+CURRENT_VERSION = "1.1.60"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -239,8 +239,8 @@ def _normalize_download_url(url):
         return url.replace("https://github./", "https://github.com/", 1)
     return url
 
-def check_for_updates(app_window):
-    """ตรวจสอบอัปเดตและเรียกใช้ updater"""
+def check_for_updates(app_window, notify_only=False):
+    """Check updates. When notify_only=True, only update bottom status UI."""
     import requests
     from packaging.version import parse as parse_version
     print("Checking for updates...")
@@ -255,6 +255,9 @@ def check_for_updates(app_window):
 
         if parse_version(latest_version) > parse_version(CURRENT_VERSION):
             print(f"New version found: {latest_version}")
+            if notify_only and hasattr(app_window, "set_update_available"):
+                app_window.set_update_available(latest_version)
+                return
 
             # ถามผู้ใช้ก่อนอัปเดต
             if ask_yes_no(app_window, "Update Available", f"มีเวอร์ชันใหม่ ({latest_version})!\nต้องการอัปเดตตอนนี้เลยหรือไม่?"):
@@ -468,9 +471,13 @@ def check_for_updates(app_window):
 
         else:
             print("You have the latest version.")
+            if notify_only and hasattr(app_window, "set_update_status_latest"):
+                app_window.set_update_status_latest()
 
     except Exception as e:
         print(f"Could not check for updates: {e}")
+        if notify_only and hasattr(app_window, "set_update_status_error"):
+            app_window.set_update_status_error()
 
 # --- เพิ่มฟังก์ชันนี้เข้าไปใหม่ทั้งหมด ---
 def create_custom_changelog_window(parent, changelog_content):
@@ -1090,6 +1097,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.launch_handle = None
         self.launch_wait_started = None
         self.monitor_threads = []
+        self.update_latest_version = None
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -1108,6 +1116,7 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.build_sidebar()
         self.build_content()
+        self.build_update_status_bar()
 
         self.apply_theme(DEFAULT_APPEARANCE_MODE)
         # Let window paint first, then populate heavy card grid.
@@ -1261,6 +1270,68 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.scroll_area.setWidget(self.cards_container)
         layout.addWidget(self.scroll_area)
 
+    def build_update_status_bar(self):
+        status_bar = QtWidgets.QStatusBar(self)
+        status_bar.setSizeGripEnabled(False)
+        self.setStatusBar(status_bar)
+
+        self.update_status_label = QtWidgets.QLabel("สถานะอัปเดต: กำลังตรวจสอบ...")
+        self.update_status_label.setObjectName("UpdateStatusLabel")
+        self.update_status_label.setFont(self.font_small)
+
+        self.update_now_button = QtWidgets.QPushButton("อัปเดตตอนนี้")
+        self.update_now_button.setObjectName("UpdateNowButton")
+        self.update_now_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.update_now_button.setVisible(False)
+        self.update_now_button.clicked.connect(self.start_update_from_status_bar)
+
+        self.update_later_button = QtWidgets.QPushButton("ภายหลัง")
+        self.update_later_button.setObjectName("UpdateLaterButton")
+        self.update_later_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.update_later_button.setVisible(False)
+        self.update_later_button.clicked.connect(self.dismiss_update_notice)
+
+        status_container = QtWidgets.QWidget()
+        status_layout = QtWidgets.QHBoxLayout(status_container)
+        status_layout.setContentsMargins(4, 0, 4, 0)
+        status_layout.setSpacing(8)
+        status_layout.addWidget(self.update_status_label)
+        status_layout.addWidget(self.update_now_button)
+        status_layout.addWidget(self.update_later_button)
+        status_layout.addStretch(1)
+        status_bar.addWidget(status_container, 1)
+
+    def set_update_available(self, latest_version):
+        self.update_latest_version = latest_version
+        self.update_status_label.setText(f"มีเวอร์ชันใหม่ {latest_version}")
+        self.update_status_label.setStyleSheet("color: #C86A00; font-weight: 600;")
+        self.update_now_button.setVisible(True)
+        self.update_later_button.setVisible(True)
+
+    def set_update_status_latest(self):
+        self.update_latest_version = None
+        self.update_status_label.setText("สถานะอัปเดต: คุณใช้เวอร์ชันล่าสุดแล้ว")
+        self.update_status_label.setStyleSheet("color: #2E7D6B;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def set_update_status_error(self):
+        self.update_latest_version = None
+        self.update_status_label.setText("สถานะอัปเดต: ตรวจสอบไม่ได้ในขณะนี้")
+        self.update_status_label.setStyleSheet("color: #A13A3A;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def dismiss_update_notice(self):
+        if self.update_latest_version:
+            self.update_status_label.setText(f"มีเวอร์ชันใหม่ {self.update_latest_version} (เตือนภายหลัง)")
+            self.update_status_label.setStyleSheet("color: #6B7785;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def start_update_from_status_bar(self):
+        check_for_updates(self, notify_only=False)
+
     def apply_theme(self, mode):
         if mode == "Dark":
             theme = THEME_DARK
@@ -1349,6 +1420,32 @@ class AppLauncher(QtWidgets.QMainWindow):
                 border-radius: 8px;
                 padding: 4px 8px;
                 color: {theme['text_primary']};
+            }}
+            QStatusBar {{
+                background: {theme['sidebar_bg']};
+                border-top: 1px solid {theme['card_border']};
+            }}
+            QLabel#UpdateStatusLabel {{
+                color: {theme['text_muted']};
+            }}
+            QPushButton#UpdateNowButton {{
+                background: {theme['accent']};
+                color: white;
+                border-radius: 8px;
+                padding: 3px 10px;
+            }}
+            QPushButton#UpdateNowButton:hover {{
+                background: {theme['accent_hover']};
+            }}
+            QPushButton#UpdateLaterButton {{
+                background: transparent;
+                border: 1px solid {theme['card_border']};
+                border-radius: 8px;
+                padding: 3px 10px;
+                color: {theme['text_primary']};
+            }}
+            QPushButton#UpdateLaterButton:hover {{
+                background: {theme['card_border']};
             }}
         """)
 
@@ -2099,7 +2196,7 @@ if __name__ == "__main__":
     show_changelog_if_exists(window)
     # ---------------------------------------------
     # Delay update check so startup/UI interactions stay responsive first.
-    QtCore.QTimer.singleShot(15000, lambda: check_for_updates(window))
+    QtCore.QTimer.singleShot(15000, lambda: check_for_updates(window, notify_only=True))
     try:
         main_icon_relative_path = os.path.join(ICON_FOLDER, "I_Main.ico")
         main_icon_actual_path = resource_path(main_icon_relative_path)

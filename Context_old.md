@@ -1,0 +1,318 @@
+# 📋 Context.md - Program All DP (Main_Program.py)
+
+> **วันที่สร้าง:** 2026-01-09  
+> **เวอร์ชันปัจจุบัน:** 1.1.32  
+> **ไฟล์หลัก:** `Main_Program.py` (1,878 บรรทัด)
+
+---
+
+## 📌 ภาพรวมโปรแกรม
+
+**Program All DP** เป็น Launcher Application สำหรับรวมเครื่องมือประมวลผลข้อมูลหลายชนิดไว้ในที่เดียว พัฒนาด้วย **PyQt6** Framework พร้อมระบบ Auto-Update จาก GitHub และระบบ Logging การใช้งานไปยัง Google Sheet / Telegram
+
+---
+
+## 🏗️ โครงสร้างโปรแกรมหลัก
+
+### ค่าคงที่สำคัญ (Lines 72-90)
+```python
+# ⚠️ สำคัญ - อย่าแก้ไขโดยไม่จำเป็น
+CURRENT_VERSION = "1.1.32"          # เวอร์ชันปัจจุบัน
+REPO_OWNER = "Icezy159753"          # GitHub Username
+REPO_NAME = "my-calculator-updates" # GitHub Repository
+PROGRAM_SUBFOLDER = "All_Programs"  # โฟลเดอร์เก็บโปรแกรมย่อย
+ICON_FOLDER = "Icon"                # โฟลเดอร์เก็บไอคอน
+```
+
+### URL ที่ใช้ในโปรแกรม (Lines 73-80)
+| ตัวแปร | ใช้สำหรับ |
+|--------|----------|
+| `GOOGLE_SCRIPT_URL` | บันทึก Log การใช้งานไป Google Sheet |
+| `TELEGRAM_BOT_TOKEN` | ส่งแจ้งเตือนไป Telegram |
+| `TELEGRAM_CHAT_ID` | Chat ID สำหรับแจ้งเตือน |
+| `UPDATE_HISTORY_URL` | เปิดหน้าเว็บประวัติอัปเดต |
+
+---
+
+## 🎨 ระบบ Theme (Lines 469-496)
+
+โปรแกรมรองรับ 2 ธีม: **Light** และ **Dark**
+
+```python
+# ✅ สถานะ: ทำงานปกติ - อย่าแก้ไข
+THEME_LIGHT = {
+    "app_bg": "#F2F4F7",         # พื้นหลังหลัก
+    "sidebar_bg": "#FFFFFF",     # Sidebar
+    "content_bg": "#F6F7FA",     # พื้นที่แสดงการ์ด
+    "card_bg": "#FFFFFF",        # พื้นหลังการ์ด
+    "card_border": "#E6E9EF",    # ขอบการ์ด
+    "text_primary": "#1C2430",   # ตัวหนังสือหลัก
+    "text_muted": "#6B7785",     # ตัวหนังสือรอง
+    "accent": "#2E7D6B",         # สีเน้น
+    "accent_hover": "#276B5C",   # สีเน้นเมื่อ hover
+    "search_bg": "#FFFFFF",      # ช่องค้นหา
+    "search_border": "#D8DDE6"   # ขอบช่องค้นหา
+}
+DEFAULT_APPEARANCE_MODE = "Light"
+```
+
+---
+
+## 📦 รายการโปรแกรมย่อย (Lines 526-859)
+
+### โครงสร้างข้อมูลโปรแกรม
+```python
+{
+    "id": "unique_id",                    # ID เฉพาะ
+    "name": "ชื่อแสดงผล",                  # ชื่อที่แสดงบนการ์ด
+    "description": "คำอธิบาย",             # รายละเอียด
+    "type": "local_py_module",            # ประเภท (local_py_module/external_exe)
+    "module_path": "filename_without_py", # ชื่อไฟล์ใน All_Programs
+    "entry_point": "run_this_app",        # ฟังก์ชันที่เรียก
+    "icon": "icon_name.ico",              # ไอคอน
+    "category": "หมวดหมู่",                # กลุ่มโปรแกรม
+    "enabled": True                        # เปิดใช้งาน
+}
+```
+
+### รายการโปรแกรมทั้งหมด (23 โปรแกรม)
+
+#### หมวดหมู่: Lychee (10 โปรแกรม)
+| ชื่อ | Module Path | คำอธิบาย |
+|------|-------------|----------|
+| สร้าง Itemdef จากSPSS V3 | `Program_ItemdefSPSS_Log` | แปลง SPSS เป็น Excel |
+| ทำ TB/T2B จากไฟล์ Itemdef V3 | `Program_T2B_Itermdef` | ทำ TB/T2B จาก Itemdef |
+| GetValue+Promt แปะ Eng | `117_Newen_Promt` | GetValue+Copy Promt |
+| แปลงCE Otherจาก Edit V2 | `106_Map_spss_Excel` | แปลงไฟล์ CE Other |
+| Logic_Generator Itemdef V8 | `Logic_Generator` | GenSyntaxClean Lychee |
+| ลบ Sig จาก TableLychee V1 | `Del_Sig` | ลบ Sig ตามที่ระบุ |
+| Check Codes_Other V1 | `CheckOther` | Check Codes Other |
+| แตก CodeNA จาก SPSS&Excel V1 | `113_ProgramCodeNA` | แตก CodeNA |
+| ลบN=0 OEในLychee V1 | `114_DelblankLychee` | ลบช่องว่าง TableOE |
+| Create Format_Kao By_DP V3 | `119_Create_Format_Kao` | สร้าง Format_Kao |
+
+#### หมวดหมู่: SPSS (5 โปรแกรม)
+| ชื่อ | Module Path | คำอธิบาย |
+|------|-------------|----------|
+| CleanData+Frequenzy SPSS V1 | `99_CleanSPSS_Germini` | Clean Data + Frequency |
+| Get SPSS V2 | `105_GetSPSS` | GenSyntax Get SPSS |
+| ซ่อมไฟล์SPSS V1 | `convert_SPSS_UTF8` | แปลง SPSS เป็น UTF-8 |
+| แปลงไฟล์ SPSS To Excel V1 | `ConvertSPSS_Excel` | แปลง SPSS → Excel |
+| MRSET Auto-Generator v5.0 | `121_SPSS_MRSET` | สร้างโค้ด MRSET |
+
+#### หมวดหมู่: Statistic (6 โปรแกรม)
+| ชื่อ | Module Path | คำอธิบาย |
+|------|-------------|----------|
+| Correlation จาก SPSS Data V1 | `104_Correlation` | รัน Correlation |
+| BPI Brand Power Index V1 | `120_bpi` | รัน BPI |
+| Multidimensional Scaling V12 | `MDS` | รัน MDS |
+| ดูดติด MA _O จาก Togo V1 | `121_Merge_MA_V2` | Merge MA |
+| PSM Pricezen V1 | `122_PSM` | รัน PSM |
+| BrandSence V1 | `123_Program_Run_Brandsence_Add_C All` | รัน BrandSence |
+
+#### หมวดหมู่: Excel (4 โปรแกรม)
+| ชื่อ | Module Path | คำอธิบาย |
+|------|-------------|----------|
+| ตัดQuota Pro V1 | `99_Excel` | ตัดชุดตามใบบรีฟ |
+| RenameSheet V1 | `Rename Sheet` | Rename Sheet |
+| Move Sheet Excel V1 | `107_Movesheet` | Move Sheet |
+| เช็ค Data Excel 2 ไฟล์ V1 | `146_Mapdata` | ตรวจสอบข้อมูล |
+
+#### หมวดหมู่อื่นๆ
+| หมวดหมู่ | ชื่อ | Module Path |
+|----------|------|-------------|
+| Diary | Check Rotation Diary V1 | `109_Diary` |
+| Key Norm | เก็บ Norm V1 | `Norm_2025` |
+| อื่นๆ | Gen Table Reporter V1 | `124_Table_Reporter` |
+| อื่นๆ | Convert JPG to SVG V1 | `125_Convert_Icon_Svg2` |
+
+---
+
+## 🖥️ คลาสหลัก: AppLauncher (Lines 900-1797)
+
+### เมธอดสำคัญ
+
+#### UI Components
+| เมธอด | Lines | หน้าที่ |
+|-------|-------|--------|
+| `build_sidebar()` | 964-1056 | สร้าง Sidebar ซ้าย |
+| `build_content()` | 1058-1105 | สร้างพื้นที่แสดงการ์ด |
+| `apply_theme(mode)` | 1107-1196 | ใช้ธีม Light/Dark |
+| `render_program_cards()` | 1325-1361 | แสดงการ์ดโปรแกรม |
+| `create_card_widget(program, width)` | 1429-1467 | สร้างการ์ดแต่ละโปรแกรม |
+
+#### โปรแกรมย่อย
+| เมธอด | Lines | หน้าที่ |
+|-------|-------|--------|
+| `launch_program(program_info)` | 1738-1796 | เปิดโปรแกรมย่อย |
+| `run_module_entrypoint()` | 870-896 | รันโมดูล Python |
+| `show_launching_dialog(name)` | 1469-1541 | แสดง Loading dialog |
+| `close_launching_dialog()` | 1551-1560 | ปิด Loading dialog |
+
+#### ระบบอัปเดต
+| เมธอด | Lines | หน้าที่ |
+|-------|-------|--------|
+| `check_for_updates()` | 156-385 | ตรวจสอบอัปเดต GitHub |
+| `show_changelog_if_exists()` | 434-456 | แสดง Changelog หลังอัปเดต |
+| `create_custom_changelog_window()` | 388-431 | สร้างหน้าต่าง Changelog |
+
+#### ระบบ Logging
+| เมธอด | Lines | หน้าที่ |
+|-------|-------|--------|
+| `log_session_to_sheet()` | 1617-1648 | บันทึกไป Google Sheet |
+| `send_telegram_notification()` | 1650-1705 | ส่งแจ้งเตือน Telegram |
+| `_wait_and_log_session()` | 1707-1735 | รอ process จบแล้ว log |
+
+---
+
+## 🔄 ระบบ Auto-Update (Lines 92-385)
+
+### ขั้นตอนการอัปเดต
+1. เรียก GitHub API ดึง latest release
+2. เปรียบเทียบเวอร์ชัน
+3. ถามผู้ใช้ก่อนอัปเดต
+4. ดาวน์โหลด `updater.exe` + package
+5. รัน updater แล้วปิดโปรแกรมหลัก
+
+### ฟังก์ชันสนับสนุน
+```python
+# ✅ สถานะ: ทำงานปกติ
+get_executable_path()           # หาตำแหน่ง .exe
+get_updates_dir(app_dir)        # โฟลเดอร์เก็บ updates
+get_cached_package_path()       # ตำแหน่ง package cache
+_normalize_tag_version(tag)     # ลบ 'v' ออกจากเวอร์ชัน
+_build_patch_chain()            # สร้าง chain สำหรับ incremental update
+_normalize_download_url()       # แก้ไข URL ที่ผิด
+```
+
+---
+
+## 🔧 SPSS Path Fix (Lines 1-21)
+
+> ⚠️ **สำคัญมาก:** โค้ดส่วนนี้ต้องอยู่บนสุดก่อน import อื่นๆ
+
+```python
+# ✅ สถานะ: จำเป็นสำหรับ .exe - อย่าแก้ไข!
+if getattr(sys, 'frozen', False):
+    # ตั้งค่า SPSS_HOME สำหรับ savReaderWriter
+    os.environ['SPSS_HOME'] = _spss_home_path
+```
+
+---
+
+## 🎛️ Widget พิเศษ: Spinner (Lines 37-69)
+
+```python
+# ✅ สถานะ: ทำงานปกติ
+class Spinner(QtWidgets.QWidget):
+    """Loading spinner animation widget"""
+    # - ใช้ใน launching dialog
+    # - 12 segments พร้อม fading alpha
+    # - ปรับ speed ได้
+```
+
+---
+
+## 📝 Helper Functions
+
+### Dialog Functions (Lines 501-523)
+```python
+show_message(parent, title, text, icon)  # แสดง message box
+ask_yes_no(parent, title, text)          # ถาม Yes/No
+show_error_dialog(title, text)           # แสดง error
+```
+
+### Resource Path (Lines 461-466)
+```python
+def resource_path(relative_path):
+    """หา path ที่ถูกต้องทั้ง dev และ .exe mode"""
+```
+
+---
+
+## 📊 ขนาดและ Layout (Lines 861-867)
+
+```python
+ICON_SIZE = (60, 60)              # ขนาดไอคอน
+CARD_DESCRIPTION_WRAPLENGTH = 150 # ความกว้างคำอธิบาย
+MAX_COLUMNS = 3                   # คอลัมน์สูงสุด
+CARD_MIN_WIDTH = 240              # ความกว้างการ์ดขั้นต่ำ
+CARD_MAX_WIDTH = 2000             # ความกว้างการ์ดสูงสุด
+CARD_HEIGHT = 320                 # ความสูงการ์ด
+```
+
+---
+
+## 🚀 จุดเริ่มต้นโปรแกรม (Lines 1799-1877)
+
+### ขั้นตอนการเริ่มต้น
+1. `freeze_support()` - สำหรับ multiprocessing
+2. สร้างโฟลเดอร์ที่จำเป็น (Icon, All_Programs)
+3. ตั้งค่า High DPI
+4. สร้าง `QApplication` และ `AppLauncher`
+5. แสดง Changelog (ถ้ามี)
+6. ตรวจสอบ Update หลัง 1 วินาที
+7. แสดง window และเข้า event loop
+
+---
+
+## ⚠️ สิ่งที่ต้องระวังเมื่อแก้ไข
+
+### 🔴 ห้ามแก้ไข
+1. **SPSS Path Fix (Lines 1-21)** - จำเป็นสำหรับ .exe
+2. **freeze_support()** - จำเป็นสำหรับ multiprocessing
+3. **resource_path()** - ใช้ทั่วทั้งโปรแกรม
+
+### 🟡 ระวังเป็นพิเศษ
+1. **PROGRAMS list** - ตรวจสอบ module_path ให้ตรงกับไฟล์จริง
+2. **Theme variables** - ต้องมีครบทุก key
+3. **check_for_updates()** - logic ซับซ้อน มี fallback หลายระดับ
+
+### 🟢 แก้ไขได้อย่างปลอดภัย
+1. เพิ่มโปรแกรมใหม่ใน PROGRAMS list
+2. เปลี่ยนขนาด ICON_SIZE, CARD_HEIGHT
+3. เปลี่ยนสี Theme
+
+---
+
+## 📁 โครงสร้างโฟลเดอร์
+
+```
+Main_Program/
+├── Main_Program.py          # ไฟล์หลัก
+├── updater.py               # ตัวอัปเดต
+├── updater.exe              # ตัวอัปเดต (compiled)
+├── Icon/                    # ไอคอนทั้งหมด
+│   ├── I_Main.ico          # ไอคอนหลัก
+│   └── *.ico               # ไอคอนโปรแกรมย่อย
+├── All_Programs/            # โปรแกรมย่อย
+│   ├── __init__.py         # Python package marker
+│   ├── Program_ItemdefSPSS_Log.py
+│   ├── 99_CleanSPSS_Germini.py
+│   └── ... (55 files)
+├── savReaderWriter/         # SPSS library
+├── requirements_ttk.txt     # Dependencies
+└── Main_Program.spec        # PyInstaller spec
+```
+
+---
+
+## 🔗 Dependencies หลัก
+
+```
+PyQt6                # GUI Framework
+requests             # HTTP requests
+packaging            # Version comparison
+savReaderWriter      # SPSS file handling
+```
+
+---
+
+## 📞 ติดต่อ/แจ้งปัญหา
+
+- **GitHub:** [Icezy159753/my-calculator-updates](https://github.com/Icezy159753/my-calculator-updates)
+- **Update History:** https://dp1234.lovable.app/
+
+---
+
+> **หมายเหตุ:** เอกสารนี้สร้างขึ้นเพื่อเป็น "จุด Save" ของโปรแกรม หากต้องการแก้ไขอะไร ให้อ้างอิงเอกสารนี้เพื่อไม่ให้แก้ไขส่วนที่ทำงานได้ดีอยู่แล้ว
