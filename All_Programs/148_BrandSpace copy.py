@@ -670,107 +670,108 @@ def compute_correlations(index_series: pd.Series, items_df: pd.DataFrame):
 #  QSS Style
 # ══════════════════════════════════════════════
 MAIN_STYLE = """
-QMainWindow { background-color: #ffffff; }
+QMainWindow { background-color: #FFFAFA; }
 QGroupBox {
     font-size: 15px; font-weight: bold;
-    border: 2px solid #c5cae9; border-radius: 10px;
-    margin-top: 16px; padding: 20px 12px 12px 12px;
-    background-color: #fafbff;
+    border: 2px solid #F3C4C7; border-radius: 12px;
+    margin-top: 18px; padding: 22px 14px 14px 14px;
+    background-color: #FFFCFC;
 }
 QGroupBox::title {
     subcontrol-origin: margin; subcontrol-position: top left;
-    padding: 4px 14px; background: #e8eaf6; border-radius: 6px;
-    color: #283593; font-size: 14px;
+    padding: 5px 16px; background: #FDDDE0; border-radius: 8px;
+    color: #9B1B30; font-size: 14px;
 }
 QPushButton {
-    background-color: #4361ee; color: white; border: none; border-radius: 8px;
+    background-color: #E57373; color: white; border: none; border-radius: 10px;
     padding: 10px 24px; font-size: 14px; font-weight: 600;
 }
-QPushButton:hover { background-color: #3a56d4; }
-QPushButton:pressed { background-color: #2f48b8; }
-QPushButton:disabled { background-color: #bdbdbd; color: #eeeeee; }
-QPushButton#exportBtn { background-color: #2e7d32; font-size: 15px; padding: 12px 28px; }
-QPushButton#exportBtn:hover { background-color: #1b5e20; }
-QPushButton#backBtn { background-color: #78909c; font-size: 14px; }
-QPushButton#backBtn:hover { background-color: #546e7a; }
+QPushButton:hover { background-color: #EF5350; }
+QPushButton:pressed { background-color: #D32F2F; }
+QPushButton:disabled { background-color: #D5C4C6; color: #F5EAEB; }
+QPushButton#exportBtn { background-color: #E57373; font-size: 15px; padding: 12px 28px; }
+QPushButton#exportBtn:hover { background-color: #EF5350; }
+QPushButton#backBtn { background-color: #C9A3A7; font-size: 14px; }
+QPushButton#backBtn:hover { background-color: #B08489; }
 QTableWidget {
-    border: 1px solid #cfd8dc; border-radius: 6px; gridline-color: #e0e0e0;
-    selection-background-color: #e3f2fd; font-size: 13px;
-    background-color: #ffffff; color: #212121;
+    border: 1px solid #F3C4C7; border-radius: 8px; gridline-color: #F5DBDE;
+    selection-background-color: #FFEBEE; font-size: 13px;
+    background-color: #ffffff; color: #3E2023; alternate-background-color: #FFF5F6;
 }
 QTableWidget::item { padding: 5px 10px; }
 QHeaderView::section {
-    background-color: #37474f; color: white; padding: 8px;
+    background-color: #C6505A; color: white; padding: 8px;
     border: none; font-weight: bold; font-size: 13px;
 }
 QProgressBar {
-    border: 1px solid #cfd8dc; border-radius: 6px; text-align: center;
-    height: 28px; font-size: 13px; background: #eceff1;
+    border: 1px solid #F3C4C7; border-radius: 8px; text-align: center;
+    height: 28px; font-size: 13px; background: #FFF0F1;
 }
-QProgressBar::chunk { background-color: #4361ee; border-radius: 5px; }
+QProgressBar::chunk { background-color: #E57373; border-radius: 7px; }
 QTextEdit#logPanel {
-    background-color: #263238; color: #b2ff59;
+    background-color: #2C1215; color: #b2ff59;
     font-family: 'Consolas', 'Courier New', monospace; font-size: 12px;
-    border-radius: 6px; padding: 10px;
+    border-radius: 8px; padding: 10px; border: 1px solid #5D2A30;
 }
-QLabel { font-size: 14px; color: #212121; }
+QLabel { font-size: 14px; color: #3E2023; }
 QComboBox {
-    border: 2px solid #c5cae9; border-radius: 8px; padding: 7px 10px;
-    font-size: 14px; background: #ffffff; color: #212121;
+    border: 2px solid #F3C4C7; border-radius: 10px; padding: 7px 10px;
+    font-size: 14px; background: #ffffff; color: #3E2023;
     min-height: 22px;
 }
-QComboBox:focus { border: 2px solid #3f51b5; }
+QComboBox:focus { border: 2px solid #E57373; }
 QComboBox QAbstractItemView {
-    font-size: 13px; background: #ffffff; color: #212121;
-    selection-background-color: #e8eaf6; selection-color: #1a237e;
+    font-size: 13px; background: #ffffff; color: #3E2023;
+    selection-background-color: #FFEBEE; selection-color: #9B1B30;
 }
 QListWidget {
-    border: 2px solid #c5cae9; border-radius: 8px;
-    background: #ffffff; font-size: 14px; color: #212121;
+    border: 2px solid #F3C4C7; border-radius: 10px;
+    background: #ffffff; font-size: 14px; color: #3E2023;
 }
-QListWidget::item { padding: 5px 8px; border-radius: 5px; margin: 1px 0; }
-QListWidget::item:hover { background-color: #e8eaf6; }
-QListWidget::item:selected { background-color: #c5cae9; color: #1a237e; font-weight: bold; }
+QListWidget::item { padding: 6px 10px; border-radius: 6px; margin: 1px 2px; }
+QListWidget::item:hover { background-color: #FFEBEE; }
+QListWidget::item:selected { background-color: #FFCDD2; color: #9B1B30; font-weight: bold; }
 QLineEdit {
-    border: 2px solid #c5cae9; border-radius: 8px; padding: 7px 10px;
-    font-size: 14px; background: #ffffff; color: #212121;
+    border: 2px solid #F3C4C7; border-radius: 10px; padding: 7px 10px;
+    font-size: 14px; background: #ffffff; color: #3E2023;
 }
-QLineEdit:focus { border: 2px solid #3f51b5; }
-QTabWidget::pane { border: 2px solid #c5cae9; border-radius: 6px; background: #ffffff; }
+QLineEdit:focus { border: 2px solid #E57373; }
+QTabWidget::pane { border: 2px solid #F3C4C7; border-radius: 8px; background: #ffffff; }
 QTabBar::tab {
-    background: #e8eaf6; border: 1px solid #c5cae9; padding: 8px 20px;
-    border-top-left-radius: 8px; border-top-right-radius: 8px;
-    font-size: 14px; color: #37474f;
+    background: #FDDDE0; border: 1px solid #F3C4C7; padding: 9px 22px;
+    border-top-left-radius: 10px; border-top-right-radius: 10px;
+    font-size: 14px; color: #6D3A3F;
 }
-QTabBar::tab:selected { background: #ffffff; border-bottom: none; font-weight: bold; color: #283593; }
-QCheckBox { font-size: 14px; spacing: 8px; color: #212121; }
+QTabBar::tab:selected { background: #ffffff; border-bottom: none; font-weight: bold; color: #9B1B30; }
+QTabBar::tab:hover { background: #FFEBEE; }
+QCheckBox { font-size: 14px; spacing: 8px; color: #3E2023; }
 QSpinBox {
-    border: 2px solid #c5cae9; border-radius: 8px; padding: 6px;
-    font-size: 14px; background: #ffffff; color: #212121;
+    border: 2px solid #F3C4C7; border-radius: 10px; padding: 6px;
+    font-size: 14px; background: #ffffff; color: #3E2023;
 }
-QScrollArea { background: #ffffff; border: none; }
-QScrollBar:vertical { width: 10px; background: #eceff1; border-radius: 5px; }
-QScrollBar::handle:vertical { background: #90a4ae; border-radius: 5px; min-height: 30px; }
-QScrollBar::handle:vertical:hover { background: #78909c; }
+QScrollArea { background: #FFFAFA; border: none; }
+QScrollBar:vertical { width: 10px; background: #FFF0F1; border-radius: 5px; }
+QScrollBar::handle:vertical { background: #E0A0A5; border-radius: 5px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #D08085; }
 QMessageBox {
-    background-color: #ffffff;
+    background-color: #FFFAFA;
 }
 QMessageBox QLabel {
-    color: #212121;
+    color: #3E2023;
     font-size: 14px;
 }
 QMessageBox QPushButton {
     min-width: 90px;
     padding: 8px 16px;
-    background-color: #4361ee;
+    background-color: #E57373;
     color: #ffffff;
-    border-radius: 8px;
+    border-radius: 10px;
 }
 QMessageBox QPushButton:hover {
-    background-color: #3a56d4;
+    background-color: #EF5350;
 }
 QMessageBox QPushButton:pressed {
-    background-color: #2f48b8;
+    background-color: #D32F2F;
 }
 """
 
@@ -880,12 +881,12 @@ class DropZone(QLabel):
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("📂  ลากไฟล์ .sav มาวางที่นี่\nหรือกดปุ่ม Browse ด้านล่าง")
-        self.setMinimumHeight(100)
+        self.setMinimumHeight(110)
         self.setStyleSheet("""
             QLabel {
-                border: 2px dashed #adb5bd; border-radius: 12px;
-                background-color: #f1f3f5; color: #495057;
-                font-size: 14px; padding: 20px;
+                border: 2.5px dashed #E0A0A5; border-radius: 16px;
+                background-color: #FFF5F5; color: #6D3A3F;
+                font-size: 15px; padding: 24px;
             }
         """)
 
@@ -893,16 +894,16 @@ class DropZone(QLabel):
         if e.mimeData().hasUrls():
             for url in e.mimeData().urls():
                 if url.toLocalFile().lower().endswith(".sav"):
-                    self.setStyleSheet(self.styleSheet().replace("#adb5bd", "#4361ee").replace("#f1f3f5", "#eef2ff"))
+                    self.setStyleSheet(self.styleSheet().replace("#E0A0A5", "#E57373").replace("#FFF5F5", "#FFEBEE"))
                     e.acceptProposedAction()
                     return
         e.ignore()
 
     def dragLeaveEvent(self, e):
-        self.setStyleSheet(self.styleSheet().replace("#4361ee", "#adb5bd").replace("#eef2ff", "#f1f3f5"))
+        self.setStyleSheet(self.styleSheet().replace("#E57373", "#E0A0A5").replace("#FFEBEE", "#FFF5F5"))
 
     def dropEvent(self, e: QDropEvent):
-        self.setStyleSheet(self.styleSheet().replace("#4361ee", "#adb5bd").replace("#eef2ff", "#f1f3f5"))
+        self.setStyleSheet(self.styleSheet().replace("#E57373", "#E0A0A5").replace("#FFEBEE", "#FFF5F5"))
         for url in e.mimeData().urls():
             fp = url.toLocalFile()
             if fp.lower().endswith(".sav"):
@@ -950,13 +951,13 @@ class VariablePickerDialog(QWidget):
         if self.multi:
             btn_row = QHBoxLayout()
             btn_all = QPushButton("✅ เลือกทั้งหมด (ที่แสดง)")
-            btn_all.setStyleSheet("font-size: 12px; padding: 5px 12px; background: #66bb6a;")
+            btn_all.setStyleSheet("font-size: 12px; padding: 5px 12px; background: #E57373; border-radius: 8px;")
             btn_all.clicked.connect(self._select_all_visible)
             btn_none = QPushButton("❌ ยกเลิกทั้งหมด")
-            btn_none.setStyleSheet("font-size: 12px; padding: 5px 12px; background: #ef5350;")
+            btn_none.setStyleSheet("font-size: 12px; padding: 5px 12px; background: #C9A3A7; border-radius: 8px;")
             btn_none.clicked.connect(self._deselect_all)
             self.count_lbl = QLabel(f"เลือกแล้ว: {len(self.pre_selected)}")
-            self.count_lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #283593;")
+            self.count_lbl.setStyleSheet("font-size: 13px; font-weight: bold; color: #9B1B30;")
             btn_row.addWidget(btn_all)
             btn_row.addWidget(btn_none)
             btn_row.addStretch()
@@ -987,10 +988,10 @@ class VariablePickerDialog(QWidget):
         # OK / Cancel
         btn_row2 = QHBoxLayout()
         btn_ok = QPushButton("✔ ตกลง")
-        btn_ok.setStyleSheet("font-size: 14px; padding: 10px 30px; background: #2e7d32;")
+        btn_ok.setStyleSheet("font-size: 14px; padding: 10px 30px; background: #E57373; border-radius: 10px;")
         btn_ok.clicked.connect(self._accept)
         btn_cancel = QPushButton("✘ ยกเลิก")
-        btn_cancel.setStyleSheet("font-size: 14px; padding: 10px 30px; background: #78909c;")
+        btn_cancel.setStyleSheet("font-size: 14px; padding: 10px 30px; background: #C9A3A7; border-radius: 10px;")
         btn_cancel.clicked.connect(self.close)
         btn_row2.addStretch()
         btn_row2.addWidget(btn_cancel)
@@ -1066,7 +1067,7 @@ class WellbeingIndexApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Brand Space - Index Caculator")
         try:
-            self.setWindowIcon(QIcon(_resource_path("BrandS.ico")))
+            self.setWindowIcon(QIcon(_resource_path(os.path.join("..", "Icon", "Brandspace.ico"))))
         except Exception:
             pass
         self.resize(1050, 720)
@@ -1098,13 +1099,13 @@ class WellbeingIndexApp(QMainWindow):
         main_lay.setSpacing(6)
 
         # Header
-        hdr = QLabel("Brand Space - Index Caculator")
-        hdr.setStyleSheet("font-size: 18px; font-weight: 700; color: #364fc7; padding: 2px;")
+        hdr = QLabel("Brand Space — Index Calculator")
+        hdr.setStyleSheet("font-size: 20px; font-weight: 700; color: #9B1B30; padding: 4px 2px; letter-spacing: 0.5px;")
         main_lay.addWidget(hdr)
 
         # Steps indicator
         self.steps_label = QLabel("① Load Data  ──►  ② Configure  ──►  ③ Results")
-        self.steps_label.setStyleSheet("font-size: 12px; color: #868e96; padding: 0 0 4px 0;")
+        self.steps_label.setStyleSheet("font-size: 12px; color: #B08489; padding: 0 0 6px 0;")
         main_lay.addWidget(self.steps_label)
 
         # Stacked pages
@@ -1164,12 +1165,12 @@ class WellbeingIndexApp(QMainWindow):
         lay.addLayout(btn_row)
 
         self.file_info_label = QLabel("")
-        self.file_info_label.setStyleSheet("font-size: 15px; color: #2e7d32; padding: 8px; font-weight: 600;")
+        self.file_info_label.setStyleSheet("font-size: 15px; color: #9B1B30; padding: 8px; font-weight: 600;")
         lay.addWidget(self.file_info_label)
 
         guide_box = QGroupBox("วิธีคำนวณโดยสรุป (How It Works)")
         guide_box.setStyleSheet(
-            "QGroupBox { font-size: 15px; font-weight: 700; color: #1f3a93; }"
+            "QGroupBox { font-size: 15px; font-weight: 700; color: #9B1B30; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 8px; }"
         )
         guide_lay = QVBoxLayout(guide_box)
@@ -1177,6 +1178,7 @@ class WellbeingIndexApp(QMainWindow):
         guide_lay.setSpacing(6)
         guide_text = QLabel(
             "1) โหลดไฟล์ .sav และเลือกตัวแปร Q1, Q2 (6 มิติ), Subgroup และตัวแปร Correlation\n"
+            "    * Q1 ก่อนเอาเข้าโปรแกรม ด้าน 1 ต้องดีเสมอ เพราะโปรแกรมจะมีการกลับ Scale เป็นมากดี (NQ1 = 8 − Q1)\n"
             "2) คำนวณคะแนนมิติรายคน (Dim1..Dim6) จากค่าเฉลี่ยของข้อ Q2 ในแต่ละมิติ\n"
             "3) รัน Factor Analysis (PCA + Equamax) และ Regression เพื่อหา Weight ของแต่ละมิติ\n"
             "4) คำนวณ Index แต่ละกลุ่มจากสูตร: Index = Σ(Mean Score ของมิติ × Weight)\n"
@@ -1185,8 +1187,8 @@ class WellbeingIndexApp(QMainWindow):
         )
         guide_text.setWordWrap(True)
         guide_text.setStyleSheet(
-            "font-size: 13px; color: #37474f; "
-            "background: #f7f9fc; border: 1px solid #dbe3ef; border-radius: 10px; padding: 10px;"
+            "font-size: 13px; color: #5D2A30; "
+            "background: #FFF5F5; border: 1px solid #F3C4C7; border-radius: 12px; padding: 12px;"
         )
         guide_lay.addWidget(guide_text)
         lay.addWidget(guide_box)
@@ -1218,10 +1220,10 @@ class WellbeingIndexApp(QMainWindow):
         # Save / Load settings row
         settings_row = QHBoxLayout()
         btn_save_cfg = QPushButton("💾 บันทึกการตั้งค่า")
-        btn_save_cfg.setStyleSheet("font-size: 13px; padding: 7px 16px; background: #5c6bc0;")
+        btn_save_cfg.setStyleSheet("font-size: 13px; padding: 7px 16px; background: #E57373; border-radius: 8px;")
         btn_save_cfg.clicked.connect(self._save_settings)
         btn_load_cfg = QPushButton("📂 โหลดการตั้งค่า")
-        btn_load_cfg.setStyleSheet("font-size: 13px; padding: 7px 16px; background: #78909c;")
+        btn_load_cfg.setStyleSheet("font-size: 13px; padding: 7px 16px; background: #C9A3A7; border-radius: 8px;")
         btn_load_cfg.clicked.connect(self._load_settings)
         settings_row.addWidget(btn_save_cfg)
         settings_row.addWidget(btn_load_cfg)
@@ -1238,7 +1240,7 @@ class WellbeingIndexApp(QMainWindow):
         grp_q1 = QGroupBox("Q1 Variable (Overall Feeling, 7-point scale)")
         q1_lay = QHBoxLayout(grp_q1)
         self.lbl_q1 = QLabel("ยังไม่ได้เลือก")
-        self.lbl_q1.setStyleSheet("font-size: 14px; color: #c62828; padding: 4px;")
+        self.lbl_q1.setStyleSheet("font-size: 14px; color: #D07078; padding: 4px; font-style: italic;")
         self._selected_q1 = None
         btn_q1 = QPushButton("เลือกตัวแปร Q1...")
         btn_q1.clicked.connect(lambda: self._pick_single_var("เลือกตัวแปร Q1", self._set_q1))
@@ -1250,7 +1252,7 @@ class WellbeingIndexApp(QMainWindow):
         grp_dims = QGroupBox("Dimension Variable Mapping (Q2 sub-items)")
         dims_lay = QVBoxLayout(grp_dims)
         hint = QLabel("💡 กดปุ่ม 'เลือก...' เพื่อเปิดหน้าต่างเลือกตัวแปรสำหรับแต่ละ Dimension")
-        hint.setStyleSheet("color: #5c6bc0; font-size: 13px; font-style: italic; padding: 2px 0 6px 0;")
+        hint.setStyleSheet("color: #C6505A; font-size: 13px; font-style: italic; padding: 2px 0 6px 0;")
         dims_lay.addWidget(hint)
         self._dim_selected = {}  # prefix → list of var names
         self._dim_labels = {}    # prefix → QLabel showing selections
@@ -1258,9 +1260,9 @@ class WellbeingIndexApp(QMainWindow):
             row = QHBoxLayout()
             lbl = QLabel(f"{d['short']}:")
             lbl.setMinimumWidth(170)
-            lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #283593;")
+            lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #9B1B30;")
             sel_lbl = QLabel("ยังไม่ได้เลือก")
-            sel_lbl.setStyleSheet("font-size: 13px; color: #757575; padding: 2px 8px;")
+            sel_lbl.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px 8px; font-style: italic;")
             sel_lbl.setWordWrap(True)
             btn = QPushButton("เลือก...")
             btn.setFixedWidth(100)
@@ -1281,7 +1283,7 @@ class WellbeingIndexApp(QMainWindow):
         main_lay = QHBoxLayout(grp_main)
         self._selected_subgroup_main = None
         self.lbl_subgroup_main = QLabel("ยังไม่ได้เลือก")
-        self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #757575; padding: 2px 8px;")
+        self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px 8px; font-style: italic;")
         self.lbl_subgroup_main.setWordWrap(True)
         btn_main = QPushButton("เลือก Subgroup Main...")
         btn_main.clicked.connect(self._pick_subgroup_main_var)
@@ -1294,7 +1296,7 @@ class WellbeingIndexApp(QMainWindow):
         filter_lay = QVBoxLayout(grp_filter)
         filter_hint = QLabel("เพิ่มตัวแปร demographic ที่ต้องการแบ่งกลุ่ม เช่น Country, Generation, Gender\n"
                              "โปรแกรมจะสร้าง subgroup จาก unique values ของตัวแปรเหล่านี้อัตโนมัติ")
-        filter_hint.setStyleSheet("font-size: 12px; color: #5c6bc0; font-style: italic;")
+        filter_hint.setStyleSheet("font-size: 12px; color: #C6505A; font-style: italic;")
         filter_lay.addWidget(filter_hint)
         self.filter_var_list = QListWidget()
         self.filter_var_list.setMaximumHeight(90)
@@ -1303,7 +1305,7 @@ class WellbeingIndexApp(QMainWindow):
         btn_add_filter = QPushButton("+ เพิ่มตัวแปร Filter")
         btn_add_filter.clicked.connect(self._add_filter_var)
         btn_remove_filter = QPushButton("ลบที่เลือก")
-        btn_remove_filter.setStyleSheet("background-color: #ef5350; font-size: 13px;")
+        btn_remove_filter.setStyleSheet("background-color: #C9A3A7; font-size: 13px; border-radius: 8px;")
         btn_remove_filter.clicked.connect(self._remove_filter_var)
         btn_filter_row.addWidget(btn_add_filter)
         btn_filter_row.addWidget(btn_remove_filter)
@@ -1315,7 +1317,7 @@ class WellbeingIndexApp(QMainWindow):
         grp_q3 = QGroupBox("Correlation Variables (optional)")
         q3_lay = QHBoxLayout(grp_q3)
         self.lbl_q3 = QLabel("ยังไม่ได้เลือก")
-        self.lbl_q3.setStyleSheet("font-size: 13px; color: #757575; padding: 2px;")
+        self.lbl_q3.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px; font-style: italic;")
         self.lbl_q3.setWordWrap(True)
         self._selected_q3 = []
         btn_q3 = QPushButton("เลือกตัวแปร Correlation...")
@@ -1369,17 +1371,17 @@ class WellbeingIndexApp(QMainWindow):
             lbl = self._dim_labels[prefix]
             if sel:
                 lbl.setText(f"✅ {len(sel)} ตัวแปร: {', '.join(sel[:5])}{'...' if len(sel) > 5 else ''}")
-                lbl.setStyleSheet("font-size: 13px; color: #2e7d32; padding: 2px 8px; font-weight: 600;")
+                lbl.setStyleSheet("font-size: 13px; color: #9B1B30; padding: 2px 8px; font-weight: 600;")
             else:
                 lbl.setText("ยังไม่ได้เลือก")
-                lbl.setStyleSheet("font-size: 13px; color: #757575; padding: 2px 8px;")
+                lbl.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px 8px; font-style: italic;")
 
     def _set_q1(self, var_name):
         self._selected_q1 = var_name
         labels = self.meta.column_names_to_labels if self.meta else {}
         lbl = labels.get(var_name, "")
         self.lbl_q1.setText(f"✅ [{var_name}] {lbl}")
-        self.lbl_q1.setStyleSheet("font-size: 14px; color: #2e7d32; padding: 4px; font-weight: 600;")
+        self.lbl_q1.setStyleSheet("font-size: 14px; color: #9B1B30; padding: 4px; font-weight: 600;")
 
     def _pick_q3_vars(self):
         if not self.all_vars:
@@ -1391,10 +1393,10 @@ class WellbeingIndexApp(QMainWindow):
             self._selected_q3 = dlg.get_selected()
             if self._selected_q3:
                 self.lbl_q3.setText(f"✅ {len(self._selected_q3)} ตัวแปร: {', '.join(self._selected_q3[:5])}{'...' if len(self._selected_q3) > 5 else ''}")
-                self.lbl_q3.setStyleSheet("font-size: 13px; color: #2e7d32; padding: 2px; font-weight: 600;")
+                self.lbl_q3.setStyleSheet("font-size: 13px; color: #9B1B30; padding: 2px; font-weight: 600;")
             else:
                 self.lbl_q3.setText("ยังไม่ได้เลือก")
-                self.lbl_q3.setStyleSheet("font-size: 13px; color: #757575; padding: 2px;")
+                self.lbl_q3.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px; font-style: italic;")
 
     def _pick_subgroup_main_var(self):
         if not self.all_vars:
@@ -1407,7 +1409,7 @@ class WellbeingIndexApp(QMainWindow):
         labels = self.meta.column_names_to_labels if self.meta else {}
         lbl = labels.get(var_name, "")
         self.lbl_subgroup_main.setText(f"✅ [{var_name}] {lbl}")
-        self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #2e7d32; padding: 2px 8px; font-weight: 600;")
+        self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #9B1B30; padding: 2px 8px; font-weight: 600;")
 
     def _add_filter_var(self):
         if not self.all_vars:
@@ -1453,11 +1455,20 @@ class WellbeingIndexApp(QMainWindow):
         self.txt_factor_log = QTextEdit()
         self.txt_factor_log.setReadOnly(True)
         self.txt_factor_log.setObjectName("logPanel")
-        self.txt_factor_log.setStyleSheet("background-color: #263238; color: #b2ff59; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; padding: 10px;")
+        self.txt_factor_log.setStyleSheet("background-color: #2C1215; color: #b2ff59; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; padding: 10px; border: 1px solid #5D2A30; border-radius: 8px;")
         t2_lay.addWidget(self.txt_factor_log)
         self.tabs.addTab(tab2, "📝 Factor+Regression Logs")
 
         lay.addWidget(self.tabs)
+
+        # Export options row
+        export_opt_row = QHBoxLayout()
+        self.chk_show_all_sheets = QCheckBox("Export ทุก Sheet (Rotated Component, Regression Beta, Logs)")
+        self.chk_show_all_sheets.setChecked(True)
+        self.chk_show_all_sheets.setStyleSheet("font-size: 13px; color: #6D3A3F;")
+        export_opt_row.addWidget(self.chk_show_all_sheets)
+        export_opt_row.addStretch()
+        lay.addLayout(export_opt_row)
 
         btn_export = QPushButton("📥  Export เป็น Excel")
         btn_export.setObjectName("exportBtn")
@@ -1497,7 +1508,7 @@ class WellbeingIndexApp(QMainWindow):
         parts = []
         for i, l in enumerate(labels):
             if i == idx:
-                parts.append(f"<b style='color:#4361ee'>{l}</b>")
+                parts.append(f"<b style='color:#E57373'>{l}</b>")
             else:
                 parts.append(l)
         self.steps_label.setText("  ──►  ".join(parts))
@@ -1516,7 +1527,7 @@ class WellbeingIndexApp(QMainWindow):
             n_var = len(self.df.columns)
             self.file_info_label.setText(f"✅ {fname} — {n_rec} records, {n_var} variables")
             self.drop_zone.setText(f"✅ โหลดแล้ว: {fname}")
-            self.drop_zone.setStyleSheet(self.drop_zone.styleSheet().replace("#adb5bd", "#2d6a4f").replace("#f1f3f5", "#e6fcf5"))
+            self.drop_zone.setStyleSheet(self.drop_zone.styleSheet().replace("#E0A0A5", "#C6505A").replace("#FFF5F5", "#FFEBEE"))
 
             # Prepare variable list for pickers
             labels = self.meta.column_names_to_labels if self.meta else {}
@@ -1719,7 +1730,7 @@ class WellbeingIndexApp(QMainWindow):
             self.tbl_weights.setItem(i, 0, QTableWidgetItem(r.subgroup_name))
             self.tbl_weights.setItem(i, 1, QTableWidgetItem(str(r.n)))
             item_idx = QTableWidgetItem(f"{r.index_value:.3f}")
-            item_idx.setBackground(QColor("#e3f2fd"))
+            item_idx.setBackground(QColor("#FFEBEE"))
             self.tbl_weights.setItem(i, 2, item_idx)
             # Find max weight to highlight
             max_w = max(r.dim_weights.values()) if r.dim_weights else 0
@@ -1730,9 +1741,9 @@ class WellbeingIndexApp(QMainWindow):
                 # Color code: highest weight = green, others proportional
                 if max_w > 0:
                     intensity = int(200 * (w / max_w))
-                    item.setBackground(QColor(232 - intensity // 3, 245 - intensity // 8, 233 - intensity // 4))
+                    item.setBackground(QColor(255 - intensity // 6, 235 - intensity // 4, 238 - intensity // 4))
                     if w == max_w:
-                        item.setBackground(QColor("#a5d6a7"))
+                        item.setBackground(QColor("#FFCDD2"))
                         item.setFont(QFont("", -1, QFont.Weight.Bold))
                 self.tbl_weights.setItem(i, 3 + j, item)
         self.tbl_weights.resizeColumnsToContents()
@@ -1819,7 +1830,7 @@ class WellbeingIndexApp(QMainWindow):
                     for col in range(1, ws.max_column + 1):
                         cell = ws.cell(row=1, column=col)
                         cell.font = XlFont(bold=True, color="FFFFFF")
-                        cell.fill = PatternFill(start_color="455A64", end_color="455A64", fill_type="solid")
+                        cell.fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
                         cell.alignment = Alignment(horizontal="center", vertical="center")
                     ws.freeze_panes = "A2"
                 writer.sheets["General"].column_dimensions["A"].width = 24
@@ -1832,7 +1843,7 @@ class WellbeingIndexApp(QMainWindow):
 
                 # General sheet edits: keep Value column left-aligned and lock only rotation/min_n.
                 ws_general = writer.sheets["General"]
-                lock_fill = PatternFill(start_color="B0BEC5", end_color="B0BEC5", fill_type="solid")
+                lock_fill = PatternFill(start_color="F3C4C7", end_color="F3C4C7", fill_type="solid")
                 for r in range(2, ws_general.max_row + 1):
                     field = str(ws_general.cell(row=r, column=1).value or "").strip()
                     val_cell = ws_general.cell(row=r, column=2)
@@ -1931,7 +1942,7 @@ class WellbeingIndexApp(QMainWindow):
             else:
                 self._set_q1(None)
                 self.lbl_q1.setText("ยังไม่ได้เลือก")
-                self.lbl_q1.setStyleSheet("font-size: 14px; color: #c62828; padding: 4px;")
+                self.lbl_q1.setStyleSheet("font-size: 14px; color: #D07078; padding: 4px; font-style: italic;")
 
             # Restore Dimensions
             for d in DEFAULT_DIMENSIONS:
@@ -1941,10 +1952,10 @@ class WellbeingIndexApp(QMainWindow):
                 lbl = self._dim_labels[prefix]
                 if sel:
                     lbl.setText(f"✅ {len(sel)} ตัวแปร: {', '.join(sel[:5])}{'...' if len(sel) > 5 else ''}")
-                    lbl.setStyleSheet("font-size: 13px; color: #2e7d32; padding: 2px 8px; font-weight: 600;")
+                    lbl.setStyleSheet("font-size: 13px; color: #9B1B30; padding: 2px 8px; font-weight: 600;")
                 else:
                     lbl.setText("ยังไม่ได้เลือก")
-                    lbl.setStyleSheet("font-size: 13px; color: #757575; padding: 2px 8px;")
+                    lbl.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px 8px; font-style: italic;")
 
             # Restore Filter config
             self.filter_var_list.clear()
@@ -1962,16 +1973,16 @@ class WellbeingIndexApp(QMainWindow):
             else:
                 self._selected_subgroup_main = None
                 self.lbl_subgroup_main.setText("ยังไม่ได้เลือก")
-                self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #757575; padding: 2px 8px;")
+                self.lbl_subgroup_main.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px 8px; font-style: italic;")
 
             # Restore Correlation variables
             self._selected_q3 = [v for v in corr_vars if v in self.df.columns]
             if self._selected_q3:
                 self.lbl_q3.setText(f"✅ {len(self._selected_q3)} ตัวแปร: {', '.join(self._selected_q3[:5])}{'...' if len(self._selected_q3) > 5 else ''}")
-                self.lbl_q3.setStyleSheet("font-size: 13px; color: #2e7d32; padding: 2px; font-weight: 600;")
+                self.lbl_q3.setStyleSheet("font-size: 13px; color: #9B1B30; padding: 2px; font-weight: 600;")
             else:
                 self.lbl_q3.setText("ยังไม่ได้เลือก")
-                self.lbl_q3.setStyleSheet("font-size: 13px; color: #757575; padding: 2px;")
+                self.lbl_q3.setStyleSheet("font-size: 13px; color: #B08489; padding: 2px; font-style: italic;")
 
             # Restore advanced
             self.combo_rotation.setCurrentText("equamax")
@@ -2004,17 +2015,19 @@ class WellbeingIndexApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Export ไม่สำเร็จ:\n{str(e)}")
 
     def _do_export(self, filepath):
+        show_all = self.chk_show_all_sheets.isChecked()
         with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
             # 1) Index first
             self._write_index_sheet(writer)
             # 2) Correlations right after Index
             self._write_corr_sheet(writer, "Correlations", self.corr_data.get("q3", {}))
-            # 3) Rotated component matrix
-            self._write_rotated_matrix_sheet(writer)
-            # 4) Coefficients (renamed)
-            self._write_coefficients_sheet(writer, sheet_name="Regression Beta")
-            # 5) Factor + Regression output log (renamed)
-            self._write_factor_output_sheet(writer, sheet_name="Factor_Regress_Output")
+            if show_all:
+                # 3) Rotated component matrix
+                self._write_rotated_matrix_sheet(writer)
+                # 4) Coefficients (renamed)
+                self._write_coefficients_sheet(writer, sheet_name="Regression Beta")
+                # 5) Factor + Regression output log (renamed)
+                self._write_factor_output_sheet(writer, sheet_name="Factor_Regress_Output")
 
     def _write_rotated_matrix_sheet(self, writer):
         """Write Rotated Component Matrix (SPSS-style) for each subgroup."""
@@ -2057,7 +2070,7 @@ class WellbeingIndexApp(QMainWindow):
 
         # Style
         ws = writer.sheets[sheet_name]
-        hdr_fill = PatternFill(start_color="495057", end_color="495057", fill_type="solid")
+        hdr_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
         hdr_font = XlFont(bold=True, color="FFFFFF")
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row=1, column=col)
@@ -2069,14 +2082,15 @@ class WellbeingIndexApp(QMainWindow):
             ws.column_dimensions[chr(64 + col)].width = 14
 
         # Bold the subgroup header rows and title rows
-        bold_font = XlFont(bold=True, color="1A237E")
-        title_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")
+        bold_font = XlFont(bold=True, color="9B1B30")
+        title_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
         for row_idx in range(2, ws.max_row + 1):
             cell_val = str(ws.cell(row=row_idx, column=1).value or "")
             if cell_val.startswith("---") or cell_val == "Rotated Component Matrix":
                 for col in range(1, ws.max_column + 1):
                     ws.cell(row=row_idx, column=col).font = bold_font
                     ws.cell(row=row_idx, column=col).fill = title_fill
+        ws.freeze_panes = "A2"
 
     def _write_coefficients_sheet(self, writer, sheet_name="Coefficients"):
         """Write SPSS-style Coefficients table for each subgroup."""
@@ -2112,7 +2126,7 @@ class WellbeingIndexApp(QMainWindow):
 
         # Style
         ws = writer.sheets[sheet_name]
-        hdr_fill = PatternFill(start_color="495057", end_color="495057", fill_type="solid")
+        hdr_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
         hdr_font = XlFont(bold=True, color="FFFFFF")
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row=1, column=col)
@@ -2125,14 +2139,15 @@ class WellbeingIndexApp(QMainWindow):
             ws.column_dimensions[letter].width = 12
 
         # Bold subgroup headers
-        bold_font = XlFont(bold=True, color="1A237E")
-        title_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")
+        bold_font = XlFont(bold=True, color="9B1B30")
+        title_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
         for row_idx in range(2, ws.max_row + 1):
             cell_val = str(ws.cell(row=row_idx, column=1).value or "")
             if cell_val.startswith("---") or cell_val.startswith("Coefficients") or cell_val.startswith("R²="):
                 for col in range(1, ws.max_column + 1):
                     ws.cell(row=row_idx, column=col).font = bold_font
                     ws.cell(row=row_idx, column=col).fill = title_fill
+        ws.freeze_panes = "A2"
 
     def _write_corr_sheet(self, writer, sheet_name, corr_dict):
         if not corr_dict:
@@ -2157,7 +2172,7 @@ class WellbeingIndexApp(QMainWindow):
 
         # Style
         ws = writer.sheets[sheet_name]
-        hdr_fill = PatternFill(start_color="495057", end_color="495057", fill_type="solid")
+        hdr_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
         hdr_font = XlFont(bold=True, color="FFFFFF")
         thin = Side(style="thin", color="BDBDBD")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -2205,7 +2220,7 @@ class WellbeingIndexApp(QMainWindow):
         
         # Style
         ws = writer.sheets["Regression"]
-        hdr_fill = PatternFill(start_color="495057", end_color="495057", fill_type="solid")
+        hdr_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
         hdr_font = XlFont(bold=True, color="FFFFFF")
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row=1, column=col)
@@ -2239,53 +2254,109 @@ class WellbeingIndexApp(QMainWindow):
         df.to_excel(writer, sheet_name="Index", index=False, startrow=1)
 
         ws = writer.sheets["Index"]
-        # Merge header row for Score and Weight groups
         n_dims = len(dim_names)
-        ws.cell(row=1, column=1, value="")
-        ws.cell(row=1, column=2, value="")
-        ws.cell(row=1, column=3, value="")
+        check_col = 4 + 2 * n_dims
+
+        # ── Border styles ──
+        thin = Side(style="thin", color="D5A0A4")
+        medium = Side(style="medium", color="C6505A")
+
+        # ── Row 1: Group headers (merged) ──
+        grp1_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
+        grp1_font = XlFont(bold=True, color="FFFFFF", size=12)
+        score_fill_hdr = PatternFill(start_color="E8888A", end_color="E8888A", fill_type="solid")
+        weight_fill_hdr = PatternFill(start_color="D4565A", end_color="D4565A", fill_type="solid")
+        check_fill_hdr = PatternFill(start_color="9B1B30", end_color="9B1B30", fill_type="solid")
+
+        # Subgroup/N/Index merged header
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
+        ws.cell(row=1, column=1, value="").fill = grp1_fill
+        ws.cell(row=1, column=1).font = grp1_font
+        ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+        for c in range(1, 4):
+            ws.cell(row=1, column=c).fill = grp1_fill
+            ws.cell(row=1, column=c).border = Border(left=medium if c == 1 else thin, right=medium if c == 3 else thin, top=medium, bottom=thin)
+
         if n_dims > 0:
             score_start = 4
             score_end = 3 + n_dims
             weight_start = 4 + n_dims
             weight_end = 3 + 2 * n_dims
-            ws.merge_cells(start_row=1, start_column=score_start, end_row=1, end_column=score_end)
-            ws.cell(row=1, column=score_start, value="score (1-7)").font = XlFont(bold=True)
-            ws.cell(row=1, column=score_start).alignment = Alignment(horizontal="center")
-            ws.merge_cells(start_row=1, start_column=weight_start, end_row=1, end_column=weight_end)
-            ws.cell(row=1, column=weight_start, value="Weight").font = XlFont(bold=True)
-            ws.cell(row=1, column=weight_start).alignment = Alignment(horizontal="center")
-            ws.cell(row=1, column=weight_end + 1, value="Check Sum").font = XlFont(bold=True)
-            ws.cell(row=1, column=weight_end + 1).alignment = Alignment(horizontal="center")
 
-        # Style header row 2
-        hdr_fill = PatternFill(start_color="495057", end_color="495057", fill_type="solid")
-        hdr_font = XlFont(bold=True, color="FFFFFF")
+            # Score group header
+            ws.merge_cells(start_row=1, start_column=score_start, end_row=1, end_column=score_end)
+            ws.cell(row=1, column=score_start, value="Score (1-7)").font = grp1_font
+            ws.cell(row=1, column=score_start).alignment = Alignment(horizontal="center", vertical="center")
+            for c in range(score_start, score_end + 1):
+                ws.cell(row=1, column=c).fill = score_fill_hdr
+                ws.cell(row=1, column=c).border = Border(left=medium if c == score_start else thin, right=medium if c == score_end else thin, top=medium, bottom=thin)
+
+            # Weight group header
+            ws.merge_cells(start_row=1, start_column=weight_start, end_row=1, end_column=weight_end)
+            ws.cell(row=1, column=weight_start, value="Weight").font = grp1_font
+            ws.cell(row=1, column=weight_start).alignment = Alignment(horizontal="center", vertical="center")
+            for c in range(weight_start, weight_end + 1):
+                ws.cell(row=1, column=c).fill = weight_fill_hdr
+                ws.cell(row=1, column=c).border = Border(left=medium if c == weight_start else thin, right=medium if c == weight_end else thin, top=medium, bottom=thin)
+
+            # Check Sum header
+            ws.cell(row=1, column=check_col, value="Check Sum").font = grp1_font
+            ws.cell(row=1, column=check_col).fill = check_fill_hdr
+            ws.cell(row=1, column=check_col).alignment = Alignment(horizontal="center", vertical="center")
+            ws.cell(row=1, column=check_col).border = Border(left=medium, right=medium, top=medium, bottom=thin)
+
+        # ── Row 2: Column sub-headers ──
+        hdr_fill = PatternFill(start_color="C6505A", end_color="C6505A", fill_type="solid")
+        hdr_font = XlFont(bold=True, color="FFFFFF", size=10)
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row=2, column=col)
             cell.fill = hdr_fill
             cell.font = hdr_font
-            cell.alignment = Alignment(horizontal="center")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            # Block edge borders
+            is_block_left = col in (1, 4, 4 + n_dims, check_col) if n_dims > 0 else col == 1
+            is_block_right = col in (3, 3 + n_dims, 3 + 2 * n_dims, check_col) if n_dims > 0 else col == ws.max_column
+            cell.border = Border(
+                left=medium if is_block_left else thin,
+                right=medium if is_block_right else thin,
+                top=thin, bottom=medium
+            )
+        ws.row_dimensions[1].height = 24
+        ws.row_dimensions[2].height = 32
 
-        # Score fill
-        score_fill = PatternFill(start_color="E7F5FF", end_color="E7F5FF", fill_type="solid")
-        weight_fill = PatternFill(start_color="FFF9DB", end_color="FFF9DB", fill_type="solid")
-        check_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
-        check_col = 4 + 2 * n_dims
+        # ── Data rows: fills, number formats, borders ──
+        score_fill = PatternFill(start_color="FFF5F5", end_color="FFF5F5", fill_type="solid")
+        weight_fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
+        check_fill = PatternFill(start_color="FCE4EC", end_color="FCE4EC", fill_type="solid")
+
         for row in range(3, ws.max_row + 1):
+            for col in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row, column=col)
+                is_block_left = col in (1, 4, 4 + n_dims, check_col) if n_dims > 0 else col == 1
+                is_block_right = col in (3, 3 + n_dims, 3 + 2 * n_dims, check_col) if n_dims > 0 else col == ws.max_column
+                is_last_row = row == ws.max_row
+                cell.border = Border(
+                    left=medium if is_block_left else thin,
+                    right=medium if is_block_right else thin,
+                    top=thin,
+                    bottom=medium if is_last_row else thin
+                )
+            # Score columns
             for col in range(4, 4 + n_dims):
                 ws.cell(row=row, column=col).fill = score_fill
                 ws.cell(row=row, column=col).number_format = "0.000"
+            # Weight columns
             for col in range(4 + n_dims, 4 + 2 * n_dims):
                 ws.cell(row=row, column=col).fill = weight_fill
                 ws.cell(row=row, column=col).number_format = "0.0%"
+            # Check Sum formula
             weight_start_col_letter = ws.cell(row=2, column=4 + n_dims).column_letter
             weight_end_col_letter = ws.cell(row=2, column=3 + 2 * n_dims).column_letter
             ws.cell(row=row, column=check_col).value = f"=SUM({weight_start_col_letter}{row}:{weight_end_col_letter}{row})"
             ws.cell(row=row, column=check_col).number_format = "0.0%"
             ws.cell(row=row, column=check_col).fill = check_fill
 
-        # Index color scale (red -> yellow -> green) by rank
+        # ── Index color scale (red -> yellow -> green) by rank ──
         if ws.max_row >= 3:
             idx_values = []
             for row in range(3, ws.max_row + 1):
@@ -2303,11 +2374,9 @@ class WellbeingIndexApp(QMainWindow):
                     continue
                 t = 0.5 if max_v == min_v else (v - min_v) / (max_v - min_v)
                 if t <= 0.5:
-                    # red -> yellow
                     a = t / 0.5
                     r, g, b = 244, int(67 + (197 - 67) * a), int(54 + (80 - 54) * a)
                 else:
-                    # yellow -> green
                     a = (t - 0.5) / 0.5
                     r, g, b = int(244 + (102 - 244) * a), int(197 + (187 - 197) * a), int(80 + (106 - 80) * a)
                 ws.cell(row=row, column=3).fill = PatternFill(
@@ -2316,10 +2385,15 @@ class WellbeingIndexApp(QMainWindow):
                     fill_type="solid"
                 )
 
-        ws.column_dimensions["A"].width = 20
-        ws.column_dimensions["B"].width = 10
-        ws.column_dimensions["C"].width = 10
-        ws.column_dimensions[ws.cell(row=2, column=check_col).column_letter].width = 12
+        # ── Column widths — fit to screen without scrolling ──
+        ws.column_dimensions["A"].width = 16
+        ws.column_dimensions["B"].width = 6
+        ws.column_dimensions["C"].width = 8
+        for col in range(4, 4 + n_dims):
+            ws.column_dimensions[ws.cell(row=2, column=col).column_letter].width = 8
+        for col in range(4 + n_dims, 4 + 2 * n_dims):
+            ws.column_dimensions[ws.cell(row=2, column=col).column_letter].width = 8
+        ws.column_dimensions[ws.cell(row=2, column=check_col).column_letter].width = 9
         ws.freeze_panes = "D3"
 
     def _write_factor_output_sheet(self, writer, sheet_name="Factor_Output"):
@@ -2351,7 +2425,7 @@ def run_this_app(working_dir=None):
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
         try:
-            app.setWindowIcon(QIcon(_resource_path("BrandS.ico")))
+            app.setWindowIcon(QIcon(_resource_path(os.path.join("..", "Icon", "Brandspace.ico"))))
         except Exception:
             pass
         window = WellbeingIndexApp()

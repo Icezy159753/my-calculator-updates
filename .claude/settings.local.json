@@ -13,7 +13,14 @@
       "Bash(\"C:/Users/User/AppData/Local/Python/bin/python.exe\" -m venv \"c:/Users/User/Desktop/Main_Program/venv\")",
       "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" --version)",
       "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/python.exe\" -m pip install --upgrade pip)",
-      "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/pip.exe\" install:*)"
+      "Bash(\"c:/Users/User/Desktop/Main_Program/venv/Scripts/pip.exe\" install:*)",
+      "Bash(pip --version)",
+      "Bash(where py:*)",
+      "Bash(\"c:/Users/songklod/Desktop/Main_Program/venv/Scripts/python.exe\" --version)",
+      "Bash(py -3 --version)",
+      "Bash(py -0p)",
+      "Bash(rm -rf venv)",
+      "Bash(py -3 -m venv venv)"
     ],
     "deny": [],
     "ask": []

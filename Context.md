@@ -25,7 +25,7 @@
 - โหลด PyQt6 และสร้างหน้าต่าง `AppLauncher`
 - แสดง sidebar + ค้นหา + การ์ดโปรแกรม
 - แสดง changelog ถ้ามีไฟล์ `changelog.tmp`
-- ตั้งเวลาเช็กอัปเดตหลังเปิดโปรแกรม 15 วินาที
+- ตั้งเวลาเช็กอัปเดตหลังเปิดโปรแกรม 15 วินาที (โหมดแจ้งเตือนอย่างเดียว ไม่บังคับอัปเดตทันที)
 
 ## 3) ค่าคงที่สำคัญ
 ค่าตั้งค่าหลักด้านบนไฟล์
@@ -65,11 +65,11 @@
 - `run_module_entrypoint(...)` import และเรียก entry point พร้อม error handling
 
 ### ฟังก์ชันเกี่ยวกับอัปเดต
-- `check_for_updates(app_window)`
+- `check_for_updates(app_window, notify_only=False)`
   - เรียก GitHub API หา release ล่าสุด
   - เทียบเวอร์ชันด้วย `packaging.version.parse`
-  - หา asset ที่ต้องใช้ เช่น `updater.exe`, patch/full package
-  - ดาวน์โหลดและเริ่มกระบวนการอัปเดต
+  - ถ้า `notify_only=True`: อัปเดตเฉพาะสถานะที่แถบล่างซ้ายของ UI
+  - ถ้า `notify_only=False`: หา asset ที่ต้องใช้ เช่น `updater.exe`, patch/full package แล้วเริ่มกระบวนการอัปเดต
 - `_build_patch_chain(...)` ใช้สร้างลำดับ patch แบบ incremental
 - `create_custom_changelog_window(...)` และ `show_changelog_if_exists(...)` สำหรับแสดงบันทึกการอัปเดต
 
@@ -79,6 +79,7 @@
   - สร้าง sidebar/content
   - กรองตามหมวดหมู่/คำค้นหา
   - แสดงการ์ดโปรแกรม
+  - มีแถบสถานะล่างซ้ายสำหรับอัปเดต (`สถานะอัปเดต`, ปุ่ม `อัปเดตตอนนี้`, `ภายหลัง`)
   - เปิดโปรแกรมย่อย
   - เฝ้าดูสถานะ process
   - บันทึก session + ส่ง Telegram เมื่อโปรแกรมย่อยปิด
@@ -164,3 +165,8 @@
 - `Icon/` (รวม `I_Main.ico` และไอคอนย่อย)
 - `All_Programs/` (รวมโมดูลย่อยและ `__init__.py`)
 - ไฟล์ที่อาจถูกสร้างระหว่างอัปเดต: `updater.exe`, `changelog.tmp`, `update_debug.log`
+
+## 13) หมายเหตุสภาพแวดล้อมพัฒนา (อัปเดตล่าสุด)
+- ใช้ `venv` เป็น environment หลักของโปรเจกต์
+- `.vscode/settings.json` ตั้ง `python.defaultInterpreterPath` ไปที่ `${workspaceFolder}\venv\Scripts\python.exe`
+- มี `.venv` แบบ junction ชี้ไป `venv` เพื่อรองรับคำสั่งเดิมที่ยังอ้าง `.venv`

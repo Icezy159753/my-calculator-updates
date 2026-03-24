@@ -167,3 +167,11 @@ Current thread 0x000013d4 (most recent call first):
 [2026-03-11 13:36:40] Main window closeEvent received
 [2026-03-11 13:36:42] Main window closeEvent accepted by user
 [2026-03-11 13:36:42] QApplication.aboutToQuit fired
+[2026-03-18 16:01:42] faulthandler enabled
+[2026-03-18 16:01:48] Main window closeEvent received
+[2026-03-18 16:01:49] Main window closeEvent accepted by user
+[2026-03-18 16:01:49] QApplication.aboutToQuit fired
+[2026-03-18 16:11:24] faulthandler enabled
+[2026-03-18 16:11:25] Main window closeEvent received
+[2026-03-18 16:11:26] Main window closeEvent accepted by user
+[2026-03-18 16:11:26] QApplication.aboutToQuit fired

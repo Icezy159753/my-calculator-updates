@@ -20,17 +20,102 @@ if getattr(sys, 'frozen', False):
     del _base_dirs, _base_dir, _spss_home_path
 # =============================================================================
 
+# =============================================================================
+# === Fast-Path: เปิดโปรแกรมย่อยโดยไม่โหลด PyQt6 (เร็วขึ้นมาก) ===
+# เมื่อถูกเรียกด้วย --run-module จะ import เฉพาะ module ที่ต้องการแล้ว exit ทันที
+# ไม่ต้องโหลด PyQt6, pandas, numpy, matplotlib ฯลฯ ที่ไม่ได้ใช้
+# =============================================================================
+def _fast_launch_submodule():
+    """Fast path: ตรวจ --run-module แล้วรันตรงๆ โดยข้าม import หนักทั้งหมด"""
+    if "--run-module" not in sys.argv:
+        return False
+
+    import argparse
+    import importlib
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--run-module")
+    parser.add_argument("--entry-point", default="main")
+    parser.add_argument("--working-dir", default=None)
+    known, _ = parser.parse_known_args(sys.argv[1:])
+
+    if not known.run_module:
+        return False
+
+    # ตั้ง sys.path ให้ถูกต้อง
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
+
+    _subfolder = "All_Programs"
+    module_name = known.run_module
+    if not module_name.startswith(_subfolder + "."):
+        full_module_name = f"{_subfolder}.{module_name}"
+    else:
+        full_module_name = module_name
+
+    try:
+        print(f"FAST_LAUNCH: Importing {full_module_name}")
+        module = importlib.import_module(full_module_name)
+        ep_name = known.entry_point
+        if hasattr(module, ep_name):
+            kwargs = {}
+            if known.working_dir:
+                kwargs["working_dir"] = known.working_dir
+            print(f"FAST_LAUNCH: Running {ep_name}()")
+            getattr(module, ep_name)(**kwargs)
+        else:
+            print(f"FAST_LAUNCH_ERROR: '{ep_name}' not found in '{full_module_name}'")
+            _fast_show_error("Launch Error",
+                f"ไม่พบฟังก์ชันหลัก '{ep_name}'\nในโมดูล '{module_name}'.")
+    except ImportError as e:
+        import traceback; traceback.print_exc()
+        _fast_show_error("Launch Error",
+            f"ไม่สามารถโหลดโมดูล '{module_name}' ได้:\n{e}\n\n"
+            f"ตรวจสอบว่าไฟล์ .py อยู่ในโฟลเดอร์ '{_subfolder}'")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        _fast_show_error("Runtime Error",
+            f"เกิดข้อผิดพลาดขณะรัน '{module_name}':\n{e}")
+    return True
+
+
+def _fast_show_error(title, message):
+    """แสดง error dialog แบบเบาๆ ใช้ tkinter (ไม่โหลด PyQt6)"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message, parent=root)
+        root.destroy()
+    except Exception:
+        print(f"{title}: {message}")
+
+
+if __name__ == "__main__":
+    from multiprocessing import freeze_support
+    freeze_support()
+    if _fast_launch_submodule():
+        sys.exit(0)
+# =============================================================================
+# === ถ้าไม่ใช่ fast-path ค่อย import ของหนักสำหรับ Launcher UI ===
+# =============================================================================
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 import importlib
 from multiprocessing import Process, freeze_support
 import subprocess
-import requests
-from packaging.version import parse as parse_version
+import argparse
+# requests และ packaging จะ import แบบ lazy ในฟังก์ชันที่ใช้งาน
+# เพื่อให้โปรแกรมเปิดเร็วขึ้น
 import getpass
 import threading
 from datetime import datetime
 import socket # เพิ่มเข้ามาเพื่อดึง IP Address (ถ้าต้องการ)
-import ctypes
 import time
 
 
@@ -84,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.50"
+CURRENT_VERSION = "1.1.61"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -122,6 +207,7 @@ def _extract_release_assets_by_version(releases):
     return assets_by_version
 
 def _build_patch_chain(assets_by_version, current_version, latest_version):
+    from packaging.version import parse as parse_version
     versions = sorted(assets_by_version.keys(), key=parse_version)
     try:
         start_idx = versions.index(current_version)
@@ -153,8 +239,10 @@ def _normalize_download_url(url):
         return url.replace("https://github./", "https://github.com/", 1)
     return url
 
-def check_for_updates(app_window):
-    """ตรวจสอบอัปเดตและเรียกใช้ updater"""
+def check_for_updates(app_window, notify_only=False):
+    """Check updates. When notify_only=True, only update bottom status UI."""
+    import requests
+    from packaging.version import parse as parse_version
     print("Checking for updates...")
     try:
         api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
@@ -167,6 +255,9 @@ def check_for_updates(app_window):
 
         if parse_version(latest_version) > parse_version(CURRENT_VERSION):
             print(f"New version found: {latest_version}")
+            if notify_only and hasattr(app_window, "set_update_available"):
+                app_window.set_update_available(latest_version)
+                return
 
             # ถามผู้ใช้ก่อนอัปเดต
             if ask_yes_no(app_window, "Update Available", f"มีเวอร์ชันใหม่ ({latest_version})!\nต้องการอัปเดตตอนนี้เลยหรือไม่?"):
@@ -380,9 +471,13 @@ def check_for_updates(app_window):
 
         else:
             print("You have the latest version.")
+            if notify_only and hasattr(app_window, "set_update_status_latest"):
+                app_window.set_update_status_latest()
 
     except Exception as e:
         print(f"Could not check for updates: {e}")
+        if notify_only and hasattr(app_window, "set_update_status_error"):
+            app_window.set_update_status_error()
 
 # --- เพิ่มฟังก์ชันนี้เข้าไปใหม่ทั้งหมด ---
 def create_custom_changelog_window(parent, changelog_content):
@@ -779,6 +874,17 @@ PROGRAMS = [
         "enabled": True
     },  
     {
+        "id": "โปรแกรมรัน BrandSpace Well-being Index V1",
+        "name": "โปรแกรมรัน BrandSpace Well-being Index V1",
+        "description": "เอาไว้รัน BrandSpace Well-being Index จากไฟล์ SPSS",
+        "type": "local_py_module",
+        "module_path": "148_BrandSpace", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "Brandspace.ico",
+        "category": "Statistic", # <--- เพิ่ม category
+        "enabled": True
+    },  
+    {
         "id": "โปรแกรมรัน Penality Analysis V1",
         "name": "โปรแกรมรัน Penality Analysis V1",
         "description": "เอาไว้รัน Penality Analysis จากไฟล์ SPSS",
@@ -935,6 +1041,19 @@ def run_module_entrypoint(module_name_in_subfolder, entry_point_func_name="main"
         print(f"LAUNCHER_ERROR: Error running module {full_module_name}: {e}")
         show_subprocess_error("Runtime Error", f"เกิดข้อผิดพลาดขณะรัน '{module_name_in_subfolder}':\n{e}")
 
+def parse_module_launch_args(argv):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--run-module")
+    parser.add_argument("--entry-point", default="main")
+    parser.add_argument("--working-dir", default=None)
+    known, _ = parser.parse_known_args(argv)
+    if not known.run_module:
+        return None
+    return {
+        "module": known.run_module,
+        "entry_point": known.entry_point,
+        "working_dir": known.working_dir,
+    }
 
 
 class AppLauncher(QtWidgets.QMainWindow):
@@ -978,6 +1097,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.launch_handle = None
         self.launch_wait_started = None
         self.monitor_threads = []
+        self.update_latest_version = None
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -996,8 +1116,14 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.build_sidebar()
         self.build_content()
+        self.build_update_status_bar()
 
         self.apply_theme(DEFAULT_APPEARANCE_MODE)
+        # Let window paint first, then populate heavy card grid.
+        QtCore.QTimer.singleShot(150, self._deferred_init_program_grid)
+
+    def _deferred_init_program_grid(self):
+        """Defer heavy card population until the window is shown."""
         self.show_category_programs("All")
         QtCore.QTimer.singleShot(0, self.update_program_grid)
 
@@ -1144,6 +1270,68 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.scroll_area.setWidget(self.cards_container)
         layout.addWidget(self.scroll_area)
 
+    def build_update_status_bar(self):
+        status_bar = QtWidgets.QStatusBar(self)
+        status_bar.setSizeGripEnabled(False)
+        self.setStatusBar(status_bar)
+
+        self.update_status_label = QtWidgets.QLabel("สถานะอัปเดต: กำลังตรวจสอบ...")
+        self.update_status_label.setObjectName("UpdateStatusLabel")
+        self.update_status_label.setFont(self.font_small)
+
+        self.update_now_button = QtWidgets.QPushButton("อัปเดตตอนนี้")
+        self.update_now_button.setObjectName("UpdateNowButton")
+        self.update_now_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.update_now_button.setVisible(False)
+        self.update_now_button.clicked.connect(self.start_update_from_status_bar)
+
+        self.update_later_button = QtWidgets.QPushButton("ภายหลัง")
+        self.update_later_button.setObjectName("UpdateLaterButton")
+        self.update_later_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.update_later_button.setVisible(False)
+        self.update_later_button.clicked.connect(self.dismiss_update_notice)
+
+        status_container = QtWidgets.QWidget()
+        status_layout = QtWidgets.QHBoxLayout(status_container)
+        status_layout.setContentsMargins(4, 0, 4, 0)
+        status_layout.setSpacing(8)
+        status_layout.addWidget(self.update_status_label)
+        status_layout.addWidget(self.update_now_button)
+        status_layout.addWidget(self.update_later_button)
+        status_layout.addStretch(1)
+        status_bar.addWidget(status_container, 1)
+
+    def set_update_available(self, latest_version):
+        self.update_latest_version = latest_version
+        self.update_status_label.setText(f"มีเวอร์ชันใหม่ {latest_version}")
+        self.update_status_label.setStyleSheet("color: #C86A00; font-weight: 600;")
+        self.update_now_button.setVisible(True)
+        self.update_later_button.setVisible(True)
+
+    def set_update_status_latest(self):
+        self.update_latest_version = None
+        self.update_status_label.setText("สถานะอัปเดต: คุณใช้เวอร์ชันล่าสุดแล้ว")
+        self.update_status_label.setStyleSheet("color: #2E7D6B;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def set_update_status_error(self):
+        self.update_latest_version = None
+        self.update_status_label.setText("สถานะอัปเดต: ตรวจสอบไม่ได้ในขณะนี้")
+        self.update_status_label.setStyleSheet("color: #A13A3A;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def dismiss_update_notice(self):
+        if self.update_latest_version:
+            self.update_status_label.setText(f"มีเวอร์ชันใหม่ {self.update_latest_version} (เตือนภายหลัง)")
+            self.update_status_label.setStyleSheet("color: #6B7785;")
+        self.update_now_button.setVisible(False)
+        self.update_later_button.setVisible(False)
+
+    def start_update_from_status_bar(self):
+        check_for_updates(self, notify_only=False)
+
     def apply_theme(self, mode):
         if mode == "Dark":
             theme = THEME_DARK
@@ -1233,6 +1421,32 @@ class AppLauncher(QtWidgets.QMainWindow):
                 padding: 4px 8px;
                 color: {theme['text_primary']};
             }}
+            QStatusBar {{
+                background: {theme['sidebar_bg']};
+                border-top: 1px solid {theme['card_border']};
+            }}
+            QLabel#UpdateStatusLabel {{
+                color: {theme['text_muted']};
+            }}
+            QPushButton#UpdateNowButton {{
+                background: {theme['accent']};
+                color: white;
+                border-radius: 8px;
+                padding: 3px 10px;
+            }}
+            QPushButton#UpdateNowButton:hover {{
+                background: {theme['accent_hover']};
+            }}
+            QPushButton#UpdateLaterButton {{
+                background: transparent;
+                border: 1px solid {theme['card_border']};
+                border-radius: 8px;
+                padding: 3px 10px;
+                color: {theme['text_primary']};
+            }}
+            QPushButton#UpdateLaterButton:hover {{
+                background: {theme['card_border']};
+            }}
         """)
 
     def change_appearance_mode_event(self, new_appearance_mode: str):
@@ -1245,6 +1459,7 @@ class AppLauncher(QtWidgets.QMainWindow):
         """
         ดึงข้อมูลทุก Release จาก GitHub API แล้วจัดรูปแบบเป็นข้อความ
         """
+        import requests
         history_log = []
         try:
             api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases"
@@ -1578,6 +1793,8 @@ class AppLauncher(QtWidgets.QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         QtWidgets.QApplication.processEvents()
+        dialog.repaint()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
         self.launch_dialog = dialog
 
     def _tick_launching_animation(self):
@@ -1606,59 +1823,45 @@ class AppLauncher(QtWidgets.QMainWindow):
             self.close_launching_dialog()
             return
 
+        # If child process already exited, stop waiting immediately.
+        if isinstance(handle, Process):
+            if not handle.is_alive():
+                self.close_launching_dialog()
+                return
+        else:
+            try:
+                if handle and handle.poll() is not None:
+                    self.close_launching_dialog()
+                    return
+            except Exception:
+                pass
+
+        # In packaged EXE builds, EnumWindows polling can intermittently stall UI.
+        # Use a lightweight readiness heuristic: if child process is still alive
+        # after a short grace period, treat launch as ready and close overlay.
         is_ready = False
         if handle is None:
             is_ready = True
-        else:
-            pid = None
-            if isinstance(handle, Process):
-                pid = handle.pid
-            else:
-                try:
-                    pid = handle.pid
-                except Exception:
-                    pid = None
-
-            if pid:
-                try:
-                    is_ready = self._has_visible_window(pid)
-                except Exception:
-                    is_ready = False
-            else:
+        elif self.launch_wait_started and self.launch_wait_started.elapsed() >= 1200:
+            try:
+                if isinstance(handle, Process):
+                    is_ready = handle.is_alive()
+                else:
+                    is_ready = (handle.poll() is None)
+            except Exception:
                 is_ready = False
 
         if is_ready:
             self.close_launching_dialog()
         else:
-            QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(handle))
-
-    def _has_visible_window(self, pid):
-        user32 = ctypes.windll.user32
-        visible = False
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-        def enum_proc(hwnd, _):
-            nonlocal visible
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return True
-            lpdw_process_id = ctypes.c_uint()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lpdw_process_id))
-            if lpdw_process_id.value == pid:
-                visible = True
-                return False
-            return True
-
-        user32.EnumWindows(enum_proc, 0)
-        return visible
+            QtCore.QTimer.singleShot(120, lambda: self._wait_for_launch_ready(handle))
 
     def log_session_to_sheet(self, program_name, user_info, start_time, end_time, duration_formatted):
         """
         ส่งข้อมูลเซสชันการใช้งาน (เวลาเริ่ม-จบ, ระยะเวลา) ไปยัง Google Sheet
         (เวอร์ชันนี้ส่งระยะเวลาเป็นรูปแบบ HH:MM:SS)
         """
+        import requests
         if "YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HERE" in GOOGLE_SCRIPT_URL:
             print("LOGGING_WARNING: กรุณาเปลี่ยน GOOGLE_SCRIPT_URL เป็น URL ของ Web App จริง")
             return
@@ -1688,6 +1891,7 @@ class AppLauncher(QtWidgets.QMainWindow):
             self.send_telegram_notification(program_name, user_info, start_time, end_time, duration_formatted)
 
     def send_telegram_notification(self, program_name, user_info, start_time, end_time, duration_formatted):
+        import requests
         if "YOUR_TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "YOUR_TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
             print("TELEGRAM_WARNING: กรุณาใส่ TELEGRAM_BOT_TOKEN และ TELEGRAM_CHAT_ID")
             return
@@ -1774,6 +1978,90 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
 
+    def _wait_and_log_session_popen(self, process_to_watch, program_info):
+        program_name = program_info.get("name", "Unknown Program")
+        print(f"MONITOR: เริ่มเฝ้าดูโปรแกรม '{program_name}' (PID: {process_to_watch.pid})")
+
+        start_time = datetime.now()
+
+        try:
+            username = getpass.getuser()
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            user_info = f"{username} ({ip_address})"
+        except Exception:
+            user_info = f"{getpass.getuser()} (IP N/A)"
+
+        process_to_watch.wait()
+
+        end_time = datetime.now()
+        print(f"MONITOR: โปรแกรม '{program_name}' (PID: {process_to_watch.pid}) ถูกปิดแล้ว")
+
+        duration_seconds = int((end_time - start_time).total_seconds())
+        hours, remainder = divmod(duration_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        duration_formatted = f"{hours:02}:{minutes:02}:{seconds:02}"
+
+        self.log_session_to_sheet(program_name, user_info, start_time, end_time, duration_formatted)
+
+    def _start_local_module_process(self, module_path, entry_point, kwargs, program_info):
+        # สร้าง subprocess ใน thread แยก เพื่อไม่ให้ UI (spinner) ค้าง
+        self._pending_popen = None
+        self._pending_popen_error = None
+        self._pending_program_info = program_info
+
+        def _do_popen():
+            try:
+                cmd = [sys.executable]
+                if not getattr(sys, "frozen", False):
+                    cmd.append(os.path.abspath(__file__))
+                cmd += [
+                    "--run-module", module_path,
+                    "--entry-point", entry_point,
+                ]
+                if kwargs.get("working_dir"):
+                    cmd += ["--working-dir", kwargs["working_dir"]]
+
+                proc = subprocess.Popen(cmd, cwd=self.launcher_base_dir)
+                self._pending_popen = proc
+            except Exception as e:
+                self._pending_popen_error = str(e)
+
+        t = threading.Thread(target=_do_popen, daemon=True)
+        t.start()
+
+        # ใช้ QTimer poll ทุก 50ms เพื่อเช็คว่า Popen สร้างเสร็จหรือยัง (ไม่ block UI)
+        self._popen_poll_timer = QtCore.QTimer()
+        self._popen_poll_timer.setInterval(50)
+        self._popen_poll_timer.timeout.connect(self._check_popen_ready)
+        self._popen_poll_timer.start()
+
+    def _check_popen_ready(self):
+        if self._pending_popen is not None:
+            self._popen_poll_timer.stop()
+            popen_proc = self._pending_popen
+            program_info = self._pending_program_info
+            self.launch_handle = popen_proc
+            QtCore.QTimer.singleShot(1000, lambda: self._wait_for_launch_ready(popen_proc))
+
+            monitor_thread = threading.Thread(
+                target=self._wait_and_log_session_popen,
+                args=(popen_proc, program_info)
+            )
+            monitor_thread.daemon = False
+            monitor_thread.start()
+            self.monitor_threads.append(monitor_thread)
+        elif self._pending_popen_error is not None:
+            self._popen_poll_timer.stop()
+            program_name = self._pending_program_info.get("name", "Unknown Program")
+            self.close_launching_dialog()
+            show_message(
+                self,
+                "Process Error",
+                f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{self._pending_popen_error}",
+                QtWidgets.QMessageBox.Icon.Critical
+            )
+            print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {self._pending_popen_error}")
 
     def launch_program(self, program_info):
         """
@@ -1797,10 +2085,13 @@ class AppLauncher(QtWidgets.QMainWindow):
                 # ส่ง path ของ .exe ไปให้ subprocess ผ่าน environment variable
                 os.environ['MAIN_PROGRAM_DIR'] = self.launcher_base_dir
                 kwargs = {'working_dir': self.program_dir}
-                process = Process(target=run_module_entrypoint, args=(module_path, entry_point), kwargs={'script_kwargs': kwargs})
-                process.start()
-                self.launch_handle = process
-                QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(process))
+                # Defer process creation slightly so spinner can start animating first.
+                QtCore.QTimer.singleShot(
+                    260,
+                    lambda mp=module_path, ep=entry_point, kw=kwargs, pi=program_info:
+                        self._start_local_module_process(mp, ep, kw, pi)
+                )
+                return
             except Exception as e:
                 self.close_launching_dialog()
                 show_message(self, "Process Error", f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
@@ -1816,7 +2107,7 @@ class AppLauncher(QtWidgets.QMainWindow):
                 self.show_launching_dialog(program_name)
                 popen_proc = subprocess.Popen(command, shell=True, cwd=self.launcher_base_dir)
                 self.launch_handle = popen_proc
-                QtCore.QTimer.singleShot(200, lambda: self._wait_for_launch_ready(popen_proc))
+                QtCore.QTimer.singleShot(350, lambda: self._wait_for_launch_ready(popen_proc))
             except Exception as e:
                 self.close_launching_dialog()
                 show_message(self, "Error", f"ไม่สามารถเปิดโปรแกรม '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
@@ -1839,6 +2130,8 @@ class AppLauncher(QtWidgets.QMainWindow):
 
 
 if __name__ == "__main__":
+    # หมายเหตุ: --run-module ถูกจัดการแล้วโดย _fast_launch_submodule() ที่ต้นไฟล์
+    # (ข้ามการโหลด PyQt6 ทำให้โปรแกรมย่อยเปิดเร็วขึ้นมาก)
     freeze_support()
 
     launcher_dir_init = os.path.dirname(os.path.abspath(__file__))
@@ -1902,7 +2195,8 @@ if __name__ == "__main__":
     # --- เรียกใช้ฟังก์ชันแสดง Changelog ที่นี่! ---
     show_changelog_if_exists(window)
     # ---------------------------------------------
-    QtCore.QTimer.singleShot(1000, lambda: check_for_updates(window))
+    # Delay update check so startup/UI interactions stay responsive first.
+    QtCore.QTimer.singleShot(15000, lambda: check_for_updates(window, notify_only=True))
     try:
         main_icon_relative_path = os.path.join(ICON_FOLDER, "I_Main.ico")
         main_icon_actual_path = resource_path(main_icon_relative_path)

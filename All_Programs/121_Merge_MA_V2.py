@@ -1,10 +1,12 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+import tkinter as tk
 from tkinter import filedialog, messagebox
 import pandas as pd
 import pyreadstat
 import re
 import os
+import sys
 import multiprocessing
 
 class SpssProcessorApp:
