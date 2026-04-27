@@ -2,17 +2,20 @@
 
 ****สร้างBuild Update Version****
 
-***เช็คก่อนมีไฟล์อะไรที่จะถูก Commit 
+***เช็คก่อนมีไฟล์อะไรที่จะถูก Commit
 git status
 
 git add -A
-git add Main_Program.py
-
 git status
-git add -A
-git commit -m "Bump version to 1.1.64"
-git tag v1.1.64
+git commit -m "Bump version to 1.1.65"
+
+***สร้าง Tag และ Push ทั้ง branch และ tag พร้อมกัน (สำคัญ! ต้อง push tag ด้วย)**
+git tag v1.1.65
 git push origin main
+git push origin v1.1.65
+
+***หรือใช้คำสั่งเดียวรวมทั้งหมด:***
+git push origin main --tags
 
 
 ****Update ไฟล์ Spec ใหม่กรณีเพิ่ม Hidden****
