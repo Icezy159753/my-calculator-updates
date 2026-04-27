@@ -1,0 +1,15 @@
+
+[2026-04-26 20:06:23]
+Traceback (most recent call last):
+  File "c:\Users\songklod\Desktop\Main_Program\All_Programs\151_CutLychee_Persence.py", line 1406, in pick_files
+    files, _ = QFileDialog.getOpenFileNames(
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<2 lines>...
+        "Excel Files (*.xlsx);;All Files (*.*)",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+KeyboardInterrupt
+

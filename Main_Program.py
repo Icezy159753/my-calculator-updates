@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.63"
+CURRENT_VERSION = "1.1.64"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -992,6 +992,28 @@ PROGRAMS = [
         "entry_point": "run_this_app",
         "icon": "Delete_NA.ico",
         "category": "Excel", # <--- เพิ่ม category
+        "enabled": True
+    },   
+    {
+        "id": "Program N% To % Lychee V1",
+        "name": "Program N% To % Lychee V1",
+        "description": "เอาไว้แปลง N% เป็น % ในไฟล์ Table Lychee",
+        "type": "local_py_module",
+        "module_path": "151_CutLychee_Persence", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "N% To %.ico",
+        "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },   
+    {
+        "id": "Program SPSS For Lychee V1",
+        "name": "Program SPSS For Lychee V1",
+        "description": "เอาไว้แปลงไฟล์ SPSS จาก Lychee",
+        "type": "local_py_module",
+        "module_path": "152_spss_converter_gui", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "SPSS_Convert.ico",
+        "category": "Lychee", # <--- เพิ่ม category
         "enabled": True
     },   
 ]

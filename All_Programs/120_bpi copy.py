@@ -403,8 +403,68 @@ class SPSSAnalyzerApp(ttk.Window):
                 self.df_result[f"{brand_name} - BPI"] = bpi_score
 
         self.update_treeview(self.df_result)
+        self.update_bpi_summary(brands.keys(), selected_weight_type)
         self.export_button.configure(state="normal")
         self.update_status("สถานะ: ประมวลผลเสร็จสิ้น", "success")
+
+
+    def update_bpi_summary(self, brand_names, selected_weight_type):
+        if self.df_result is None or selected_weight_type == "No Weight":
+            messagebox.showwarning("สรุป BPI", "ยังไม่ได้คำนวณ BPI เพราะยังไม่ได้เลือก Weight")
+            return
+
+        summary_data = []
+        has_over_100 = False
+
+        for brand_name in brand_names:
+            bpi_col = f"{brand_name} - BPI"
+            if bpi_col not in self.df_result.columns:
+                continue
+
+            max_bpi = float(self.df_result[bpi_col].max())
+            is_over_100 = max_bpi > 100
+            has_over_100 = has_over_100 or is_over_100
+            summary_data.append((brand_name, max_bpi, is_over_100))
+
+        if not summary_data:
+            messagebox.showwarning("สรุป BPI", "ไม่พบคอลัมน์ BPI")
+            return
+
+        self.show_bpi_summary_dialog(summary_data, has_over_100)
+
+    def show_bpi_summary_dialog(self, summary_data, has_over_100):
+        dialog = ttk.Toplevel(self)
+        dialog.title("สรุป BPI ต่อ Brand")
+        dialog.geometry("520x360")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        container = ttk.Frame(dialog, padding=16)
+        container.pack(fill="both", expand=True)
+
+        title_style = "danger" if has_over_100 else "success"
+        title_text = "พบ Brand ที่ค่า BPI เกิน 100" if has_over_100 else "ทุก Brand มีค่า BPI ไม่เกิน 100"
+        ttk.Label(container, text=title_text, bootstyle=title_style, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 12))
+
+        list_frame = ttk.Frame(container)
+        list_frame.pack(fill="both", expand=True)
+
+        for brand_name, max_bpi, is_over_100 in summary_data:
+            brand_style = "danger" if is_over_100 else "light"
+            status_text = "เกิน 100" if is_over_100 else "ไม่เกิน 100"
+            row_text = f"{brand_name}: MAX {max_bpi:.2f} ({status_text})"
+            ttk.Label(
+                list_frame,
+                text=row_text,
+                bootstyle=brand_style,
+                font=("Segoe UI", 11, "bold" if is_over_100 else "normal"),
+                anchor="w",
+                justify="left"
+            ).pack(fill="x", anchor="w", pady=4)
+
+        ttk.Button(container, text="ปิด", command=dialog.destroy, bootstyle="secondary").pack(anchor="e", pady=(12, 0))
+        center_window(dialog)
 
 
     def update_treeview(self, df):
@@ -434,15 +494,53 @@ class SPSSAnalyzerApp(ttk.Window):
             return
 
         try:
-            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                self.df_result.to_excel(writer, index=False, sheet_name='Sheet1')
+            base_export_df = self.df_result.copy()
+            export_df = base_export_df.copy()
+            id_column_name = str(base_export_df.columns[0])
+            bpi_columns = [col for col in base_export_df.columns if str(col).endswith(" - BPI")]
 
-                worksheet = writer.sheets['Sheet1']
+            def format_id_value(value):
+                if isinstance(value, (int, np.integer)):
+                    return str(int(value))
+                if isinstance(value, (float, np.floating)):
+                    return str(int(float(value)))
+                return str(value)
+
+            def format_syntax_value(value):
+                if isinstance(value, (int, np.integer)):
+                    return f"{float(value):.2f}"
+                if isinstance(value, (float, np.floating)):
+                    return f"{float(value):.2f}"
+                return str(value)
+
+            syntax_summary_rows = []
+            syntax_detail_rows = []
+
+            for idx, bpi_col in enumerate(bpi_columns, start=1):
+                syntax_col_name = f"BPI_BRAND{idx}"
+                brand_name = str(bpi_col).replace(" - BPI", "")
+                syntax_texts = [
+                    f"IF {id_column_name}={format_id_value(row_id)} THEN  {syntax_col_name}={format_syntax_value(bpi_value)} FI"
+                    for row_id, bpi_value in zip(base_export_df.iloc[:, 0], base_export_df[bpi_col])
+                ]
+                max_bpi_value = float(base_export_df[bpi_col].max())
+                syntax_summary_rows.append((idx, syntax_col_name, brand_name, max_bpi_value))
+                syntax_detail_rows.extend(
+                    (syntax_col_name, brand_name, syntax_text)
+                    for syntax_text in syntax_texts
+                )
+
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                export_df.to_excel(writer, index=False, sheet_name='BPI')
+
+                worksheet = writer.sheets['BPI']
+                workbook = writer.book
 
                 header_font_white = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
                 header_font_black = Font(name='Calibri', size=11, bold=True, color='000000')
                 header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 data_align = Alignment(horizontal='center', vertical='center')
+                syntax_align = Alignment(horizontal='left', vertical='center')
                 
                 colors = {
                     "Aided": PatternFill(start_color='004225', end_color='004225', fill_type='solid'),
@@ -450,6 +548,7 @@ class SPSSAnalyzerApp(ttk.Window):
                     "Purchase consideration": PatternFill(start_color='833403', end_color='833403', fill_type='solid'),
                     "Favorability": PatternFill(start_color='0B2447', end_color='0B2447', fill_type='solid'),
                     "Recommendation": PatternFill(start_color='1A5D1A', end_color='1A5D1A', fill_type='solid'),
+                    "BPI_BRAND": PatternFill(start_color='D9E2F3', end_color='D9E2F3', fill_type='solid'),
                     "BPI": PatternFill(start_color='FFFFE0', end_color='FFFFE0', fill_type='solid'),
                 }
 
@@ -463,13 +562,15 @@ class SPSSAnalyzerApp(ttk.Window):
                     for key, fill in colors.items():
                         if key in header_text:
                             column_cell.fill = fill
-                            if key == "BPI":
+                            if key in {"BPI", "BPI_BRAND"}:
                                 column_cell.font = header_font_black
                             break
                     
                     column_letter = column_cell.column_letter
                     if column_letter == 'A':
                         worksheet.column_dimensions[column_letter].width = 14
+                    elif str(header_text).startswith("BPI_BRAND"):
+                        worksheet.column_dimensions[column_letter].width = 34
                     else:
                         worksheet.column_dimensions[column_letter].width = 12
 
@@ -477,7 +578,57 @@ class SPSSAnalyzerApp(ttk.Window):
                     for cell in row:
                         cell.alignment = data_align
 
+                bpi_header_names = {str(col) for col in bpi_columns}
+                for col_idx, header_cell in enumerate(worksheet[1], 1):
+                    if str(header_cell.value) in bpi_header_names:
+                        for row_idx in range(2, worksheet.max_row + 1):
+                            worksheet.cell(row=row_idx, column=col_idx).number_format = '0.00'
+
                 worksheet.freeze_panes = 'B2'
+                worksheet.sheet_properties.tabColor = "5B9BD5"
+
+                syntax_ws = workbook.create_sheet(title="Syntax Lychee")
+                syntax_ws.sheet_properties.tabColor = "F4B183"
+
+                syntax_header_fill = PatternFill(start_color='FCE4D6', end_color='FCE4D6', fill_type='solid')
+                syntax_header_font = Font(name='Calibri', size=11, bold=True, color='000000')
+
+                syntax_ws["A1"] = "No."
+                syntax_ws["B1"] = "ตัวแปรใหม่ Lychee"
+                syntax_ws["C1"] = "VarBrand"
+                syntax_ws["D1"] = "MAX นำเกินค่า100"
+                syntax_ws["E1"] = "Var"
+                syntax_ws["F1"] = "Brand"
+                syntax_ws["G1"] = "Syntax"
+
+                for cell in syntax_ws[1]:
+                    cell.fill = syntax_header_fill
+                    cell.font = syntax_header_font
+                    cell.alignment = header_align
+
+                for row_idx, (idx, syntax_var, brand_name, max_bpi_value) in enumerate(syntax_summary_rows, start=2):
+                    syntax_ws.cell(row=row_idx, column=1, value=idx)
+                    syntax_ws.cell(row=row_idx, column=2, value=syntax_var)
+                    syntax_ws.cell(row=row_idx, column=3, value=brand_name)
+                    syntax_ws.cell(row=row_idx, column=4, value=round(max_bpi_value))
+
+                for row_idx, (syntax_var, brand_name, syntax_text) in enumerate(syntax_detail_rows, start=2):
+                    syntax_ws.cell(row=row_idx, column=5, value=syntax_var)
+                    syntax_ws.cell(row=row_idx, column=6, value=brand_name)
+                    syntax_ws.cell(row=row_idx, column=7, value=syntax_text)
+
+                for row in syntax_ws.iter_rows(min_row=2, max_row=syntax_ws.max_row):
+                    for cell in row:
+                        cell.alignment = syntax_align
+
+                syntax_ws.column_dimensions['A'].width = 8
+                syntax_ws.column_dimensions['B'].width = 18
+                syntax_ws.column_dimensions['C'].width = 16
+                syntax_ws.column_dimensions['D'].width = 18
+                syntax_ws.column_dimensions['E'].width = 16
+                syntax_ws.column_dimensions['F'].width = 16
+                syntax_ws.column_dimensions['G'].width = 70
+                syntax_ws.freeze_panes = 'A2'
 
             messagebox.showinfo("สำเร็จ", f"บันทึกไฟล์ Excel เรียบร้อยแล้วที่:\n{filepath}")
 

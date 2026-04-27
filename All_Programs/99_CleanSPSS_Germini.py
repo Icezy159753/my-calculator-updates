@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import numpy as np
+import math
 import traceback
 import faulthandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -105,9 +106,9 @@ def _append_runtime_log(message):
 class SweetAlert(QtWidgets.QDialog):
     def __init__(self, title, message, kind="info", buttons=("OK",), parent=None):
         super().__init__(parent)
+        message = "" if message is None else str(message)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.FramelessWindowHint)
         self._result = None
 
         root = QtWidgets.QVBoxLayout(self)
@@ -125,11 +126,22 @@ class SweetAlert(QtWidgets.QDialog):
         title_label.setObjectName("titleLabel")
         header.addWidget(title_label)
         header.addStretch(1)
+
+        close_btn = QtWidgets.QToolButton()
+        close_btn.setObjectName("closeButton")
+        close_btn.setText("x")
+        close_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(close_btn)
         root.addLayout(header)
 
-        msg = QtWidgets.QLabel(message)
-        msg.setWordWrap(True)
+        msg = QtWidgets.QPlainTextEdit()
+        msg.setReadOnly(True)
+        msg.setPlainText(message)
         msg.setObjectName("messageLabel")
+        msg.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
+        msg.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        msg.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         root.addWidget(msg)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -156,21 +168,75 @@ class SweetAlert(QtWidgets.QDialog):
         self.setStyleSheet("""
             QDialog { background: #ffffff; border-radius: 12px; }
             QLabel#titleLabel { font-size: 14px; font-weight: 700; color: #111827; }
-            QLabel#messageLabel { font-size: 12px; color: #374151; }
+            QPlainTextEdit#messageLabel {
+                font-size: 12px;
+                color: #374151;
+                background: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 10px;
+            }
             QPushButton {
                 background: #111827; color: white; border: none; padding: 8px 16px;
                 border-radius: 8px; font-weight: 600;
             }
             QPushButton:hover { background: #0b1220; }
+            QToolButton#closeButton {
+                color: #6b7280;
+                border: none;
+                font-size: 16px;
+                font-weight: 700;
+                padding: 2px 6px;
+            }
+            QToolButton#closeButton:hover {
+                color: #111827;
+                background: #f3f4f6;
+                border-radius: 6px;
+            }
         """)
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        fm = QtGui.QFontMetrics(msg.font())
+        lines = message.splitlines() or [message]
+        longest_line = max((len(line) for line in lines), default=0)
+        char_width = max(7, fm.horizontalAdvance("0"))
+        line_height = max(14, fm.lineSpacing())
 
-        self.adjustSize()
+        if screen is not None:
+            rect = screen.availableGeometry()
+            min_w = 360
+            max_w = min(900, int(rect.width() * 0.78))
+            target_w = 260 + (min(longest_line, 120) * char_width)
+            dialog_w = max(min_w, min(target_w, max_w))
+
+            content_w = max(240, dialog_w - 48)
+            wrap_cols = max(20, int((content_w - 20) / char_width))
+            wrapped_lines = sum(max(1, math.ceil(len(line) / wrap_cols)) for line in lines)
+
+            min_msg_h = 90
+            max_msg_h = min(430, int(rect.height() * 0.55))
+            target_msg_h = 24 + (wrapped_lines * line_height)
+            msg.setFixedHeight(max(min_msg_h, min(target_msg_h, max_msg_h)))
+
+            self.setMinimumSize(min_w, 170)
+            self.setMaximumSize(max_w, min(760, int(rect.height() * 0.85)))
+            self.resize(dialog_w, self.sizeHint().height())
+        else:
+            target_w = max(360, min(760, 260 + (min(longest_line, 100) * char_width)))
+            wrap_cols = max(20, int((target_w - 72) / char_width))
+            wrapped_lines = sum(max(1, math.ceil(len(line) / wrap_cols)) for line in lines)
+            msg.setFixedHeight(max(90, min(360, 24 + (wrapped_lines * line_height))))
+            self.setMinimumSize(360, 170)
+            self.resize(target_w, self.sizeHint().height())
 
     def _make_handler(self, label):
         def handler():
             self._result = label
             self.accept()
         return handler
+
+    def reject(self):
+        self._result = None
+        super().reject()
 
     @property
     def result(self):
@@ -377,12 +443,9 @@ def expand_wildcard(expr, original_cols, lower_to_orig_map):
                 parts = [f"(`{c_orig}` {op} {val_num})" for c_orig in cols_original_case]
             elif op_raw == '!=':
                 joiner = ' & '
-                if STRICT_MODE:
-                    # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                    parts = [f"((`{c_orig}`.notnull()) & (`{c_orig}` != '') & (`{c_orig}` != {val_num}))"
-                             for c_orig in cols_original_case]
-                else:
-                    parts = [f"(`{c_orig}` != {val_num})" for c_orig in cols_original_case]
+                # สำหรับ != ใช้ simple comparison เท่านั้น ไม่ต้องเช็ค notnull/empty
+                # เพราะ MA columns ที่เป็นค่าว่างก็ถือว่า != ค่านั้นแล้ว
+                parts = [f"(`{c_orig}` != {val_num})" for c_orig in cols_original_case]
             else: raise ValueError(f"Operator '{op_raw}' กับตัวเลข '{val_num}' ใน wildcard ไม่รองรับ")
 
         # --- กรณี: ค่าเป็น List/Range ---
@@ -484,12 +547,11 @@ def auto_convert(expr, lower_to_orig_map):
         if op == '==':
             return f"({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str}))"
         elif op == '!=':
-            if STRICT_MODE:
-                # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                return f"(({var_quoted}.notnull()) & ({var_quoted} != '') & ~(({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str}))))"
+            # สำหรับ list/range != ใช้ simple negation ไม่ต้องเช็ค notnull/empty
             return f"~(({var_quoted}.isin({nums}) | {var_quoted}.isin({nums_str})))"
         else: return m.group(0) # Should not happen if regex is correct
-    expr = re.sub(r'\b(?<![`\w.])(\w+)(?![._\w])\s*([=!]?=)\s*([\d,\s-]+)\b', repl_list_range, expr)
+    # จับเฉพาะ list/range ที่มี , หรือ - (ไม่จับตัวเลขเดี่ยว)
+    expr = re.sub(r'\b(?<![`\w.])(\w+)(?![._\w])\s*([=!]?=)\s*([\d\s]*(,|-)[\d,\s-]*)\b', repl_list_range, expr)
 
     # --- Handle Simple Comparisons (e.g., s3=1, Age > 20) ---
     # (ไม่มีการเปลี่ยนแปลงจากเวอร์ชันก่อนหน้า)
@@ -510,16 +572,15 @@ def auto_convert(expr, lower_to_orig_map):
             else: val_str_unquoted = val_str
             val_final = repr(val_str_unquoted) # Safely quote the string content
         if op_final == '!=':
-            if STRICT_MODE:
-                # โหมดเข้มงวด: ตัด missing/ค่าว่างออกจากเงื่อนไข !=
-                return f"(({var_quoted}.notnull()) & ({var_quoted} != '') & ({var_quoted} {op_final} {val_final}))"
+            # สำหรับ != ใช้ simple comparison เท่านั้น ไม่ต้องเช็ค notnull/empty
+            # เพราะค่าว่างก็ถือว่า != ค่านั้นแล้ว
             return f"{var_quoted} {op_final} {val_final}"
         return f"{var_quoted} {op_final} {val_final}"
     # Regex to match variable <op> value (run last) - includes quoted strings
     expr = re.sub(r"""
         \b(?<![`\w.])(\w+)(?![.\w])    # Capture variable name (Group 1)
         \s*([=!]?=|>=?|<=?)          # Capture operator (Group 2)
-        \s*('.*?'|".*?"|\S+)         # Capture value: quoted or non-space (Group 3)
+        \s*('.*?'|".*?"|-?\d+(?:\.\d+)?|[^\s&|()\[\]]+)  # Value: quoted, numeric, or word (Group 3)
         """, repl_simple_comp, expr, flags=re.VERBOSE)
 
     # --- Final conversion of AND/OR ---
