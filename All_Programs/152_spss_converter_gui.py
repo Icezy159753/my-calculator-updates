@@ -24,7 +24,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .convert_txt_sps_to_sav import convert
+try:
+    from .convert_txt_sps_to_sav import convert
+except ImportError:
+    from convert_txt_sps_to_sav import convert
 
 
 class ConvertWorker(QObject):
@@ -60,15 +63,8 @@ class SpssConverterWindow(QMainWindow):
         self.worker: ConvertWorker | None = None
 
         self.setWindowTitle("SPSS For Lychee Builder")
-        try:
-            icon_path = Path(__file__).with_name("logo.svg")
-            if icon_path.exists():
-                self.setWindowIcon(QIcon(str(icon_path)))
-            else:
-                print(f"WARNING: Logo file not found at {icon_path}")
-        except Exception as e:
-            print(f"WARNING: Could not load window icon: {e}")
-        self.resize(1040, 760)
+        self.setWindowIcon(QIcon(str(Path(__file__).with_name("logo.svg"))))
+        self.resize(1040, 800)
         self.setMinimumSize(900, 680)
 
         self.txt_input = QLineEdit()
@@ -99,17 +95,7 @@ class SpssConverterWindow(QMainWindow):
         logo = QLabel()
         logo.setObjectName("logo")
         logo_path = Path(__file__).with_name("logo.svg")
-        try:
-            if logo_path.exists():
-                logo.setPixmap(QPixmap(str(logo_path)).scaled(58, 58, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            else:
-                print(f"WARNING: UI Logo file not found at {logo_path}")
-                logo.setText("📊")
-                logo.setStyleSheet("font-size: 40px;")
-        except Exception as e:
-            print(f"WARNING: Could not load UI logo: {e}")
-            logo.setText("📊")
-            logo.setStyleSheet("font-size: 40px;")
+        logo.setPixmap(QPixmap(str(logo_path)).scaled(58, 58, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
         title = QLabel("SPSS For Lychee Builder")
         title.setObjectName("title")

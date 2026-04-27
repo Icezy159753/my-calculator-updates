@@ -10,7 +10,8 @@ git add Main_Program.py
 
 git status
 git add -A
-git commit -m "Bump version to 1.1.63"
+git commit -m "Bump version to 1.1.64"
+git tag v1.1.64
 git push origin main
 
 
