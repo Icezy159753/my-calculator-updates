@@ -24,7 +24,7 @@ git status
 git add -A
 git commit -m "Bump version to 1.1.67"
 git tag v1.1.67
-git push origin main --tags  # ✅ Push ทั้ง branch และ tags พร้อมกัน
+git push origin main --tags
 
 
 
