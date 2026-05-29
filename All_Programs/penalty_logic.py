@@ -160,7 +160,7 @@ def _analyze_single_attribute(
     label_map: Mapping[str, str],
     jar_scale: int | None,
 ) -> dict[str, object]:
-    attribute_label = label_map.get(jar_var, jar_var)
+    attribute_label = label_map.get(jar_var) or jar_var
     temp = df.dropna(subset=[jar_var]).copy()
     temp[jar_var] = pd.to_numeric(temp[jar_var], errors="coerce")
     valid_scores, jar_group_score, low_group_scores, high_group_scores = _resolve_jar_groups(
@@ -219,7 +219,7 @@ def _build_empty_rows(
     label_map: Mapping[str, str],
 ) -> list[dict[str, object]]:
     return [
-        _build_empty_row(filter_spec, label_map.get(jar_var, jar_var))
+        _build_empty_row(filter_spec, label_map.get(jar_var) or jar_var)
         for jar_var in jar_vars
     ]
 

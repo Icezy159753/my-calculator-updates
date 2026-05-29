@@ -7,35 +7,16 @@ import re
 from io import BytesIO
 import matplotlib
 matplotlib.use('QtAgg')
-from matplotlib import font_manager
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-
-
-def _configure_thai_font() -> None:
-    """Pick a Thai-capable font for matplotlib so chart labels render correctly.
-
-    matplotlib's default (DejaVu Sans) has no Thai glyphs, so Thai labels show
-    as garbled boxes. Prefer fonts shipped with Windows that cover Thai.
-    """
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    for candidate in ('Tahoma', 'Leelawadee UI', 'TH Sarabun New',
-                      'Angsana New', 'Microsoft Sans Serif'):
-        if candidate in available:
-            matplotlib.rcParams['font.family'] = candidate
-            break
-    matplotlib.rcParams['axes.unicode_minus'] = False
-
-
-_configure_thai_font()
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 from matplotlib.patches import Patch
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
-                             QListWidget, QListWidgetItem,
+                             QComboBox, QListWidget, QListWidgetItem,
                              QMessageBox, QAbstractItemView, QGroupBox, QLineEdit,
-                             QDialog, QScrollArea, QInputDialog, QTabWidget)
+                             QSplitter, QDialog, QScrollArea)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -362,124 +343,12 @@ class PenaltyChartDialog(QDialog):
             f"บันทึกกราฟ {len(saved)} รูปแล้วที่:\n{folder}")
 
 
-class SettingDetailDialog(QDialog):
-    """หน้าต่างแสดงรายละเอียดของ Setting หนึ่งชุด แบบคลีน อ่านง่าย."""
-
-    def __init__(self, setting: dict, label_lookup: dict, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"รายละเอียด: {setting['name']}")
-        self.resize(520, 560)
-        self.setStyleSheet("QDialog { background-color: #f4f0fb; }")
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 14, 16, 14)
-        outer.setSpacing(10)
-
-        title = QLabel(f"📌 {setting['name']}")
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #4c1d95;")
-        outer.addWidget(title)
-
-        # Scrollable body of cards
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        body = QWidget()
-        body.setStyleSheet("background: transparent;")
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 4, 0)
-        body_layout.setSpacing(10)
-
-        dep = setting.get('dep_var')
-        dep_txt = label_lookup.get(dep, dep) if dep else "(ยังไม่ได้เลือก)"
-        body_layout.addWidget(self._make_card(
-            "🎯 Dependent Variable", [dep_txt], accent="#7c3aed"))
-
-        jar_items = [label_lookup.get(v, v) for v in setting.get('jar_vars', [])]
-        body_layout.addWidget(self._make_card(
-            f"📊 JAR Attributes ({len(jar_items)})",
-            jar_items or ["(ไม่มี)"], accent="#0891b2", numbered=True))
-
-        filters = setting.get('filters', [])
-        if filters:
-            filt_lines = [f"{lab or '(ไม่มีชื่อ)'}  →  {q or 'ไม่กรองข้อมูล'}"
-                          for lab, q in filters]
-        else:
-            filt_lines = ["(ไม่มี — จะวิเคราะห์รวมทั้งหมด)"]
-        body_layout.addWidget(self._make_card(
-            f"🔎 เงื่อนไข Filter ({len(filters)})", filt_lines,
-            accent="#db2777", numbered=bool(filters)))
-
-        body_layout.addStretch()
-        scroll.setWidget(body)
-        outer.addWidget(scroll, stretch=1)
-
-        btn_close = QPushButton("ปิด")
-        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close.setStyleSheet("""
-            QPushButton {
-                background-color: #7c3aed; color: #ffffff; border: none;
-                border-radius: 7px; padding: 9px 22px; font-size: 13px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: #6d28d9; }
-        """)
-        btn_close.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(btn_close)
-        outer.addLayout(row)
-
-    def _make_card(self, header: str, lines: list, accent: str,
-                   numbered: bool = False) -> QWidget:
-        card = QWidget()
-        card.setStyleSheet(
-            "background-color: #ffffff; border: 1.5px solid #c4b5e8; border-radius: 10px;")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(6)
-
-        hdr = QLabel(header)
-        hdr.setStyleSheet(
-            f"font-size: 13px; font-weight: 700; color: {accent}; border: none;")
-        lay.addWidget(hdr)
-
-        for i, text in enumerate(lines, 1):
-            prefix = f"{i}. " if numbered else "• "
-            item = QLabel(f"{prefix}{text}")
-            item.setWordWrap(True)
-            item.setStyleSheet(
-                "font-size: 13px; color: #1f1933; border: none; padding-left: 4px;")
-            lay.addWidget(item)
-        return card
-
-
-class VarListWidget(QListWidget):
-    """QListWidget ที่ลากย้ายไอเทมข้ามกล่องได้ (MoveAction) และแจ้ง callback หลัง drop."""
-
-    def __init__(self, single: bool = False, parent=None):
-        super().__init__(parent)
-        self.single = single
-        self.on_changed = None          # callback(target_list) หลังมีการ drop
-        self.move_existing_back = None  # ใช้กับช่อง single: เคลียร์ของเดิมก่อนรับ drop ใหม่
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection if single
-            else QAbstractItemView.SelectionMode.ExtendedSelection)
-
-    def dropEvent(self, event):
-        if self.single and callable(self.move_existing_back):
-            self.move_existing_back()
-        super().dropEvent(event)
-        if callable(self.on_changed):
-            self.on_changed(self)
-
-
 class PenaltyAnalyzerApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Penalty Analysis Pro")
         self.setWindowIcon(QIcon(_resource_path("PE.ico")))
-        self.resize(820, 720)
+        self.resize(920, 680)
         self._center_on_screen()
 
         self.df = None
@@ -489,7 +358,6 @@ class PenaltyAnalyzerApp(QMainWindow):
         self.all_variables = []
         self.jar_scale_map = {}
         self.jar_order_from_settings = []
-        self.saved_settings = []  # library of named Setting profiles
 
         self._apply_global_style()
         self.setup_ui()
@@ -507,95 +375,70 @@ class PenaltyAnalyzerApp(QMainWindow):
     # ──────────────────────────────────────────────
     def _apply_global_style(self):
         self.setStyleSheet("""
-            QMainWindow { background-color: #f4f0fb; }
+            QMainWindow { background-color: #faf8ff; }
             QGroupBox {
                 background-color: #ffffff;
-                border: 1.5px solid #c4b5e8;
+                border: 1px solid #e8e0f0;
                 border-radius: 10px;
-                margin-top: 14px;
-                padding: 16px 10px 10px 10px;
-                font-size: 13px; font-weight: 700; color: #4c3a82;
+                margin-top: 12px;
+                padding: 14px 10px 10px 10px;
+                font-size: 11px; font-weight: 600; color: #5b4a8a;
             }
             QGroupBox::title {
                 subcontrol-origin: margin; subcontrol-position: top left;
-                padding: 3px 12px;
-                background-color: #6d28d9;
+                padding: 2px 10px;
+                background-color: #f3eefa;
                 border-radius: 6px;
-                color: #ffffff;
+                color: #6c5ba7;
             }
-            QLabel { color: #2d2640; font-size: 13px; }
+            QLabel { color: #6b6085; font-size: 11px; }
             QLineEdit {
-                border: 1.5px solid #b9a8e0;
+                border: 1.5px solid #e0d6f0;
                 border-radius: 7px;
-                padding: 7px 10px; font-size: 13px;
-                background-color: #ffffff; color: #1f1933;
+                padding: 5px 8px; font-size: 11px;
+                background-color: #fdfbff; color: #3d3556;
             }
-            QLineEdit:focus { border: 2px solid #7c3aed; padding: 6px 9px; }
+            QLineEdit:focus { border: 2px solid #a78bfa; padding: 4px 7px; }
             QComboBox {
-                border: 1.5px solid #b9a8e0;
+                border: 1.5px solid #e0d6f0;
                 border-radius: 7px;
-                padding: 7px 10px; font-size: 13px;
-                background-color: #ffffff; color: #1f1933; min-height: 20px;
+                padding: 5px 8px; font-size: 11px;
+                background-color: #fdfbff; color: #3d3556; min-height: 18px;
             }
-            QComboBox:focus, QComboBox:on { border: 2px solid #7c3aed; }
-            QComboBox::drop-down { border: none; width: 26px; }
+            QComboBox:focus, QComboBox:on { border: 2px solid #a78bfa; }
+            QComboBox::drop-down { border: none; width: 24px; }
             QComboBox QAbstractItemView {
-                border: 1px solid #b9a8e0; border-radius: 6px;
-                background-color: #ffffff; color: #1f1933;
-                selection-background-color: #ddd6fe; selection-color: #4c1d95;
+                border: 1px solid #e0d6f0; border-radius: 6px;
+                background-color: #ffffff;
+                selection-background-color: #ede9fe; selection-color: #5b21b6;
                 padding: 3px;
             }
             QListWidget {
-                border: 1.5px solid #b9a8e0;
+                border: 1.5px solid #e0d6f0;
                 border-radius: 7px;
-                background-color: #ffffff; font-size: 13px; color: #1f1933;
+                background-color: #fdfbff; font-size: 11px;
                 padding: 3px; outline: none;
             }
             QListWidget::item {
-                padding: 6px 8px; border-radius: 5px; margin: 1px 0;
+                padding: 4px 6px; border-radius: 5px; margin: 1px 0;
             }
-            QListWidget::item:hover { background-color: #ede9fe; }
-            QListWidget::item:selected { background-color: #c4b5fd; color: #3b0764; }
+            QListWidget::item:hover { background-color: #f5f0ff; }
+            QListWidget::item:selected { background-color: #ede9fe; color: #5b21b6; }
             QPushButton {
-                border: 1.5px solid #b9a8e0;
+                border: 1.5px solid #e0d6f0;
                 border-radius: 7px;
-                padding: 8px 14px; font-size: 13px; font-weight: 600;
-                background-color: #ffffff; color: #4c3a82;
+                padding: 6px 12px; font-size: 11px; font-weight: 500;
+                background-color: #ffffff; color: #5b4a8a;
             }
-            QPushButton:hover { background-color: #ede9fe; border-color: #8b5cf6; }
-            QPushButton:pressed { background-color: #ddd6fe; }
-            QTabWidget::pane {
-                border: 1.5px solid #c4b5e8; border-radius: 10px;
-                background-color: #ffffff; top: -1px;
+            QPushButton:hover { background-color: #f5f0ff; border-color: #c4b5fd; }
+            QPushButton:pressed { background-color: #ede9fe; }
+            QSplitter::handle {
+                background-color: #e8e0f0; width: 2px; margin: 3px 5px; border-radius: 1px;
             }
-            QTabBar::tab {
-                background-color: #e6def5; color: #6b5b95;
-                border: 1px solid #c4b5e8; border-bottom: none;
-                border-top-left-radius: 8px; border-top-right-radius: 8px;
-                padding: 9px 18px; margin-right: 4px;
-                font-size: 13px; font-weight: 600;
-            }
-            QTabBar::tab:selected {
-                background-color: #ffffff; color: #4c1d95;
-                border-color: #c4b5e8; font-weight: 800;
-            }
-            QTabBar::tab:hover { background-color: #f0eafc; }
             QStatusBar {
-                background-color: #ede7f9;
-                border-top: 1px solid #c4b5e8;
-                color: #4c3a82; font-size: 12px; font-weight: 500; padding: 3px 8px;
-            }
-            QMessageBox, QInputDialog, QDialog { background-color: #ffffff; }
-            QMessageBox QLabel, QInputDialog QLabel {
-                color: #1f1933; font-size: 13px; font-weight: 500;
-            }
-            QMessageBox QPushButton, QInputDialog QPushButton {
-                background-color: #7c3aed; color: #ffffff; border: none;
-                border-radius: 6px; padding: 6px 18px; font-size: 12px;
-                font-weight: 600; min-width: 64px;
-            }
-            QMessageBox QPushButton:hover, QInputDialog QPushButton:hover {
-                background-color: #6d28d9;
+                background-color: #f3eefa;
+                border-top: 1px solid #e8e0f0;
+                color: #8b7fad; font-size: 10px; padding: 2px 8px;
             }
         """)
 
@@ -605,8 +448,8 @@ class PenaltyAnalyzerApp(QMainWindow):
         btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {bg}; color: #ffffff; border: none;
-                border-radius: 7px; padding: 9px 14px;
-                font-size: 13px; font-weight: 700;
+                border-radius: 7px; padding: 7px 14px;
+                font-size: 11px; font-weight: 600;
             }}
             QPushButton:hover {{ background-color: {hover}; }}
             QPushButton:pressed {{ background-color: {hover}; }}
@@ -625,18 +468,18 @@ class PenaltyAnalyzerApp(QMainWindow):
 
         # Header
         header = QLabel("Penalty Analysis Pro")
-        header.setStyleSheet("font-size: 20px; font-weight: 800; color: #4c1d95; padding: 0 0 1px 0;")
+        header.setStyleSheet("font-size: 17px; font-weight: 700; color: #5b21b6; padding: 0 0 1px 0;")
         subtitle = QLabel("วิเคราะห์แบบแยกตาม Filter จากไฟล์ SPSS (.sav)")
-        subtitle.setStyleSheet("font-size: 12px; font-weight: 500; color: #6d28d9; padding: 0 0 2px 0;")
+        subtitle.setStyleSheet("font-size: 10px; color: #a89ec4; padding: 0 0 2px 0;")
         main_layout.addWidget(header)
         main_layout.addWidget(subtitle)
 
-        # ── Load File (prerequisite, always visible) ──
-        group_file = QGroupBox("เริ่มต้น: โหลดข้อมูล SPSS")
+        # ── Step 1: Load File ──
+        group_file = QGroupBox("ขั้นตอนที่ 1: โหลดข้อมูล")
         layout_file = QHBoxLayout()
         layout_file.setContentsMargins(8, 4, 8, 4)
         self.lbl_file = QLabel("ยังไม่ได้เลือกไฟล์")
-        self.lbl_file.setStyleSheet("color: #db2777; font-weight: 700; font-size: 13px;")
+        self.lbl_file.setStyleSheet("color: #f472b6; font-weight: 600; font-size: 11px;")
         btn_browse = self._make_btn("เลือกไฟล์...", "#a78bfa", "#8b5cf6")
         btn_browse.clicked.connect(self.load_file)
         layout_file.addWidget(self.lbl_file)
@@ -645,90 +488,23 @@ class PenaltyAnalyzerApp(QMainWindow):
         group_file.setLayout(layout_file)
         main_layout.addWidget(group_file)
 
-        # ── Main Tabs (แต่ละขั้นตอน = หนึ่งแท็บ ให้ดูโล่งทีละขั้น) ──
-        self.tabs = QTabWidget()
+        # ── Splitter ──
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # ===== Tab 1: เลือกตัวแปร (ซ้าย=ทั้งหมด, ขวา=Dependent + JAR) =====
-        tab_vars = QWidget()
-        lay_vars = QVBoxLayout(tab_vars)
-        lay_vars.setContentsMargins(6, 12, 6, 6)
-        lay_vars.setSpacing(6)
+        # ── Left Panel ──
+        left_widget = QWidget()
+        layout_left = QVBoxLayout(left_widget)
+        layout_left.setContentsMargins(0, 0, 3, 0)
+        layout_left.setSpacing(5)
 
-        hint_top = QLabel("ลากตัวแปรจากกล่องซ้ายไปขวา (หรือดับเบิลคลิก / ใช้ปุ่มลูกศร)")
-        hint_top.setStyleSheet("color: #6d28d9; font-size: 12px; font-weight: 500;")
-        lay_vars.addWidget(hint_top)
-
-        self.search_vars = QLineEdit()
-        self.search_vars.setPlaceholderText("🔍 ค้นหาตัวแปรในกล่องซ้าย...")
-        self.search_vars.textChanged.connect(self.filter_available)
-        lay_vars.addWidget(self.search_vars)
-
-        # โครง 3 คอลัมน์: [ซ้าย: ทั้งหมด] [ปุ่มกลาง] [ขวา: dep + jar]
-        dual = QHBoxLayout()
-        dual.setSpacing(8)
-
-        # --- ซ้าย: ตัวแปรทั้งหมด ---
-        left_col = QVBoxLayout()
-        left_col.setSpacing(4)
-        self.lbl_available = QLabel("ตัวแปรทั้งหมด")
-        self.lbl_available.setStyleSheet("font-size: 13px; font-weight: 700; color: #4c3a82;")
-        left_col.addWidget(self.lbl_available)
-        self.list_available = VarListWidget(single=False)
-        self.list_available.on_changed = self._after_var_drop
-        self.list_available.itemDoubleClicked.connect(self._dbl_available)
-        left_col.addWidget(self.list_available, stretch=1)
-        dual.addLayout(left_col, stretch=5)
-
-        # --- ปุ่มกลาง ---
-        mid_col = QVBoxLayout()
-        mid_col.addStretch()
-        btn_to_dep = self._make_mini_btn("🎯 →", "ตั้งเป็น Dependent")
-        btn_to_dep.clicked.connect(self._btn_to_dep)
-        btn_to_jar = self._make_mini_btn("📊 →", "เพิ่มเข้า JAR")
-        btn_to_jar.clicked.connect(self._btn_to_jar)
-        btn_remove_var = self._make_mini_btn("← เอาออก", "เอาออก กลับไปกล่องซ้าย")
-        btn_remove_var.clicked.connect(self._btn_remove_var)
-        mid_col.addWidget(btn_to_dep)
-        mid_col.addWidget(btn_to_jar)
-        mid_col.addSpacing(8)
-        mid_col.addWidget(btn_remove_var)
-        mid_col.addStretch()
-        dual.addLayout(mid_col, stretch=0)
-
-        # --- ขวา: Dependent (1) + JAR (หลายตัว) ---
-        right_col = QVBoxLayout()
-        right_col.setSpacing(4)
-        self.lbl_dep_box = QLabel("🎯 Dependent Variable (1 ตัว)")
-        self.lbl_dep_box.setStyleSheet("font-size: 13px; font-weight: 700; color: #7c3aed;")
-        right_col.addWidget(self.lbl_dep_box)
-        self.list_dep = VarListWidget(single=True)
-        self.list_dep.setFixedHeight(54)
-        self.list_dep.move_existing_back = self._clear_dep_to_available
-        self.list_dep.on_changed = self._after_var_drop
-        self.list_dep.itemDoubleClicked.connect(self._dbl_remove)
-        right_col.addWidget(self.list_dep)
-
-        self.lbl_jar_box = QLabel("📊 JAR Attributes ที่เลือก (0)")
-        self.lbl_jar_box.setStyleSheet("font-size: 13px; font-weight: 700; color: #0891b2;")
-        right_col.addWidget(self.lbl_jar_box)
-        self.list_jar = VarListWidget(single=False)
-        self.list_jar.on_changed = self._after_var_drop
-        self.list_jar.itemDoubleClicked.connect(self._dbl_remove)
-        right_col.addWidget(self.list_jar, stretch=1)
-        dual.addLayout(right_col, stretch=5)
-
-        lay_vars.addLayout(dual, stretch=1)
-        self.tabs.addTab(tab_vars, "  1 · เลือกตัวแปร  ")
-
-        # ===== Tab 2: Filters =====
-        tab_filter = QWidget()
-        layout_filter = QVBoxLayout(tab_filter)
-        layout_filter.setContentsMargins(6, 12, 6, 6)
-        layout_filter.setSpacing(8)
+        # Step 2: Filters
+        group_filter = QGroupBox("ขั้นตอนที่ 2: Filters")
+        layout_filter = QVBoxLayout()
+        layout_filter.setSpacing(4)
 
         row_label = QHBoxLayout()
         lbl_label = QLabel("Label:")
-        lbl_label.setStyleSheet("font-weight: 700; font-size: 13px; color: #2d2640; min-width: 48px;")
+        lbl_label.setStyleSheet("font-weight: 600; min-width: 48px;")
         self.txt_filter_label = QLineEdit()
         self.txt_filter_label.setPlaceholderText("เช่น รวมทั้งหมด, Product I, Product J")
         row_label.addWidget(lbl_label)
@@ -737,7 +513,7 @@ class PenaltyAnalyzerApp(QMainWindow):
 
         row_filter = QHBoxLayout()
         lbl_cond = QLabel("Query:")
-        lbl_cond.setStyleSheet("font-weight: 700; font-size: 13px; color: #2d2640; min-width: 48px;")
+        lbl_cond.setStyleSheet("font-weight: 600; min-width: 48px;")
         self.txt_filter_query = QLineEdit()
         self.txt_filter_query.setPlaceholderText("เช่น IndexPB==1 หรือ IndexPB==1 & Cell==2")
         btn_add_filter = self._make_btn("เพิ่ม", "#a78bfa", "#8b5cf6")
@@ -748,86 +524,86 @@ class PenaltyAnalyzerApp(QMainWindow):
         layout_filter.addLayout(row_filter)
 
         help_text = QLabel("แต่ละบรรทัดจะรันแยกกัน เช่น 3 บรรทัด = 3 กลุ่ม และถ้าใส่เฉพาะ Label จะถือว่าเป็นรวมทั้งหมด")
-        help_text.setStyleSheet("color: #6d28d9; font-style: italic; font-size: 12px; padding-left: 2px;")
-        help_text.setWordWrap(True)
+        help_text.setStyleSheet("color: #a78bfa; font-style: italic; font-size: 10px; padding-left: 2px;")
         layout_filter.addWidget(help_text)
 
-        lbl_filter_list = QLabel("เงื่อนไขที่เพิ่มไว้:")
-        lbl_filter_list.setStyleSheet("font-size: 13px; font-weight: 700; color: #4c3a82;")
-        layout_filter.addWidget(lbl_filter_list)
         self.list_filters = QListWidget()
-        layout_filter.addWidget(self.list_filters, stretch=1)
+        self.list_filters.setFixedHeight(58)
+        layout_filter.addWidget(self.list_filters)
 
         btn_remove_filter = QPushButton("ลบรายการที่เลือก")
         btn_remove_filter.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_remove_filter.setStyleSheet("""
             QPushButton {
-                color: #db2777; border: 1.5px solid #f472b6; border-radius: 6px;
-                padding: 6px 10px; font-size: 12px; font-weight: 600; background: #fff;
+                color: #f472b6; border: 1px solid #fbcfe8; border-radius: 6px;
+                padding: 4px 10px; font-size: 10px; font-weight: 500; background: #fff;
             }
-            QPushButton:hover { background-color: #fce7f3; border-color: #db2777; }
+            QPushButton:hover { background-color: #fdf2f8; border-color: #f472b6; }
         """)
         btn_remove_filter.clicked.connect(self.remove_filter)
         layout_filter.addWidget(btn_remove_filter)
-        self.tabs.addTab(tab_filter, "  2 · Filters  ")
 
-        # ===== Tab 3: Settings Library =====
-        tab_settings = QWidget()
-        layout_settings = QVBoxLayout(tab_settings)
-        layout_settings.setContentsMargins(6, 12, 6, 6)
-        layout_settings.setSpacing(8)
+        group_filter.setLayout(layout_filter)
+        layout_left.addWidget(group_filter)
 
-        btn_capture = self._make_btn("➕ เก็บค่าปัจจุบันเป็น Setting", "#a78bfa", "#8b5cf6")
-        btn_capture.clicked.connect(self.add_current_setting)
-        layout_settings.addWidget(btn_capture)
+        # Step 3: Dependent Variable
+        group_overall = QGroupBox("ขั้นตอนที่ 3: Dependent Variable")
+        layout_overall = QVBoxLayout()
+        layout_overall.setSpacing(4)
+        self.search_overall = QLineEdit()
+        self.search_overall.setPlaceholderText("ค้นหาตัวแปร...")
+        self.search_overall.textChanged.connect(self.filter_overall)
+        layout_overall.addWidget(self.search_overall)
+        self.combo_overall = QComboBox()
+        layout_overall.addWidget(self.combo_overall)
+        group_overall.setLayout(layout_overall)
+        layout_left.addWidget(group_overall)
 
-        lbl_set_list = QLabel("ชุด Setting ที่เก็บไว้ (ดับเบิลคลิกเพื่อดูรายละเอียด):")
-        lbl_set_list.setStyleSheet("font-size: 13px; font-weight: 700; color: #4c3a82;")
-        layout_settings.addWidget(lbl_set_list)
-        self.list_settings = QListWidget()
-        self.list_settings.itemDoubleClicked.connect(self.view_setting_detail)
-        layout_settings.addWidget(self.list_settings, stretch=1)
-
-        row_set_actions = QHBoxLayout()
-        row_set_actions.setSpacing(6)
-        btn_load_one = QPushButton("โหลดชุดนี้")
-        btn_load_one.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_load_one.clicked.connect(self.load_selected_setting)
-        btn_view_one = QPushButton("ดูรายละเอียด")
-        btn_view_one.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_view_one.clicked.connect(self.view_setting_detail)
-        btn_del_one = QPushButton("ลบชุดนี้")
-        btn_del_one.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_del_one.setStyleSheet("""
-            QPushButton {
-                color: #db2777; border: 1.5px solid #f472b6; border-radius: 6px;
-                padding: 6px 10px; font-size: 12px; font-weight: 600; background: #fff;
-            }
-            QPushButton:hover { background-color: #fce7f3; border-color: #db2777; }
-        """)
-        btn_del_one.clicked.connect(self.delete_selected_setting)
-        row_set_actions.addWidget(btn_load_one)
-        row_set_actions.addWidget(btn_view_one)
-        row_set_actions.addWidget(btn_del_one)
-        layout_settings.addLayout(row_set_actions)
-
-        row_set_io = QHBoxLayout()
-        row_set_io.setSpacing(6)
-        btn_save_settings = QPushButton("💾 บันทึกทั้งหมดลง Excel")
+        # Settings
+        group_settings = QGroupBox("จัดการ Settings")
+        layout_settings = QHBoxLayout()
+        layout_settings.setSpacing(6)
+        btn_save_settings = QPushButton("บันทึก")
         btn_save_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save_settings.clicked.connect(self.save_settings)
-        btn_load_settings = QPushButton("📂 เปิดจาก Excel")
+        btn_load_settings = QPushButton("เปิด")
         btn_load_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_load_settings.clicked.connect(self.load_settings)
-        row_set_io.addWidget(btn_save_settings)
-        row_set_io.addWidget(btn_load_settings)
-        layout_settings.addLayout(row_set_io)
-        self.tabs.addTab(tab_settings, "  3 · Settings  ")
+        layout_settings.addWidget(btn_save_settings)
+        layout_settings.addWidget(btn_load_settings)
+        group_settings.setLayout(layout_settings)
+        layout_left.addWidget(group_settings)
 
-        main_layout.addWidget(self.tabs, stretch=1)
+        layout_left.addStretch()
+        splitter.addWidget(left_widget)
 
-        # ── Bottom Action Bar (always visible) ──
-        group_action = QGroupBox("รัน และ Export")
+        # ── Right Panel ──
+        right_widget = QWidget()
+        layout_right = QVBoxLayout(right_widget)
+        layout_right.setContentsMargins(3, 0, 0, 0)
+
+        group_jar = QGroupBox("ขั้นตอนที่ 4: JAR Attributes")
+        layout_jar = QVBoxLayout()
+        layout_jar.setSpacing(4)
+        self.search_jar = QLineEdit()
+        self.search_jar.setPlaceholderText("ค้นหา JAR variables...")
+        self.search_jar.textChanged.connect(self.filter_jar)
+        layout_jar.addWidget(self.search_jar)
+        hint_label = QLabel("ใช้ Ctrl / Shift + Click เพื่อเลือกหลายตัวแปร")
+        hint_label.setStyleSheet("color: #a89ec4; font-size: 10px;")
+        layout_jar.addWidget(hint_label)
+        self.list_jar = QListWidget()
+        self.list_jar.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        layout_jar.addWidget(self.list_jar)
+        group_jar.setLayout(layout_jar)
+        layout_right.addWidget(group_jar)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([380, 500])
+        main_layout.addWidget(splitter, stretch=1)
+
+        # ── Bottom Action Bar ──
+        group_action = QGroupBox("ขั้นตอนที่ 5: Run และ Export")
         layout_action = QHBoxLayout()
         layout_action.setSpacing(10)
         layout_action.setContentsMargins(8, 4, 8, 4)
@@ -850,127 +626,24 @@ class PenaltyAnalyzerApp(QMainWindow):
         self.statusBar().showMessage("พร้อมใช้งาน: กรุณาโหลดไฟล์ SPSS เพื่อเริ่มต้น")
 
     # ──────────────────────────────────────────────
-    #  Variable selection (dual-list drag & drop)
+    #  Search / Filter helpers
     # ──────────────────────────────────────────────
-    def _make_mini_btn(self, text, tooltip):
-        btn = QPushButton(text)
-        btn.setToolTip(tooltip)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ede9fe; color: #5b21b6;
-                border: 1.5px solid #c4b5fd; border-radius: 7px;
-                padding: 7px 10px; font-size: 13px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: #ddd6fe; border-color: #8b5cf6; }
-            QPushButton:pressed { background-color: #c4b5fd; }
-        """)
-        return btn
+    def filter_overall(self, text):
+        current_selection = self.combo_overall.currentData()
+        self.combo_overall.clear()
+        search_text = text.lower()
+        for display_text, col in self.all_variables:
+            if search_text in display_text.lower():
+                self.combo_overall.addItem(display_text, userData=col)
+        idx = self.combo_overall.findData(current_selection)
+        if idx != -1:
+            self.combo_overall.setCurrentIndex(idx)
 
-    def _add_var_item(self, target, col, text):
-        item = QListWidgetItem(text)
-        item.setData(Qt.ItemDataRole.UserRole, col)
-        target.addItem(item)
-
-    def _set_variable_selection(self, dep_var, jar_vars):
-        """ตั้งค่ากล่องทั้งสาม: ขวา = dep + jar ที่เลือก, ซ้าย = ที่เหลือ."""
-        lookup = {col: disp for disp, col in self.all_variables}
-        self.list_dep.clear()
-        self.list_jar.clear()
-        used = set()
-        if dep_var in lookup:
-            self._add_var_item(self.list_dep, dep_var, lookup[dep_var])
-            used.add(dep_var)
-        for v in jar_vars:
-            if v in lookup and v not in used:
-                self._add_var_item(self.list_jar, v, lookup[v])
-                used.add(v)
-        self.list_available.clear()
-        for disp, col in self.all_variables:
-            if col not in used:
-                self._add_var_item(self.list_available, col, disp)
-        self.filter_available(self.search_vars.text())
-        self._refresh_var_headers()
-
-    def _clear_dep_to_available(self):
-        """ย้ายตัวแปรที่อยู่ในช่อง Dependent กลับไปกล่องซ้าย."""
-        while self.list_dep.count() > 0:
-            it = self.list_dep.takeItem(0)
-            self._add_var_item(self.list_available, it.data(Qt.ItemDataRole.UserRole), it.text())
-
-    def _after_var_drop(self, target):
-        """หลังลากวาง: บังคับ Dependent เหลือ 1 ตัว แล้วรีเฟรชหัวข้อ/ค้นหา."""
-        while self.list_dep.count() > 1:  # เผื่อลากหลายตัวลงช่อง dep
-            it = self.list_dep.takeItem(self.list_dep.count() - 1)
-            self._add_var_item(self.list_available, it.data(Qt.ItemDataRole.UserRole), it.text())
-        self.filter_available(self.search_vars.text())
-        self._refresh_var_headers()
-
-    def _refresh_var_headers(self):
-        self.lbl_dep_box.setText("🎯 Dependent Variable (1 ตัว)")
-        self.lbl_jar_box.setText(f"📊 JAR Attributes ที่เลือก ({self.list_jar.count()})")
-
-    def _move_selected(self, src, dst, single=False):
-        items = src.selectedItems()
-        if not items:
-            return False
-        if single:
-            self._clear_dep_to_available()
-            items = items[:1]
-        for it in items:
-            col = it.data(Qt.ItemDataRole.UserRole)
-            text = it.text()
-            src.takeItem(src.row(it))
-            self._add_var_item(dst, col, text)
-        self.filter_available(self.search_vars.text())
-        self._refresh_var_headers()
-        return True
-
-    def _btn_to_dep(self):
-        if not self._move_selected(self.list_available, self.list_dep, single=True):
-            QMessageBox.information(self, "เลือกก่อน", "กรุณาเลือกตัวแปรในกล่องซ้ายก่อน")
-
-    def _btn_to_jar(self):
-        if not self._move_selected(self.list_available, self.list_jar):
-            QMessageBox.information(self, "เลือกก่อน", "กรุณาเลือกตัวแปรในกล่องซ้ายก่อน")
-
-    def _btn_remove_var(self):
-        moved = self._move_selected(self.list_dep, self.list_available)
-        moved = self._move_selected(self.list_jar, self.list_available) or moved
-        if not moved:
-            QMessageBox.information(self, "เลือกก่อน", "กรุณาเลือกตัวแปรในช่องขวาที่จะเอาออก")
-
-    def _dbl_available(self, item):
-        """ดับเบิลคลิกตัวแปรในกล่องซ้าย → เพิ่มเข้า JAR."""
-        col = item.data(Qt.ItemDataRole.UserRole)
-        text = item.text()
-        self.list_available.takeItem(self.list_available.row(item))
-        self._add_var_item(self.list_jar, col, text)
-        self.filter_available(self.search_vars.text())
-        self._refresh_var_headers()
-
-    def _dbl_remove(self, item):
-        """ดับเบิลคลิกในช่องขวา → เอาออกกลับไปกล่องซ้าย."""
-        src = item.listWidget()
-        col = item.data(Qt.ItemDataRole.UserRole)
-        text = item.text()
-        src.takeItem(src.row(item))
-        self._add_var_item(self.list_available, col, text)
-        self.filter_available(self.search_vars.text())
-        self._refresh_var_headers()
-
-    def filter_available(self, text):
-        search_text = (text or "").lower()
-        for i in range(self.list_available.count()):
-            item = self.list_available.item(i)
+    def filter_jar(self, text):
+        search_text = text.lower()
+        for i in range(self.list_jar.count()):
+            item = self.list_jar.item(i)
             item.setHidden(search_text not in item.text().lower())
-
-    def _get_dep_var(self):
-        return (self.list_dep.item(0).data(Qt.ItemDataRole.UserRole)
-                if self.list_dep.count() else None)
-
-    def _get_dep_label(self):
-        return self.list_dep.item(0).text() if self.list_dep.count() else ""
 
     # ──────────────────────────────────────────────
     #  Load SPSS
@@ -983,26 +656,26 @@ class PenaltyAnalyzerApp(QMainWindow):
             self.df, self.meta = pyreadstat.read_sav(filepath)
             filename = filepath.split('/')[-1]
             self.lbl_file.setText(f"โหลดแล้ว: {filename}")
-            self.lbl_file.setStyleSheet("color: #059669; font-weight: 700; font-size: 13px;")
+            self.lbl_file.setStyleSheet("color: #34d399; font-weight: 600; font-size: 11px;")
             self.statusBar().showMessage(f"โหลดไฟล์สำเร็จ: พบตัวแปร {len(self.df.columns)} ตัว")
 
-            self.list_dep.clear()
+            self.combo_overall.clear()
             self.list_jar.clear()
-            self.list_available.clear()
-            self.search_vars.clear()
+            self.search_overall.clear()
+            self.search_jar.clear()
             self.list_filters.clear()
             self.all_variables.clear()
             self.jar_scale_map.clear()
             self.jar_order_from_settings = []
-            self.saved_settings.clear()
-            self.list_settings.clear()
 
             for col in self.df.columns:
                 label = self.meta.column_names_to_labels.get(col, col)
                 display_text = f"[{col}] {label}"
                 self.all_variables.append((display_text, col))
-
-            self._set_variable_selection(None, [])
+                self.combo_overall.addItem(display_text, userData=col)
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, col)
+                self.list_jar.addItem(item)
 
             QMessageBox.information(self, "สำเร็จ", f"โหลดไฟล์ SPSS สำเร็จ\nจำนวนตัวแปร: {len(self.df.columns)}")
         except Exception as e:
@@ -1071,154 +744,39 @@ class PenaltyAnalyzerApp(QMainWindow):
             self.list_filters.takeItem(self.list_filters.row(item))
 
     # ──────────────────────────────────────────────
-    #  Settings Library — เก็บได้หลายชุด ก่อนบันทึกลง Excel
-    # ──────────────────────────────────────────────
-    def _get_current_filters(self) -> list[tuple[str, str]]:
-        """อ่านเงื่อนไข filter ทุกบรรทัดในกล่องรายการ → [(label, query), ...]."""
-        filters = []
-        for i in range(self.list_filters.count()):
-            query = self.list_filters.item(i).data(Qt.ItemDataRole.UserRole) or ""
-            label = self.list_filters.item(i).data(Qt.ItemDataRole.UserRole + 1) or ""
-            filters.append((label, query))
-        return filters
-
-    def _capture_current_setting(self, name: str) -> dict:
-        """สร้าง dict ของ Setting จากสถานะ UI ปัจจุบัน."""
-        return {
-            'name': name,
-            'dep_var': self._get_dep_var(),
-            'jar_vars': self._get_selected_jar_vars(),
-            'filters': self._get_current_filters(),
-        }
-
-    def _setting_summary(self, s: dict) -> str:
-        """ข้อความสรุปสั้นๆ สำหรับแสดงในรายการ."""
-        return f"📌 {s['name']}  —  {len(s['filters'])} เงื่อนไข · {len(s['jar_vars'])} JAR"
-
-    def refresh_settings_list(self) -> None:
-        """วาดรายการ Setting ใหม่จาก self.saved_settings."""
-        self.list_settings.clear()
-        for s in self.saved_settings:
-            self.list_settings.addItem(QListWidgetItem(self._setting_summary(s)))
-
-    def _selected_setting_index(self) -> int:
-        return self.list_settings.currentRow()
-
-    def add_current_setting(self) -> None:
-        """เก็บค่าปัจจุบัน (ตัวแปร + เงื่อนไข) เป็น Setting ชุดใหม่ในรายการ."""
-        if len(self.all_variables) == 0:
-            QMessageBox.warning(self, "คำเตือน", "กรุณาโหลดไฟล์ข้อมูลก่อน")
-            return
-
-        default_name = f"Setting {len(self.saved_settings) + 1}"
-        name, ok = QInputDialog.getText(self, "ตั้งชื่อ Setting",
-                                        "ชื่อชุด Setting:", text=default_name)
-        if not ok:
-            return
-        name = name.strip() or default_name
-
-        self.saved_settings.append(self._capture_current_setting(name))
-        self.refresh_settings_list()
-        self.list_settings.setCurrentRow(len(self.saved_settings) - 1)
-        self.statusBar().showMessage(
-            f"เก็บ '{name}' แล้ว — รวมทั้งหมด {len(self.saved_settings)} ชุด")
-
-    def delete_selected_setting(self) -> None:
-        idx = self._selected_setting_index()
-        if idx < 0:
-            QMessageBox.warning(self, "คำเตือน", "กรุณาเลือกชุด Setting ที่ต้องการลบก่อน")
-            return
-        name = self.saved_settings[idx]['name']
-        reply = QMessageBox.question(self, "ยืนยันการลบ", f"ลบ Setting '{name}' ?")
-        if reply == QMessageBox.StandardButton.Yes:
-            self.saved_settings.pop(idx)
-            self.refresh_settings_list()
-            self.statusBar().showMessage(f"ลบ '{name}' แล้ว")
-
-    def view_setting_detail(self) -> None:
-        idx = self._selected_setting_index()
-        if idx < 0:
-            QMessageBox.warning(self, "คำเตือน", "กรุณาเลือกชุด Setting ก่อน")
-            return
-        label_lookup = {col: disp for disp, col in self.all_variables}
-        dialog = SettingDetailDialog(self.saved_settings[idx], label_lookup, parent=self)
-        dialog.exec()
-
-    def load_selected_setting(self) -> None:
-        idx = self._selected_setting_index()
-        if idx < 0:
-            QMessageBox.warning(self, "คำเตือน", "กรุณาเลือกชุด Setting ที่ต้องการโหลดก่อน")
-            return
-        if len(self.all_variables) == 0:
-            QMessageBox.warning(self, "คำเตือน", "กรุณาโหลดไฟล์ข้อมูลก่อน")
-            return
-        self._apply_setting_to_ui(self.saved_settings[idx])
-        self.statusBar().showMessage(f"โหลด '{self.saved_settings[idx]['name']}' เข้าหน้าจอแล้ว")
-
-    def _apply_setting_to_ui(self, s: dict) -> None:
-        """นำค่าใน Setting ชุดหนึ่งไปตั้งในหน้าจอ (Dependent / JAR / filters)."""
-        self._set_variable_selection(s.get('dep_var'), list(s.get('jar_vars', [])))
-
-        self.list_filters.clear()
-        for label_str, query_str in s.get('filters', []):
-            label_str = (label_str or "").strip()
-            query_str = (query_str or "").strip()
-            if not label_str and not query_str:
-                continue
-            if not label_str:
-                label_str = query_str if query_str else NO_FILTER_LABEL
-            display = f"{label_str}  [{query_str}]" if query_str else f"{label_str}  [ไม่กรองข้อมูล]"
-            item = QListWidgetItem(display)
-            item.setData(Qt.ItemDataRole.UserRole, query_str)
-            item.setData(Qt.ItemDataRole.UserRole + 1, label_str)
-            self.list_filters.addItem(item)
-
-    # ──────────────────────────────────────────────
-    #  Save / Load Settings library to Excel
+    #  Save / Load Settings (incl. filters)
     # ──────────────────────────────────────────────
     def save_settings(self):
-        if len(self.all_variables) == 0:
+        if self.combo_overall.count() == 0:
             QMessageBox.warning(self, "คำเตือน", "กรุณาโหลดไฟล์ข้อมูลก่อน")
             return
 
-        # ถ้ายังไม่ได้เก็บชุดไหนเลย เสนอเก็บค่าปัจจุบันให้อัตโนมัติ
-        if not self.saved_settings:
-            reply = QMessageBox.question(
-                self, "ยังไม่มีชุด Setting",
-                "ยังไม่ได้เก็บชุด Setting ไว้เลย\nต้องการเก็บค่าปัจจุบันเป็น Setting แล้วบันทึกเลยหรือไม่?")
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            self.saved_settings.append(self._capture_current_setting("Setting 1"))
-            self.refresh_settings_list()
+        dep_var = self.combo_overall.currentData()
+        jar_vars = self._get_selected_jar_vars()
+
+        filter_labels = []
+        filter_queries = []
+        for i in range(self.list_filters.count()):
+            filter_queries.append(self.list_filters.item(i).data(Qt.ItemDataRole.UserRole) or "")
+            filter_labels.append(self.list_filters.item(i).data(Qt.ItemDataRole.UserRole + 1) or "")
 
         filepath, _ = QFileDialog.getSaveFileName(self, "บันทึก Settings", "Penalty_Settings.xlsx", "Excel Files (*.xlsx)")
-        if not filepath:
-            return
-        try:
-            var_rows = []
-            filt_rows = []
-            for s in self.saved_settings:
-                name = s['name']
-                if s.get('dep_var'):
-                    var_rows.append({'Setting': name, 'Role': 'Overall Liking',
-                                    'Variable_Name': s['dep_var']})
-                for v in s.get('jar_vars', []):
-                    var_rows.append({'Setting': name, 'Role': 'JAR Attribute',
-                                    'Variable_Name': v})
-                for label, query in s.get('filters', []):
-                    filt_rows.append({'Setting': name, 'Label': label, 'Query': query})
+        if filepath:
+            try:
+                with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                    roles = ['Overall Liking'] + ['JAR Attribute'] * len(jar_vars)
+                    variables = [dep_var] + jar_vars
+                    config_df = pd.DataFrame({'Role': roles, 'Variable_Name': variables})
+                    config_df.to_excel(writer, sheet_name='Variables', index=False)
 
-            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                pd.DataFrame(var_rows, columns=['Setting', 'Role', 'Variable_Name']
-                            ).to_excel(writer, sheet_name='Variables', index=False)
-                pd.DataFrame(filt_rows, columns=['Setting', 'Label', 'Query']
-                            ).to_excel(writer, sheet_name='Filters', index=False)
+                    if filter_labels:
+                        filter_df = pd.DataFrame({'Label': filter_labels, 'Query': filter_queries})
+                        filter_df.to_excel(writer, sheet_name='Filters', index=False)
 
-            self.statusBar().showMessage(f"บันทึก {len(self.saved_settings)} ชุด Setting แล้ว: {filepath}")
-            QMessageBox.information(self, "สำเร็จ",
-                f"บันทึก Settings แล้ว {len(self.saved_settings)} ชุด\n(Variables + Filters)")
-        except Exception as e:
-            QMessageBox.critical(self, "ผิดพลาด", f"บันทึก Settings ไม่สำเร็จ:\n{str(e)}")
+                self.statusBar().showMessage(f"บันทึก Settings แล้ว: {filepath}")
+                QMessageBox.information(self, "สำเร็จ", "บันทึก Settings แล้ว\n(Variables + Filters)")
+            except Exception as e:
+                QMessageBox.critical(self, "ผิดพลาด", f"บันทึก Settings ไม่สำเร็จ:\n{str(e)}")
 
     def load_settings(self):
         if len(self.all_variables) == 0:
@@ -1226,69 +784,65 @@ class PenaltyAnalyzerApp(QMainWindow):
             return
 
         filepath, _ = QFileDialog.getOpenFileName(self, "เปิด Settings", "", "Excel Files (*.xlsx)")
-        if not filepath:
-            return
-        try:
-            xls = pd.ExcelFile(filepath)
-            if 'Variables' in xls.sheet_names:
-                var_df = pd.read_excel(xls, sheet_name='Variables')
-            else:
-                var_df = pd.read_excel(xls, sheet_name=0)
-            filt_df = (pd.read_excel(xls, sheet_name='Filters')
-                       if 'Filters' in xls.sheet_names else pd.DataFrame())
+        if filepath:
+            try:
+                xls = pd.ExcelFile(filepath)
 
-            def _clean(val: object) -> str:
-                text = str(val).strip()
-                return "" if text == 'nan' else text
-
-            # รองรับทั้งไฟล์ใหม่ (มีคอลัมน์ Setting) และไฟล์เก่า (ชุดเดียว)
-            multi = 'Setting' in var_df.columns
-            if multi:
-                order = list(dict.fromkeys(_clean(x) for x in var_df['Setting'].tolist()))
-                order = [n for n in order if n] or ['Setting 1']
-            else:
-                order = ['Setting 1']
-
-            loaded = []
-            for name in order:
-                if multi:
-                    vsub = var_df[var_df['Setting'].apply(_clean) == name]
+                if 'Variables' in xls.sheet_names:
+                    config_df = pd.read_excel(xls, sheet_name='Variables')
                 else:
-                    vsub = var_df
+                    config_df = pd.read_excel(xls, sheet_name=0)
 
-                dep_rows = vsub[vsub['Role'] == 'Overall Liking']
-                dep_var = _clean(dep_rows.iloc[0]['Variable_Name']) if not dep_rows.empty else None
-                jar_vars = [_clean(v) for v in
-                            vsub[vsub['Role'] == 'JAR Attribute']['Variable_Name'].tolist()]
-                jar_vars = [v for v in jar_vars if v]
+                overall_row = config_df[config_df['Role'] == 'Overall Liking']
+                if not overall_row.empty:
+                    dep_var = overall_row.iloc[0]['Variable_Name']
+                    for i in range(self.combo_overall.count()):
+                        if self.combo_overall.itemData(i) == dep_var:
+                            self.combo_overall.setCurrentIndex(i)
+                            break
 
-                filters = []
-                if not filt_df.empty:
-                    if multi and 'Setting' in filt_df.columns:
-                        fsub = filt_df[filt_df['Setting'].apply(_clean) == name]
-                    else:
-                        fsub = filt_df
-                    for _, row in fsub.iterrows():
-                        label_str = _clean(row.get('Label', ''))
-                        query_str = _clean(row.get('Query', ''))
+                jar_vars = config_df[config_df['Role'] == 'JAR Attribute']['Variable_Name'].tolist()
+                self.jar_order_from_settings = []
+                seen_vars = set()
+                available_vars = {
+                    self.list_jar.item(i).data(Qt.ItemDataRole.UserRole)
+                    for i in range(self.list_jar.count())
+                }
+                for var in jar_vars:
+                    if var in available_vars and var not in seen_vars:
+                        self.jar_order_from_settings.append(var)
+                        seen_vars.add(var)
+                self.list_jar.clearSelection()
+                for i in range(self.list_jar.count()):
+                    item = self.list_jar.item(i)
+                    if item.data(Qt.ItemDataRole.UserRole) in jar_vars:
+                        item.setSelected(True)
+
+                if 'Filters' in xls.sheet_names:
+                    filter_df = pd.read_excel(xls, sheet_name='Filters')
+                    self.list_filters.clear()
+                    for _, row in filter_df.iterrows():
+                        label_str = str(row.get('Label', '')).strip()
+                        query_str = str(row.get('Query', '')).strip()
+                        if query_str == 'nan':
+                            query_str = ""
+                        if label_str == 'nan':
+                            label_str = ""
                         if not label_str and not query_str:
                             continue
-                        filters.append((label_str, query_str))
+                        if not label_str:
+                            label_str = query_str if query_str else NO_FILTER_LABEL
 
-                loaded.append({'name': name or 'Setting 1', 'dep_var': dep_var,
-                              'jar_vars': jar_vars, 'filters': filters})
+                        display = f"{label_str}  [{query_str}]" if query_str else f"{label_str}  [ไม่กรองข้อมูล]"
+                        item = QListWidgetItem(display)
+                        item.setData(Qt.ItemDataRole.UserRole, query_str)
+                        item.setData(Qt.ItemDataRole.UserRole + 1, label_str)
+                        self.list_filters.addItem(item)
 
-            self.saved_settings = loaded
-            self.refresh_settings_list()
-            if self.saved_settings:
-                self.list_settings.setCurrentRow(0)
-                self._apply_setting_to_ui(self.saved_settings[0])
-
-            self.statusBar().showMessage(f"โหลด {len(loaded)} ชุด Setting แล้ว: {filepath}")
-            QMessageBox.information(self, "สำเร็จ",
-                f"โหลด Settings แล้ว {len(loaded)} ชุด\n(แสดงชุดแรกในหน้าจอ — เลือกชุดอื่นได้จากรายการ)")
-        except Exception as e:
-            QMessageBox.critical(self, "ผิดพลาด", f"โหลด Settings ไม่สำเร็จ:\n{str(e)}")
+                self.statusBar().showMessage(f"โหลด Settings แล้ว: {filepath}")
+                QMessageBox.information(self, "สำเร็จ", "โหลด Settings แล้ว\n(Variables + Filters)")
+            except Exception as e:
+                QMessageBox.critical(self, "ผิดพลาด", f"โหลด Settings ไม่สำเร็จ:\n{str(e)}")
 
     # ──────────────────────────────────────────────
     #  Helpers
@@ -1301,9 +855,20 @@ class PenaltyAnalyzerApp(QMainWindow):
         dialog.exec()
 
     def _get_selected_jar_vars(self) -> list[str]:
-        # ช่อง JAR ฝั่งขวาบรรจุเฉพาะตัวแปรที่เลือกแล้ว ตามลำดับในกล่อง
-        return [self.list_jar.item(i).data(Qt.ItemDataRole.UserRole)
-                for i in range(self.list_jar.count())]
+        selected_vars = []
+        for i in range(self.list_jar.count()):
+            item = self.list_jar.item(i)
+            if item.isSelected():
+                selected_vars.append(item.data(Qt.ItemDataRole.UserRole))
+
+        if self.jar_order_from_settings:
+            selected_set = set(selected_vars)
+            ordered_from_settings = [var for var in self.jar_order_from_settings if var in selected_set]
+            ordered_set = set(ordered_from_settings)
+            remaining = [var for var in selected_vars if var not in ordered_set]
+            return ordered_from_settings + remaining
+
+        return selected_vars
 
     def _get_filter_specs(self) -> list[FilterSpec]:
         if self.list_filters.count() == 0:
@@ -1324,8 +889,8 @@ class PenaltyAnalyzerApp(QMainWindow):
             QMessageBox.warning(self, "คำเตือน", "กรุณาโหลดไฟล์ข้อมูลก่อน")
             return
 
-        dep_var = self._get_dep_var()
-        self.dep_var_label = self._get_dep_label()
+        dep_var = self.combo_overall.currentData()
+        self.dep_var_label = self.combo_overall.currentText()
         jar_vars = self._get_selected_jar_vars()
         self.jar_scale_map = self._build_jar_scale_map(jar_vars)
 
