@@ -95,6 +95,11 @@ def apply_filter(df: pd.DataFrame, raw_query: str) -> pd.DataFrame:
     if not raw_query:
         return df.copy()
 
+    # ยุบ newline/tab/ช่องว่างซ้อนให้เหลือ space เดียว กัน pandas มองเป็น multi-line expression
+    raw_query = " ".join(raw_query.split())
+    if not raw_query:
+        return df.copy()
+
     safe_query = normalize_filter_query(raw_query, df.columns)
     try:
         return df.query(safe_query)
