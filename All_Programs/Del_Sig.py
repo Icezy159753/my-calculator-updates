@@ -1,6 +1,7 @@
 ﻿import sys
 import os
 import re
+import bisect
 from collections import defaultdict
 from datetime import datetime
 
@@ -10,11 +11,24 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QFileDialog, QMessageBox, QStatusBar,
     QFrame, QAbstractItemView, QProgressBar, QTextEdit, QSplitter
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 
 import openpyxl
 from openpyxl.styles import Font, Border, Side
+from openpyxl.cell.cell import MergedCell
+from openpyxl.worksheet.cell_range import CellRange
+
+
+def writable_cell(ws, row, col):
+    """Return a writable cell. If (row, col) falls inside a merged range,
+    return the top-left anchor of that range (the only writable member)."""
+    cell = ws.cell(row=row, column=col)
+    if isinstance(cell, MergedCell):
+        for mr in ws.merged_cells.ranges:
+            if mr.min_row <= row <= mr.max_row and mr.min_col <= col <= mr.max_col:
+                return ws.cell(row=mr.min_row, column=mr.min_col)
+    return cell
 
 
 # ===================== Utilities =====================
@@ -130,6 +144,7 @@ def collect_sig_rows_and_merge(ws, start_row, end_row, label_cols, data_cols, ke
     label_cols = list(label_cols)
     rows_to_delete = []
     prev_value_row = None
+    merge_target = None
     unlabeled_after_value = 0
 
     for r in range(start_row, end_row + 1):
@@ -141,6 +156,7 @@ def collect_sig_rows_and_merge(ws, start_row, end_row, label_cols, data_cols, ke
 
         if is_value_row:
             prev_value_row = r
+            merge_target = r
             unlabeled_after_value = 0
             continue
 
@@ -149,14 +165,18 @@ def collect_sig_rows_and_merge(ws, start_row, end_row, label_cols, data_cols, ke
 
         unlabeled_after_value += 1
         if keep_first_unlabeled and unlabeled_after_value == 1:
+            # N% layout: first unlabeled row is the Column % row, which we keep.
+            # The Sig must attach beside the % on THIS row, not the Count row.
+            merge_target = r
             continue
 
+        target = merge_target if merge_target is not None else prev_value_row
         for c in data_cols:
             sig_val = ws.cell(row=r, column=c).value
             if (sig_val and isinstance(sig_val, str) and sig_val.strip()
                     and re.search(r'[A-Za-z]', sig_val)
                     and not re.search(r'\d', sig_val)):
-                val_cell = ws.cell(row=prev_value_row, column=c)
+                val_cell = writable_cell(ws, target, c)
                 existing = val_cell.value
                 if existing is None or (isinstance(existing, str) and not str(existing).strip()):
                     val_cell.value = sig_val.strip()
@@ -227,20 +247,188 @@ def renumber_col_a_by_col_b(ws, crosstab_mode="NORMAL"):
         for r in range(data_total_row + 1, end_row + 1):
             b = ws.cell(row=r, column=2).value
             has_label = b not in (None, "") and str(b).strip() != ""
+            a_cell = ws.cell(row=r, column=1)
+            if isinstance(a_cell, MergedCell):
+                # Non-anchor of a merged A pair (the Column % row). Leave it as
+                # part of the merge but keep the index sequence consistent.
+                if has_label:
+                    idx += 1
+                continue
             if has_label:
-                ws.cell(row=r, column=1).value = idx
+                a_cell.value = idx
                 idx += 1
             else:
-                ws.cell(row=r, column=1).value = None
+                a_cell.value = None
+
+def transfer_bottom_borders_before_delete(ws, rows_to_delete):
+    """
+    Before rows are deleted, push each deleted row's bottom border up to the
+    nearest surviving row above it. The group-closing grid line lives on the
+    Sig row (the row we delete), so without this the bottom border of every
+    group would vanish from the data columns -> broken table grid.
+    """
+    if not rows_to_delete:
+        return
+    del_set = set(rows_to_delete)
+    max_col = ws.max_column
+
+    # Pre-map every merged non-anchor cell -> its anchor, so resolving the
+    # writable target is an O(1) lookup instead of rescanning all merged ranges
+    # for every border we move (sheets can have thousands of merges).
+    anchor_of = {}
+    for mr in ws.merged_cells.ranges:
+        anchor = (mr.min_row, mr.min_col)
+        for rr in range(mr.min_row, mr.max_row + 1):
+            for cc in range(mr.min_col, mr.max_col + 1):
+                if (rr, cc) != anchor:
+                    anchor_of[(rr, cc)] = anchor
+
+    for r in sorted(del_set):
+        t = r - 1
+        while t in del_set and t >= 1:
+            t -= 1
+        if t < 1:
+            continue
+        for c in range(1, max_col + 1):
+            src = ws.cell(row=r, column=c).border
+            if src.bottom and src.bottom.style:
+                ar, ac = anchor_of.get((t, c), (t, c))
+                dst = ws.cell(row=ar, column=ac)
+                b = dst.border
+                dst.border = Border(
+                    left=b.left,
+                    right=b.right,
+                    top=b.top,
+                    bottom=src.bottom,
+                    diagonal=b.diagonal,
+                    diagonal_direction=b.diagonal_direction,
+                    outline=b.outline,
+                    vertical=b.vertical,
+                    horizontal=b.horizontal,
+                )
+
+def delete_rows_preserving_merges(ws, rows_to_delete):
+    """
+    Delete rows AND correctly shift/clip merged ranges and row heights.
+
+    openpyxl's ws.delete_rows() does not adjust merged ranges or row heights at
+    all, leaving stale merges and mis-indexed heights after the rows above them
+    are removed. Stale merges then corrupt neighbouring values when written to
+    (labels disappear); stale heights make random rows too tall/short. To avoid
+    this we snapshot merges + heights, unmerge all, delete the rows, then
+    re-apply each remapped to its new position:
+      - merges living entirely on deleted rows are dropped; merges that lost
+        only some rows (e.g. a 3-row Count/%/Sig label block that loses its Sig
+        row) are clipped to the surviving rows
+      - row heights are re-keyed to the surviving rows' new positions
+    """
+    if not rows_to_delete:
+        return
+
+    # openpyxl's delete_rows() mishandles hyperlinks: it can overwrite a cell's
+    # value with the hyperlink location (e.g. the "Contents" links turn into
+    # "Contents!R1C1"). Strip hyperlinks first; the visible values stay intact.
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.hyperlink is not None:
+                cell.hyperlink = None
+
+    del_set = set(rows_to_delete)
+    sorted_dels = sorted(del_set)
+
+    def new_index(row):
+        # surviving row's new position = row minus deleted rows above it
+        return row - bisect.bisect_left(sorted_dels, row)
+
+    snapshot = [(mr.min_row, mr.max_row, mr.min_col, mr.max_col)
+                for mr in ws.merged_cells.ranges]
+
+    # Snapshot the style of EVERY cell inside a merged range before unmerging.
+    # ws.unmerge_cells() drops the non-anchor MergedCell objects from ws._cells,
+    # so the rebuild below loses them and only the top-left anchor keeps a border.
+    # Excel still PRINTS such a merged box (it derives the outline from the anchor)
+    # but on SCREEN it draws borders per-cell -> the right/bottom edges have no
+    # cell to draw them and the table grid looks broken in the app. We restore
+    # these cells (with their per-edge borders) at their shifted positions below.
+    merged_cell_styles = {}
+    for (r1, r2, c1, c2) in snapshot:
+        for rr in range(r1, r2 + 1):
+            for cc in range(c1, c2 + 1):
+                src = ws._cells.get((rr, cc))
+                if src is not None:
+                    merged_cell_styles[(rr, cc)] = src._style
+
+    for mr in list(ws.merged_cells.ranges):
+        ws.unmerge_cells(str(mr))
+
+    # snapshot explicit row heights before deleting (openpyxl won't shift them)
+    old_heights = {r: dim.height for r, dim in ws.row_dimensions.items()
+                   if dim.height is not None}
+
+    # Compact the rows in a SINGLE pass by rebuilding the cell map, instead of
+    # calling ws.delete_rows() once per row. delete_rows() shifts every cell
+    # below the deletion point each time -> O(deleted * cells), which is tens of
+    # seconds on large sheets. Rebuilding is O(cells). Safe here because the
+    # sheet has no conditional formatting / data validation that reference rows
+    # (merges and row heights are handled explicitly below).
+    new_cells = {}
+    for (row, col), cell in ws._cells.items():
+        if row in del_set:
+            continue
+        nr = new_index(row)
+        if nr != row:
+            cell.row = nr
+        new_cells[(nr, col)] = cell
+    ws._cells = new_cells
+    ws._current_row = max((r for r, _ in new_cells), default=0)
+
+    # re-key row heights: clear whatever delete_rows left behind, then re-apply
+    # each surviving row's height at its shifted position.
+    for r in list(ws.row_dimensions.keys()):
+        ws.row_dimensions[r].height = None
+    for old_r, h in old_heights.items():
+        if old_r in del_set:
+            continue
+        ws.row_dimensions[new_index(old_r)].height = h
+
+    # Recreate the merged-range cells that unmerge_cells dropped, at their shifted
+    # positions, restoring each cell's original style. This keeps every edge of a
+    # merged box (right/bottom included) carrying its own border so the grid lines
+    # render on screen, not only in print. Done before re-adding the merges so the
+    # targets are still writable plain cells.
+    for (rr, cc), st in merged_cell_styles.items():
+        if rr in del_set:
+            continue
+        nr = new_index(rr)
+        existing = ws._cells.get((nr, cc))
+        if existing is not None:
+            existing._style = st
+        else:
+            ws.cell(row=nr, column=cc)._style = st
+
+    # Re-apply via merged_cells.add (not ws.merge_cells): these cells came from
+    # ranges that were already style-cleaned when the file was first merged, and
+    # unmerging does not undo that, so the expensive _clean_merge_range step is
+    # unnecessary here and only adds cost.
+    for (r1, r2, c1, c2) in snapshot:
+        surviving = [r for r in range(r1, r2 + 1) if r not in del_set]
+        if not surviving:
+            continue
+        nr1 = new_index(surviving[0])
+        nr2 = new_index(surviving[-1])
+        if nr1 == nr2 and c1 == c2:
+            continue  # collapsed to a single cell -> nothing to merge
+        ws.merged_cells.add(CellRange(min_col=c1, min_row=nr1, max_col=c2, max_row=nr2))
 
 def add_bottom_grid_to_last_used_row(ws):
     last_used_row = 0
     last_used_col = 0
+    max_col = ws.max_column
 
     for r in range(ws.max_row, 0, -1):
         row_has_data = False
         row_last_col = 0
-        for c in range(1, ws.max_column + 1):
+        for c in range(1, max_col + 1):
             v = ws.cell(row=r, column=c).value
             if v not in (None, "") and str(v).strip() != "":
                 row_has_data = True
@@ -271,11 +459,20 @@ def add_bottom_grid_to_last_used_row(ws):
 
 def merge_col_ab_pairs_for_n_percent(ws, crosstab_mode="NORMAL"):
     mode = (crosstab_mode or "").upper()
+    max_col = ws.max_column
 
     stub_starts = [r for r, cell in enumerate(ws['A'], 1) if str(cell.value).startswith('Stub')]
     if not stub_starts:
         stub_starts = [1]
     table_boundaries = stub_starts + [ws.max_row + 2]
+
+    # Rows whose column A already belongs to a merge. delete_rows_preserving_merges
+    # has normally already merged the Count/Column% A-B pairs, so this lets us skip
+    # the expensive unmerge+remerge for pairs that are already correct.
+    premerged_a_rows = set()
+    for mr in ws.merged_cells.ranges:
+        if mr.min_col <= 1 <= mr.max_col:
+            premerged_a_rows.update(range(mr.min_row, mr.max_row + 1))
 
     for i in range(len(table_boundaries) - 1):
         start_row = table_boundaries[i]
@@ -309,10 +506,14 @@ def merge_col_ab_pairs_for_n_percent(ws, crosstab_mode="NORMAL"):
                 next_label = ws.cell(row=r2, column=2).value
                 next_has_label = next_label not in (None, "") and str(next_label).strip() != ""
                 if not next_has_label:
+                    # Already merged by the delete step -> nothing to do.
+                    if r in premerged_a_rows and r2 in premerged_a_rows:
+                        r = r2 + 1
+                        continue
                     row2_has_data = any(
                         ws.cell(row=r2, column=cc).value not in (None, "") and
                         str(ws.cell(row=r2, column=cc).value).strip() != ""
-                        for cc in range(3, ws.max_column + 1)
+                        for cc in range(3, max_col + 1)
                     )
                     if row2_has_data:
                         for mr in list(ws.merged_cells.ranges):
@@ -334,7 +535,7 @@ def place_sig_stamp(ws, header_row, sig_text, col=3):
     stamp_row = header_row - 2 if header_row - 2 >= 1 else header_row
     cell = ws.cell(row=stamp_row, column=col)
     cell.value = sig_text
-    cell.font = Font(name='Arial', size=9)
+    cell.font = Font(name='Arial', size=9, color='FFFF0000')
 
 
 def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_beside=False):
@@ -436,9 +637,8 @@ def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_
                     rows_to_delete_in_sheet.extend(sig_rows)
 
             if rows_to_delete_in_sheet:
-                unmerge_ranges_touching_rows(ws, rows_to_delete_in_sheet)
-                for r in sorted(set(rows_to_delete_in_sheet), reverse=True):
-                    ws.delete_rows(r, 1)
+                transfer_bottom_borders_before_delete(ws, rows_to_delete_in_sheet)
+                delete_rows_preserving_merges(ws, rows_to_delete_in_sheet)
 
                 renumber_col_a_by_col_b(ws, crosstab_mode)
                 add_bottom_grid_to_last_used_row(ws)
@@ -736,6 +936,46 @@ class FileListWidget(QListWidget):
             self.parent_app.add_files(paths)
 
 
+class ProcessWorker(QThread):
+    """Runs the Excel processing on a background thread so the window never freezes.
+
+    All GUI updates happen in the main thread via these signals; the worker only
+    crunches files and reports progress.
+    """
+    file_started = pyqtSignal(int, int, str)             # index, total, filename
+    file_finished = pyqtSignal(int, int, str, int, str)  # index, total, filename, cells, status
+    all_finished = pyqtSignal(int, int, int, bool, str)  # processed, total, cells, had_errors, last_error
+
+    def __init__(self, file_paths, sig_groups, mode, sig_beside):
+        super().__init__()
+        self.file_paths = list(file_paths)   # snapshot so GUI edits can't disturb the run
+        self.sig_groups = sig_groups
+        self.mode = mode
+        self.sig_beside = sig_beside
+
+    def run(self):
+        total = len(self.file_paths)
+        processed = 0
+        total_cells = 0
+        had_errors = False
+        last_error = ""
+        for i, file_path in enumerate(self.file_paths):
+            fname = os.path.basename(file_path)
+            self.file_started.emit(i, total, fname)
+            cells_changed, status = process_single_excel_file(
+                file_path, self.sig_groups, self.mode, self.sig_beside
+            )
+            self.file_finished.emit(i, total, fname, cells_changed, status)
+            if status == "Success":
+                processed += 1
+                total_cells += cells_changed
+            else:
+                had_errors = True
+                last_error = status
+                break
+        self.all_finished.emit(processed, total, total_cells, had_errors, last_error)
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -744,11 +984,19 @@ class App(QMainWindow):
         self.resize(780, 720)
 
         self.file_paths = []
+        self.worker = None
         self.HINT_TEXT = "\u0e40\u0e0a\u0e48\u0e19 ABCDEF,GHIJKL,MNOPQR,STUVWX,YZ"
 
         self.setStyleSheet(STYLESHEET)
         self._center_on_screen()
         self._build_ui()
+
+    def closeEvent(self, event):
+        # Wait for the background processing to finish so the QThread is not
+        # destroyed mid-run (which would crash).
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.wait()
+        super().closeEvent(event)
 
     def _center_on_screen(self):
         screen = QApplication.primaryScreen()
@@ -993,6 +1241,8 @@ class App(QMainWindow):
         self.status_bar.showMessage(f"\u0e04\u0e07\u0e40\u0e2b\u0e25\u0e37\u0e2d {len(self.file_paths)} \u0e44\u0e1f\u0e25\u0e4c")
 
     def process_files(self):
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            return  # already processing
         if not self.file_paths:
             QMessageBox.warning(self, "Warning", "Please select at least one Excel file.")
             return
@@ -1005,7 +1255,10 @@ class App(QMainWindow):
         mode = "MATRIX" if self.radio_matrix.isChecked() else "NORMAL"
         sig_beside = self.radio_sig_beside.isChecked()
         total_files = len(self.file_paths)
-        processed_files, total_cells_changed, had_errors = 0, 0, False
+
+        # remember run settings for the summary message produced when finished
+        self._run_mode = mode
+        self._run_beside = sig_beside
 
         side_label = "Sig\u0e02\u0e49\u0e32\u0e07" if sig_beside else "Sig \u0e1b\u0e01\u0e15\u0e34"
         self.log(f"\u0e40\u0e23\u0e34\u0e48\u0e21\u0e1b\u0e23\u0e30\u0e21\u0e27\u0e25\u0e1c\u0e25 {total_files} \u0e44\u0e1f\u0e25\u0e4c  |  Mode: {mode}  |  {side_label}", "START")
@@ -1015,33 +1268,35 @@ class App(QMainWindow):
         self.progress_bar.setMaximum(total_files)
         self.progress_bar.setValue(0)
         self.process_btn.setEnabled(False)
+        self.browse_btn.setEnabled(False)
+        self.delete_btn.setEnabled(False)
 
-        for i, file_path in enumerate(self.file_paths):
-            fname = os.path.basename(file_path)
-            self.log(f"[{i+1}/{total_files}] \u0e01\u0e33\u0e25\u0e31\u0e07\u0e1b\u0e23\u0e30\u0e21\u0e27\u0e25\u0e1c\u0e25: {fname}...")
-            self.status_bar.showMessage(f"Processing ({mode}) file {i+1}/{total_files}: {fname}...")
-            QApplication.processEvents()
+        # Run the heavy work off the GUI thread so the window stays responsive.
+        self.worker = ProcessWorker(self.file_paths, sig_groups, mode, sig_beside)
+        self.worker.file_started.connect(self._on_file_started)
+        self.worker.file_finished.connect(self._on_file_finished)
+        self.worker.all_finished.connect(self._on_all_finished)
+        self.worker.start()
 
-            cells_changed, status = process_single_excel_file(file_path, sig_groups, mode, sig_beside)
-            if status == "Success":
-                processed_files += 1
-                total_cells_changed += cells_changed
-                self.log(f"[{i+1}/{total_files}] {fname} \u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08 \u2014 \u0e41\u0e01\u0e49\u0e44\u0e02 {cells_changed} cells", "OK")
-            else:
-                had_errors = True
-                self.log(f"[{i+1}/{total_files}] {fname} \u0e1c\u0e34\u0e14\u0e1e\u0e25\u0e32\u0e14: {status}", "ERROR")
-                QMessageBox.critical(
-                    self, "Processing Error",
-                    f"An error occurred while processing:\n{fname}\n\nDetails: {status}"
-                )
-                break
+    def _on_file_started(self, i, total, fname):
+        self.log(f"[{i+1}/{total}] \u0e01\u0e33\u0e25\u0e31\u0e07\u0e1b\u0e23\u0e30\u0e21\u0e27\u0e25\u0e1c\u0e25: {fname}...")
+        self.status_bar.showMessage(f"Processing ({self._run_mode}) file {i+1}/{total}: {fname}...")
 
+    def _on_file_finished(self, i, total, fname, cells_changed, status):
+        if status == "Success":
+            self.log(f"[{i+1}/{total}] {fname} \u0e2a\u0e33\u0e40\u0e23\u0e47\u0e08 \u2014 \u0e41\u0e01\u0e49\u0e44\u0e02 {cells_changed} cells", "OK")
             self.progress_bar.setValue(i + 1)
-            QApplication.processEvents()
+        else:
+            self.log(f"[{i+1}/{total}] {fname} \u0e1c\u0e34\u0e14\u0e1e\u0e25\u0e32\u0e14: {status}", "ERROR")
 
+    def _on_all_finished(self, processed_files, total_files, total_cells_changed, had_errors, last_error):
         self.process_btn.setEnabled(True)
+        self.browse_btn.setEnabled(True)
+        self.delete_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
 
+        mode = self._run_mode
+        sig_beside = self._run_beside
         side_txt = " + Sig\u0e02\u0e49\u0e32\u0e07" if sig_beside else ""
         msg = (
             f"\u0e25\u0e1a Sig \u0e40\u0e23\u0e35\u0e22\u0e1a\u0e23\u0e49\u0e2d\u0e22 [{mode}{side_txt}]\n\n"
@@ -1053,7 +1308,7 @@ class App(QMainWindow):
                  "OK" if not had_errors else "WARN")
 
         if had_errors:
-            msg += "\n\nSome files encountered errors and were not processed."
+            msg += f"\n\nSome files encountered errors and were not processed.\nDetails: {last_error}"
             QMessageBox.warning(self, "Process Finished with Errors", msg)
         else:
             QMessageBox.information(self, "Success", msg)
