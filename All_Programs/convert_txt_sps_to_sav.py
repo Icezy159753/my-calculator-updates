@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import struct
 from os.path import commonprefix
 from pathlib import Path
 from typing import Callable
@@ -16,6 +17,25 @@ VALUE_PAIR_RE = re.compile(r'(?m)^\s*([-+]?\d+(?:\.\d+)?)\s+"((?:[^"]|"")*)"')
 IGNORED_TEXT_FILES = {"requirements.txt", "readme.txt"}
 LYCHEE_DATA_RE = re.compile(r"^SPSS_[af].*", re.I)
 MR_VARIABLE_RE = re.compile(r"^(.+)\$(\d+)$")
+MRSET_GROUP_RE = re.compile(r"/(MCGROUP|MDGROUP)\b(.*?)(?=/MCGROUP\b|/MDGROUP\b|\Z)", re.S | re.I)
+
+# SPSS multiple-response set label limit (bytes); keep well within it.
+MAX_MRSET_LABEL_BYTES = 255
+
+# A line that begins with one of these keywords starts a brand-new SPSS command.
+# Lychee sometimes emits labels with an unescaped " inside a "-quoted string
+# (it should be doubled as ""), which flips naive quote tracking on and makes the
+# splitter swallow every following command into one giant statement — silently
+# dropping hundreds of VALUE LABELS. Forcing a statement break on these keywords
+# bounds the damage to the single malformed label instead of the rest of the file.
+COMMAND_START_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"GET\s+DATA|GET\s+FILE|SAVE|EXECUTE|DATASET\b|SET\b|"
+    r"ADD\s+VALUE\s+LABELS|VALUE\s+LABELS|VARIABLE\s+LABELS|"
+    r"VARIABLE\s+LEVEL|VARIABLE\s+WIDTH|VARIABLE\s+ALIGNMENT|VARIABLE\s+ROLE|"
+    r"FORMATS|MISSING\s+VALUES|MRSETS|RENAME\s+VARIABLES|FORMAT\b"
+    r")\b"
+)
 
 
 def clean_sps_string(value: str) -> str:
@@ -144,6 +164,15 @@ def split_sps_statements(text: str) -> list[str]:
     in_quote = False
 
     for line in text.splitlines():
+        # A new command keyword at the start of a line always begins a new
+        # statement. Flushing here recovers from a previous statement whose quote
+        # state got stuck "open" because of an unescaped " inside a label, so one
+        # malformed label can no longer swallow the commands that follow it.
+        if current and COMMAND_START_RE.match(line):
+            statements.append("\n".join(current).strip())
+            current = []
+            in_quote = False
+
         current.append(line)
 
         # Track quote state across physical lines so that a period inside a
@@ -202,10 +231,24 @@ def parse_get_data_variables(statements: list[str]) -> tuple[list[str], dict[str
 def parse_variable_labels(statements: list[str]) -> dict[str, str]:
     labels: dict[str, str] = {}
     for statement in statements:
-        if not statement.upper().startswith("VARIABLE LABELS"):
+        if not statement.upper().lstrip().startswith("VARIABLE LABELS"):
             continue
-        body = re.sub(r"^VARIABLE\s+LABELS\s+", "", statement, flags=re.I).rstrip(".")
-        for name, label in VAR_LABEL_PAIR_RE.findall(body):
+        body = re.sub(r"^\s*VARIABLE\s+LABELS\s+", "", statement, flags=re.I).strip().rstrip(".").strip()
+        pairs = VAR_LABEL_PAIR_RE.findall(body)
+
+        # A clean command has exactly two double-quotes per variable. Lychee
+        # sometimes leaves an unescaped " inside a label (it should be doubled as
+        # ""), so the strict pattern stops mid-text and the label is truncated.
+        # When the quote count doesn't match, recover the single-variable label
+        # as everything between the first and last quote so the inner quote (and
+        # the rest of the sentence) survive as literal text.
+        if body.count('"') != 2 * len(pairs):
+            single = re.match(r'([A-Za-z_@$#][\w@$#]*)\s+"(.*)"\s*$', body, re.S)
+            if single:
+                labels[single.group(1)] = clean_sps_string(single.group(2))
+                continue
+
+        for name, label in pairs:
             labels[name] = clean_sps_string(label)
     return labels
 
@@ -276,6 +319,79 @@ def mrset_sort_key(variable_name: str) -> tuple[str, int]:
     return match.group(1).lower(), int(match.group(2))
 
 
+def parse_mrsets(statements: list[str], valid_names: list[str]) -> list[dict]:
+    """Parse explicit ``MRSETS /MCGROUP`` / ``/MDGROUP`` definitions from the syntax.
+
+    Lychee exports the real multiple-response sets — with their proper set names
+    and descriptive LABELs — in an ``MRSETS`` command. Reading those is far better
+    than guessing sets from the ``$n`` naming, because we keep the labels SPSS
+    shows in "Define Multiple Response Sets" and the exact intended grouping.
+    Variables not present in the data file are dropped, and sets left with fewer
+    than two variables are skipped.
+    """
+    allowed = set(valid_names)
+    used_names: set[str] = set()
+    sets: list[dict] = []
+    for statement in statements:
+        if not statement.upper().lstrip().startswith("MRSETS"):
+            continue
+        for kind, body in MRSET_GROUP_RE.findall(statement):
+            name_match = re.search(r"(?i)\bNAME\s*=\s*(\$?\w+)", body)
+            vars_match = re.search(r"(?i)\bVARIABLES\s*=\s*(.*)", body, re.S)
+            if not name_match or not vars_match:
+                continue
+            label_match = re.search(r'(?i)\bLABEL\s*=\s*"((?:[^"]|"")*)"', body)
+            value_match = re.search(r"(?i)\bVALUE\s*=\s*(\S+)", body)
+
+            variables = [token for token in vars_match.group(1).split() if token in allowed]
+            if len(variables) < 2:
+                continue
+
+            # Lychee reuses the SAME NAME (e.g. $NQ22) for every grid row, so the
+            # 29 distinct sets collide and SPSS keeps only one. Derive the set name
+            # from the variables' common base (e.g. NQ22#1 -> $NQ22_1), which is
+            # unique per set, and only fall back to the declared NAME otherwise.
+            source_name = name_match.group(1).lstrip("$")
+            base = _common_mr_base(variables)
+            candidate = "$" + re.sub(r"\W+", "_", base or source_name).strip("_")
+            unique = candidate
+            suffix = 2
+            while unique.lower() in used_names:
+                unique = f"{candidate}_{suffix}"
+                suffix += 1
+            used_names.add(unique.lower())
+
+            label = truncate_utf8(clean_sps_string(label_match.group(1)) if label_match else "",
+                                  MAX_MRSET_LABEL_BYTES)
+            sets.append(
+                {
+                    "name": unique,
+                    "is_dichotomy": kind.upper() == "MDGROUP",
+                    "counted_value": value_match.group(1) if value_match else "1",
+                    "label": label,
+                    "variables": variables,
+                }
+            )
+    return sets
+
+
+def _common_mr_base(variables: list[str]) -> str | None:
+    """Return the shared ``base`` of ``base$n`` variable names, or None if mixed."""
+    bases = {(MR_VARIABLE_RE.match(name).group(1) if MR_VARIABLE_RE.match(name) else name)
+             for name in variables}
+    return bases.pop() if len(bases) == 1 else None
+
+
+def auto_mrsets(column_names: list[str]) -> list[dict]:
+    """Fallback when the syntax has no MRSETS command: infer category sets from
+    the ``base$n`` naming. Labels are unknown, so they are left empty."""
+    return [
+        {"name": f"${base_name}", "is_dichotomy": False, "counted_value": "1",
+         "label": "", "variables": variables}
+        for base_name, variables in build_mrsets(column_names).items()
+    ]
+
+
 def build_mrsets(column_names: list[str]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for column_name in column_names:
@@ -296,20 +412,71 @@ def encode_mr_string(value: str) -> bytes:
     return str(len(raw)).encode("ascii") + b" " + raw
 
 
-def patch_mrsets_record(sav_path: Path, mrsets: dict[str, list[str]], labels: dict[str, str]) -> int:
-    if not mrsets:
+def find_dict_terminator(data: bytes) -> int:
+    """Return the byte offset of the genuine type-999 dictionary terminator.
+
+    The terminator is an ``int32 999`` followed by an ``int32 0`` filler that
+    separates the dictionary from the case data. A naive ``data.find()`` for that
+    8-byte pattern is unsafe: the same bytes occur by chance inside value-label
+    values, print/write formats and string data, so on large dictionaries the
+    first match lands far before the real terminator and any record spliced there
+    corrupts the file ("Invalid SPSS Statistics data file"). We instead walk the
+    dictionary record-by-record so the offset is always the real boundary.
+    """
+    if data[:4] not in (b"$FL2", b"$FL3"):
+        raise ValueError("Not a recognizable SPSS .sav file (missing $FL2/$FL3 header).")
+
+    pos = 176  # fixed-size file header
+    length = len(data)
+    while pos < length:
+        rec_type = struct.unpack_from("<i", data, pos)[0]
+        if rec_type == 999:
+            return pos
+        if rec_type == 2:  # variable record
+            has_label = struct.unpack_from("<i", data, pos + 8)[0]
+            n_missing = struct.unpack_from("<i", data, pos + 12)[0]
+            pos += 32
+            if has_label == 1:
+                label_len = struct.unpack_from("<i", data, pos)[0]
+                pos += 4 + ((label_len + 3) // 4) * 4
+            pos += abs(n_missing) * 8
+        elif rec_type == 3:  # value labels, always followed by a type-4 index record
+            count = struct.unpack_from("<i", data, pos + 4)[0]
+            pos += 8
+            for _ in range(count):
+                label_len = data[pos + 8]
+                pos += 8 + ((1 + label_len + 7) // 8) * 8
+            pos += 8 + struct.unpack_from("<i", data, pos + 4)[0] * 4
+        elif rec_type == 6:  # document record
+            n_lines = struct.unpack_from("<i", data, pos + 4)[0]
+            pos += 8 + n_lines * 80
+        elif rec_type == 7:  # extension record (subtype/size/count header)
+            size = struct.unpack_from("<i", data, pos + 8)[0]
+            count = struct.unpack_from("<i", data, pos + 12)[0]
+            pos += 16 + size * count
+        else:
+            raise ValueError(f"Unexpected SPSS record type {rec_type} at offset {pos}.")
+
+    raise ValueError("Could not find the SPSS dictionary terminator.")
+
+
+def patch_mrsets_record(sav_path: Path, mr_sets: list[dict]) -> int:
+    if not mr_sets:
         return 0
 
     lines: list[bytes] = []
-    for base_name, variables in mrsets.items():
-        set_name = f"${base_name}".lower()
-        variable_list = " ".join(variable.lower() for variable in variables)
-        lines.append(
-            set_name.encode("utf-8", errors="ignore")
-            + b"=C "
-            + b"0  "
-            + variable_list.encode("utf-8", errors="ignore")
-        )
+    for mr_set in mr_sets:
+        set_name = mr_set["name"].lower().encode("utf-8", errors="ignore")
+        # Variable names are kept verbatim so they match the dictionary exactly.
+        variable_list = " ".join(mr_set["variables"]).encode("utf-8", errors="ignore")
+        if mr_set["is_dichotomy"]:
+            # $name=D<counted-value> <label> vars  — IBM writes the counted-value
+            # length immediately after D with no separating space (e.g. =D1 1 7 ...).
+            header = b"=D" + encode_mr_string(mr_set["counted_value"]) + b" " + encode_mr_string(mr_set["label"])
+        else:
+            # $name=C <label> vars
+            header = b"=C " + encode_mr_string(mr_set["label"])
+        lines.append(set_name + header + b" " + variable_list)
 
     payload = b"\n".join(lines) + b"\n"
     record = (
@@ -321,13 +488,9 @@ def patch_mrsets_record(sav_path: Path, mrsets: dict[str, list[str]], labels: di
     )
 
     data = sav_path.read_bytes()
-    marker = (999).to_bytes(4, "little") + (0).to_bytes(4, "little")
-    insert_at = data.find(marker)
-    if insert_at < 0:
-        raise ValueError("Could not find the SPSS dictionary terminator while adding MRSETS.")
-
+    insert_at = find_dict_terminator(data)
     sav_path.write_bytes(data[:insert_at] + record + data[insert_at:])
-    return len(mrsets)
+    return len(mr_sets)
 
 
 def patch_variable_attributes_record(sav_path: Path, full_labels: dict[str, str]) -> int:
@@ -355,11 +518,7 @@ def patch_variable_attributes_record(sav_path: Path, full_labels: dict[str, str]
     )
 
     data = sav_path.read_bytes()
-    marker = (999).to_bytes(4, "little") + (0).to_bytes(4, "little")
-    insert_at = data.find(marker)
-    if insert_at < 0:
-        raise ValueError("Could not find the SPSS dictionary terminator while adding variable attributes.")
-
+    insert_at = find_dict_terminator(data)
     sav_path.write_bytes(data[:insert_at] + record + data[insert_at:])
     return len(full_labels)
 
@@ -453,8 +612,13 @@ def convert(
 
     mrset_count = 0
     if add_mrsets:
-        log("Adding MRSETS metadata...")
-        mrset_count = patch_mrsets_record(output_sav, build_mrsets(list(df.columns)), column_labels)
+        # Prefer the real MRSETS command from the syntax (keeps set labels); only
+        # fall back to inferring sets from the $n naming when none are defined.
+        mr_sets = parse_mrsets(statements, list(df.columns)) or auto_mrsets(list(df.columns))
+        if mr_sets:
+            labeled = sum(1 for s in mr_sets if s["label"])
+            log(f"Adding {len(mr_sets)} MRSETS ({labeled} with labels)...")
+            mrset_count = patch_mrsets_record(output_sav, mr_sets)
 
     full_label_count = 0
     if full_labels:
