@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from os.path import commonprefix
 from pathlib import Path
 from typing import Callable
 
@@ -21,14 +22,118 @@ def clean_sps_string(value: str) -> str:
     return value.replace('""', '"').replace("\r", " ").replace("\n", " ").strip()
 
 
+# SPSS hard limits (in BYTES, not characters): variable labels 255, value labels 120.
+# Thai characters are 3 bytes each in UTF-8, so long Thai labels exceed these
+# limits easily. If the writer truncates mid-character, the label ends with an
+# invalid UTF-8 sequence and IBM SPSS renders the whole label as "□".
+MAX_VARIABLE_LABEL_BYTES = 255
+MAX_VALUE_LABEL_BYTES = 120
+
+
+def truncate_utf8(value: str, max_bytes: int) -> str:
+    """Truncate ``value`` to at most ``max_bytes`` UTF-8 bytes on a character boundary."""
+    raw = value.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return value
+    return raw[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def smart_truncate_label(value: str, max_bytes: int = MAX_VARIABLE_LABEL_BYTES) -> str:
+    """Truncate an over-long label in the middle so the distinguishing tail survives.
+
+    Lychee labels look like ``C3 <question>-<choice>``: the part that tells the
+    items of a multiple-response set apart is the choice name at the END, so a
+    plain end-truncation would collapse all items onto an identical label.
+    """
+    raw = value.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return value
+
+    ellipsis = "..."  # 3 bytes
+    sep_index = value.rfind("-")
+    if sep_index != -1:
+        tail = value[sep_index:]
+        tail_bytes = len(tail.encode("utf-8"))
+        if tail_bytes <= max_bytes // 2:
+            head = truncate_utf8(value, max_bytes - tail_bytes - len(ellipsis))
+            return head + ellipsis + tail
+
+    # No usable "-choice" suffix: keep ~2/3 of the head and ~1/3 of the tail.
+    head_budget = (max_bytes - len(ellipsis)) * 2 // 3
+    tail_budget = max_bytes - len(ellipsis) - head_budget
+    head = truncate_utf8(value, head_budget)
+    tail = raw[-tail_budget:].decode("utf-8", errors="ignore")
+    return head + ellipsis + tail
+
+
+def truncate_labels_preserving_distinction(
+    labels: dict[str, str], max_bytes: int = MAX_VARIABLE_LABEL_BYTES
+) -> dict[str, str]:
+    """Truncate labels, then repair groups where distinct sources collapsed together.
+
+    Some Lychee labels (e.g. "other-specify" loop variables) carry the
+    distinguishing brand name in the MIDDLE and end with repeated question
+    text, so any head/tail truncation can collapse them. For each collision
+    group, strip the prefix and suffix common to the colliding sources and
+    splice the differing middle segment back into the truncated label.
+    """
+    truncated = {name: smart_truncate_label(label, max_bytes) for name, label in labels.items()}
+    ellipsis = "..."
+
+    groups: dict[str, list[str]] = {}
+    for name, short in truncated.items():
+        groups.setdefault(short, []).append(name)
+
+    for names in groups.values():
+        sources = sorted({labels[name] for name in names})
+        if len(sources) < 2:
+            continue
+        prefix_len = len(commonprefix(sources))
+        suffix_len = len(commonprefix([source[::-1] for source in sources]))
+        for name in names:
+            source = labels[name]
+            mid_end = max(prefix_len, len(source) - suffix_len)
+            mid = source[prefix_len:mid_end].strip()
+            if not mid:
+                continue
+            mid = truncate_utf8(mid, (max_bytes - 2 * len(ellipsis)) // 2)
+            head_budget = max_bytes - 2 * len(ellipsis) - len(mid.encode("utf-8"))
+            head = truncate_utf8(source, head_budget)
+            truncated[name] = head + ellipsis + mid + ellipsis
+
+    return truncated
+
+
+def _line_toggles_quote(line: str, in_quote: bool) -> bool:
+    """Return the quote state at the end of ``line`` given the state before it.
+
+    A doubled ``""`` is an escaped quote inside a string, not a delimiter.
+    """
+    index = 0
+    length = len(line)
+    while index < length:
+        if line[index] == '"':
+            if in_quote and index + 1 < length and line[index + 1] == '"':
+                index += 2
+                continue
+            in_quote = not in_quote
+        index += 1
+    return in_quote
+
+
 def strip_sps_comments(text: str) -> str:
     lines: list[str] = []
+    in_quote = False
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("*") and stripped.endswith("."):
-            continue
+        # Never treat a line inside a quoted label as blank or as a comment,
+        # otherwise multi-line labels containing "*" or "." lines get dropped.
+        if not in_quote:
+            if not stripped:
+                continue
+            if stripped.startswith("*") and stripped.endswith("."):
+                continue
+        in_quote = _line_toggles_quote(line, in_quote)
         lines.append(line.rstrip())
     return "\n".join(lines)
 
@@ -36,9 +141,19 @@ def strip_sps_comments(text: str) -> str:
 def split_sps_statements(text: str) -> list[str]:
     statements: list[str] = []
     current: list[str] = []
+    in_quote = False
 
     for line in text.splitlines():
         current.append(line)
+
+        # Track quote state across physical lines so that a period inside a
+        # quoted label (e.g. "...ทั่วไปนี้." or a wrapped multi-line label) is
+        # never mistaken for a command terminator.
+        in_quote = _line_toggles_quote(line, in_quote)
+        if in_quote:
+            # The statement (label text) continues on the next physical line.
+            continue
+
         stripped = line.strip()
         if stripped == "." or (stripped.endswith(".") and not re.search(r"\b[AF]\d+\.\d+$", stripped, re.I)):
             statements.append("\n".join(current).strip())
@@ -215,6 +330,40 @@ def patch_mrsets_record(sav_path: Path, mrsets: dict[str, list[str]], labels: di
     return len(mrsets)
 
 
+def patch_variable_attributes_record(sav_path: Path, full_labels: dict[str, str]) -> int:
+    """Store full (untruncated) labels as a custom variable attribute.
+
+    Writes a variable-attributes extension record (type 7, subtype 18) so the
+    complete question text survives the 255-byte variable label limit. The
+    attribute shows up in SPSS Variable View as a "FullLabel" column.
+    """
+    if not full_labels:
+        return 0
+
+    portions: list[str] = []
+    for name, text in full_labels.items():
+        value = text.replace("'", "''")
+        portions.append(f"{name}:FullLabel('{value}'\n)")
+
+    payload = "/".join(portions).encode("utf-8")
+    record = (
+        (7).to_bytes(4, "little")
+        + (18).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + len(payload).to_bytes(4, "little")
+        + payload
+    )
+
+    data = sav_path.read_bytes()
+    marker = (999).to_bytes(4, "little") + (0).to_bytes(4, "little")
+    insert_at = data.find(marker)
+    if insert_at < 0:
+        raise ValueError("Could not find the SPSS dictionary terminator while adding variable attributes.")
+
+    sav_path.write_bytes(data[:insert_at] + record + data[insert_at:])
+    return len(full_labels)
+
+
 def read_sps_files(paths: list[Path]) -> tuple[list[str], dict[str, str], dict[str, str]]:
     all_statements: list[str] = []
     get_data_statements: list[str] = []
@@ -269,6 +418,27 @@ def convert(
     value_labels = parse_value_labels(statements)
     variable_measure = parse_variable_measure(statements)
 
+    # Clamp labels to the SPSS byte limits so truncation never lands mid-character.
+    # Over-long labels are middle-truncated (keeping the distinguishing choice
+    # suffix) and the full text is preserved in a "FullLabel" variable attribute.
+    full_labels = {
+        name: label
+        for name, label in column_labels.items()
+        if len(label.encode("utf-8")) > MAX_VARIABLE_LABEL_BYTES
+    }
+    if full_labels:
+        log(
+            f"Truncating {len(full_labels)} variable labels longer than "
+            f"{MAX_VARIABLE_LABEL_BYTES} bytes (full text kept in FullLabel attribute)..."
+        )
+    column_labels = truncate_labels_preserving_distinction(column_labels)
+    value_labels = {
+        name: {
+            value: truncate_utf8(label, MAX_VALUE_LABEL_BYTES) for value, label in value_map.items()
+        }
+        for name, value_map in value_labels.items()
+    }
+
     log("Writing SPSS .sav file...")
     pyreadstat.write_sav(
         df,
@@ -286,6 +456,11 @@ def convert(
         log("Adding MRSETS metadata...")
         mrset_count = patch_mrsets_record(output_sav, build_mrsets(list(df.columns)), column_labels)
 
+    full_label_count = 0
+    if full_labels:
+        log("Storing full labels as variable attributes...")
+        full_label_count = patch_variable_attributes_record(output_sav, full_labels)
+
     return {
         "output": str(output_sav),
         "rows": len(df),
@@ -293,6 +468,7 @@ def convert(
         "variable_labels": len(column_labels),
         "value_label_sets": len(value_labels),
         "mrsets": mrset_count,
+        "full_label_attributes": full_label_count,
         "file_size_kb": output_sav.stat().st_size // 1024,
     }
 
@@ -366,6 +542,7 @@ def main() -> None:
     print(f"Variable labels: {result['variable_labels']:,}")
     print(f"Value label sets applied: {result['value_label_sets']:,}")
     print(f"MRSETS added: {result['mrsets']:,}")
+    print(f"Full labels kept as attributes: {result['full_label_attributes']:,}")
     print(f"File size: {result['file_size_kb']:,} KB")
 
 

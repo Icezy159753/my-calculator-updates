@@ -435,6 +435,7 @@ class SpssConverterWindow(QMainWindow):
         self.log(f"Variable labels: {result['variable_labels']:,}")
         self.log(f"Value label sets: {result['value_label_sets']:,}")
         self.log(f"MRSETS added: {result['mrsets']:,}")
+        self.log(f"Full labels kept as attributes: {result.get('full_label_attributes', 0):,}")
         self.log(f"File size: {result['file_size_kb']:,} KB")
         QMessageBox.information(self, "Conversion complete", f"Saved:\n{result['output']}")
 
