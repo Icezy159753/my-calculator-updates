@@ -49,6 +49,11 @@ for base_dir in base_dirs:
     if os.path.isdir(spss_home_path):
         os.environ['SPSS_HOME'] = spss_home_path
         print(f"SPSS_FIXER_DEBUG: SPSS_HOME set to: {spss_home_path}")
+        # เพิ่มโฟลเดอร์ที่มี package savReaderWriter เข้า sys.path
+        # เพื่อให้ import ได้แม้รันไฟล์นี้ตรงๆ จาก All_Programs
+        if base_dir not in sys.path:
+            sys.path.insert(0, base_dir)
+            print(f"SPSS_FIXER_DEBUG: Added to sys.path: {base_dir}")
         _spss_found = True
         break
 
@@ -66,6 +71,20 @@ from savReaderWriter.savWriter import SavWriter
 
 
 # --- ฟังก์ชันช่วยเหลือ ---
+def _decode_recursive(obj, encoding):
+    """ถอดรหัส bytes ทุกตัว (ทั้ง key และ value ใน dict/list/tuple) ด้วย encoding ที่กำหนด"""
+    if isinstance(obj, bytes):
+        return obj.decode(encoding, errors="replace")
+    if isinstance(obj, dict):
+        return {_decode_recursive(k, encoding): _decode_recursive(v, encoding)
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_decode_recursive(x, encoding) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_decode_recursive(x, encoding) for x in obj)
+    return obj
+
+
 def center_window(window, width, height):
     """ฟังก์ชันสำหรับจัดหน้าต่างให้อยู่กึ่งกลางจอ"""
     screen_width = window.winfo_screenwidth()
@@ -101,26 +120,58 @@ def clone_and_fix_spss_file():
         messagebox.showerror("ข้อผิดพลาด", "ไม่พบไฟล์ที่ระบุ")
         return
 
+    # encoding ของไฟล์ SPSS ภาษาไทยรุ่นเก่า (TIS-620 / Windows-874)
+    SOURCE_ENCODING = "cp874"
+
+    import tempfile
+    import shutil
+    import uuid
+
+    # SPSS C DLL เปิด/สร้างไฟล์ที่ path มีภาษาไทย (non-ASCII) ไม่ได้ -> SPSS_FILE_OERROR
+    # วิธีแก้: ทำงานผ่านโฟลเดอร์ temp ที่เป็น ASCII ล้วน แล้วค่อย move ไฟล์กลับด้วย Python
+    temp_dir = tempfile.mkdtemp(prefix="spss_fix_")
+    temp_in = os.path.join(temp_dir, "input.sav")
+    temp_out = os.path.join(temp_dir, "output.sav")
+
     try:
+        # คัดลอกไฟล์ต้นฉบับไปยัง temp path (ASCII) เพื่อให้ DLL อ่านได้ชัวร์
+        shutil.copy2(spss_file_path, temp_in)
+
         # --- ขั้นตอนที่ 1: อ่านทุกอย่างจากไฟล์ต้นฉบับ ---
+        # สำคัญ: อ่านเป็น bytes ดิบ (ioUtf8=False) แล้วถอดรหัสด้วย cp874 เอง
+        # ไม่บังคับ UTF-8 ตอนอ่าน เพราะไฟล์ต้นฉบับยังไม่ใช่ UTF-8
         print(f"กำลังอ่านไฟล์ต้นฉบับและ Metadata: {spss_file_path}")
         records = []
         metadata = {}
-        
-        # --- ส่วนที่แก้ไข: เรียกใช้ SavReader โดยตรง ---
-        with SavReader(spss_file_path, ioUtf8=True) as reader:
-            metadata['varNames'] = reader.header
-            metadata['varTypes'] = getattr(reader, 'varTypes', {})
-            metadata['varLabels'] = getattr(reader, 'varLabels', {})
-            metadata['valueLabels'] = getattr(reader, 'valueLabels', {})
-            metadata['missingValues'] = getattr(reader, 'missingValues', {})
-            metadata['measureLevels'] = getattr(reader, 'measureLevels', {})
-            metadata['columnWidths'] = getattr(reader, 'columnWidths', {})
-            metadata['formats'] = getattr(reader, 'formats', {})
-            
+
+        with SavReader(temp_in, ioUtf8=False) as reader:
+            metadata['varNames'] = _decode_recursive(reader.header, SOURCE_ENCODING)
+            metadata['varTypes'] = _decode_recursive(getattr(reader, 'varTypes', {}), SOURCE_ENCODING)
+            metadata['varLabels'] = _decode_recursive(getattr(reader, 'varLabels', {}), SOURCE_ENCODING)
+            metadata['valueLabels'] = _decode_recursive(getattr(reader, 'valueLabels', {}), SOURCE_ENCODING)
+            metadata['missingValues'] = _decode_recursive(getattr(reader, 'missingValues', {}), SOURCE_ENCODING)
+            metadata['measureLevels'] = _decode_recursive(getattr(reader, 'measureLevels', {}), SOURCE_ENCODING)
+            metadata['columnWidths'] = _decode_recursive(getattr(reader, 'columnWidths', {}), SOURCE_ENCODING)
+            metadata['formats'] = _decode_recursive(getattr(reader, 'formats', {}), SOURCE_ENCODING)
+
             for record in reader:
-                records.append(record)
+                records.append(_decode_recursive(record, SOURCE_ENCODING))
         print("อ่านข้อมูลและ Metadata ทั้งหมดสำเร็จ")
+
+        # --- ขยายความกว้างของตัวแปร String ---
+        # ภาษาไทย 1 ตัวอักษร: cp874 ใช้ 1 byte แต่ UTF-8 ใช้ 3 bytes
+        # ถ้าไม่ขยายความกว้าง ข้อความไทยจะถูกตัดหายตอนเขียนเป็น UTF-8
+        # สำคัญ: ต้องแก้ทั้ง varTypes (ความกว้าง) และ formats (เช่น A255) ให้ตรงกัน
+        #        มิฉะนั้น SPSS จะ error ว่า format misspecified
+        MAX_STR_WIDTH = 32767  # ความยาว String สูงสุดของ SPSS
+        var_types = metadata.get('varTypes', {})
+        formats = metadata.get('formats', {})
+        for var_name, type_len in list(var_types.items()):
+            if isinstance(type_len, int) and type_len > 0:  # > 0 = ตัวแปร String
+                new_width = min(type_len * 3, MAX_STR_WIDTH)
+                var_types[var_name] = new_width
+                # format ของ String ต้องเป็น A<width> ให้ตรงกับความกว้างใหม่
+                formats[var_name] = f"A{new_width}"
 
         # --- ขั้นตอนที่ 2: เขียนทุกอย่างลงในไฟล์ใหม่ ---
         base_name = os.path.basename(spss_file_path)
@@ -129,11 +180,17 @@ def clone_and_fix_spss_file():
         output_sav_path = os.path.join(output_dir, f"{file_name_without_ext}_preserved_utf8.sav")
 
         print(f"กำลังเขียนไฟล์ใหม่ที่สมบูรณ์: {output_sav_path}")
-        # --- ส่วนที่แก้ไข: เรียกใช้ SavWriter โดยตรง ---
-        with SavWriter(output_sav_path, ioUtf8=True, **metadata) as writer:
+        # เขียนลง temp path (ASCII) ก่อน เพราะ DLL เขียน path ภาษาไทยไม่ได้
+        with SavWriter(temp_out, ioUtf8=True, **metadata) as writer:
             for record in records:
                 writer.writerow(record)
-        
+
+        # ย้ายไฟล์ผลลัพธ์จาก temp ไปยังปลายทางจริง (Python รองรับ unicode path)
+        # ถ้ามีไฟล์เดิมอยู่แล้วให้เขียนทับ
+        if os.path.exists(output_sav_path):
+            os.remove(output_sav_path)
+        shutil.move(temp_out, output_sav_path)
+
         print("เขียนไฟล์ใหม่สำเร็จ!")
         messagebox.showinfo("สำเร็จสมบูรณ์!", f"ไฟล์ SPSS ใหม่ถูกสร้างขึ้นแล้ว\n\nบันทึกที่: {output_sav_path}")
 
@@ -148,6 +205,13 @@ def clone_and_fix_spss_file():
             f"ข้อความ: {e}"
         )
         messagebox.showerror("เกิดข้อผิดพลาด", detailed_error)
+
+    finally:
+        # ลบโฟลเดอร์ temp ทิ้งเสมอ ไม่ว่าจะสำเร็จหรือไม่
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 # --- Entry Point หลักของโปรแกรมนี้ (สำหรับให้ Launcher เรียก) ---
 def run_this_app(working_dir=None):

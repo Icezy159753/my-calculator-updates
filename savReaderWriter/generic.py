@@ -203,9 +203,13 @@ class Generic(object):
 
         # get a file descriptor/handle for the file
         expanduser, abspath = os.path.expanduser, os.path.abspath
-        expandfn = lambda fn: self._encodeFileName(expanduser(abspath(fn)))
-        savFileName = expandfn(savFileName)
-        with open(savFileName, mode) as f:
+        # เก็บ path แบบ unicode ไว้สำหรับ open() ของ Python
+        # (Python 3 บน Windows ถอดรหัสชื่อไฟล์เป็น utf-8 ตาม PEP 529
+        #  ถ้าส่ง bytes แบบ cp874 ที่มีภาษาไทยเข้าไปจะ UnicodeDecodeError)
+        unicodeFileName = abspath(expanduser(savFileName))
+        # ส่วน C DLL ของ SPSS ต้องการชื่อไฟล์เป็น bytestring ใน codepage ของระบบ (ANSI)
+        savFileName = self._encodeFileName(unicodeFileName)
+        with open(unicodeFileName, mode) as f:
             fd = f.fileno()
 
         # open the .sav file

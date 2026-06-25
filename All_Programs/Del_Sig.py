@@ -325,16 +325,19 @@ def delete_rows_preserving_merges(ws, rows_to_delete):
     if not rows_to_delete:
         return
 
-    # openpyxl's delete_rows() mishandles hyperlinks: it can overwrite a cell's
-    # value with the hyperlink location (e.g. the "Contents" links turn into
-    # "Contents!R1C1"). Strip hyperlinks first; the visible values stay intact.
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.hyperlink is not None:
-                cell.hyperlink = None
-
     del_set = set(rows_to_delete)
     sorted_dels = sorted(del_set)
+
+    # Strip hyperlinks ONLY on the rows we are about to delete. Removing every
+    # hyperlink in the sheet (as an older version did) wiped the navigation
+    # links in the header rows ("Contents"/"Info"/"Next") so they stopped
+    # working after a Sig-beside run. Surviving rows keep their hyperlinks;
+    # openpyxl rewrites each one's ref from cell.coordinate at save time, so the
+    # rebuilt (shifted) cells below still point at the right place.
+    for r in del_set:
+        for cell in ws[r]:
+            if cell.hyperlink is not None:
+                cell.hyperlink = None
 
     def new_index(row):
         # surviving row's new position = row minus deleted rows above it
