@@ -3,7 +3,6 @@ import re
 import pyreadstat
 import numpy as np
 import os
-import glob
 import openpyxl
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.utils import get_column_letter
@@ -17,72 +16,9 @@ from collections import OrderedDict
 import io
 import sys
 import json
-import inspect
-import traceback
 from scipy.linalg import inv, eigh
 from sklearn.preprocessing import StandardScaler
 import time
-
-
-# ===================================================================
-# COMPATIBILITY SHIMS
-# ===================================================================
-_UNSET = object()   # ใช้แยก 'ยังไม่ได้ตรวจ' ออกจาก 'ตรวจแล้วไม่พบ'
-
-
-def _patch_factor_analyzer_sklearn_compat():
-    """factor_analyzer (<=0.5.1) เรียก check_array(force_all_finite=...)
-    แต่ scikit-learn >= 1.8 เปลี่ยนชื่อพารามิเตอร์เป็น ensure_all_finite
-    ทำให้ FactorAnalyzer.fit() โยน TypeError ทันที
-
-    แก้โดยห่อ check_array ที่ factor_analyzer ผูกไว้ในโมดูลตัวเอง
-    ให้แปลงชื่อพารามิเตอร์เก่าเป็นชื่อใหม่ (no-op ถ้า sklearn เป็นรุ่นเก่า)
-    """
-    module_names = [
-        'factor_analyzer.factor_analyzer',
-        'factor_analyzer.confirmatory_factor_analyzer',
-    ]
-    for mod_name in module_names:
-        try:
-            module = __import__(mod_name, fromlist=['check_array'])
-        except Exception:
-            continue
-
-        original = getattr(module, 'check_array', None)
-        if original is None or getattr(
-                original, '_bs_compat_wrapped', False):
-            continue
-
-        try:
-            params = inspect.signature(original).parameters
-        except (TypeError, ValueError):
-            continue
-        # sklearn เก่ายังรับ force_all_finite ได้ ไม่ต้องแพตช์
-        if 'force_all_finite' in params \
-                or 'ensure_all_finite' not in params:
-            continue
-
-        def _make_wrapper(orig):
-            def check_array_compat(*args, **kwargs):
-                if 'force_all_finite' in kwargs:
-                    kwargs['ensure_all_finite'] = kwargs.pop(
-                        'force_all_finite')
-                return orig(*args, **kwargs)
-            check_array_compat._bs_compat_wrapped = True
-            return check_array_compat
-
-        module.check_array = _make_wrapper(original)
-
-
-_patch_factor_analyzer_sklearn_compat()
-
-
-def _df_map(dataframe, func):
-    """DataFrame.applymap ถูกถอดออกใน pandas 3.0 -> ใช้ DataFrame.map แทน"""
-    if hasattr(dataframe, 'map'):
-        return dataframe.map(func)
-    return dataframe.applymap(func)
-
 
 # --- PyQt6 GUI ---
 from PyQt6.QtWidgets import (
@@ -95,7 +31,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QButtonGroup,
     QAbstractItemView, QHeaderView, QSizePolicy,
     QSpacerItem)
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import (
     QFont as QFontObj, QColor, QPainter, QPixmap)
 
@@ -460,58 +396,7 @@ _BTN_STYLES = {
     ),
 }
 
-class _ClickableCard(QFrame):
-    """การ์ดตัวเลือกที่กดได้
-
-    ใช้ QFrame แทน QPushButton เพราะ QPushButton.sizeHint() ไม่สนใจ
-    layout ลูก ทำให้การ์ดยุบจนข้อความถูกตัด ส่วน QFrame คิดขนาดจาก
-    layout ให้ถูกต้อง ข้อความยาวแค่ไหนก็ตัดบรรทัดได้เอง
-    """
-    clicked = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton \
-                and self.rect().contains(event.position().toPoint()):
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
-
-
-class _Worker(QThread):
-    """รันงานหนักนอก main thread เพื่อไม่ให้ UI ค้าง
-
-    ฟังก์ชันที่ส่งเข้ามาต้องไม่แตะ widget ใดๆ โดยตรง
-    ให้สื่อสารกลับผ่าน signal ของ SpssProcessorApp เท่านั้น
-    """
-    sig_done = pyqtSignal(object)
-    sig_error = pyqtSignal(str, str)
-
-    def __init__(self, fn, parent=None):
-        super().__init__(parent)
-        self._fn = fn
-
-    def run(self):
-        try:
-            result = self._fn()
-        except Exception as e:
-            self.sig_error.emit(
-                f"{type(e).__name__}: {e}",
-                traceback.format_exc())
-            return
-        self.sig_done.emit(result)
-
-
 class SpssProcessorApp(QMainWindow):
-    # Signals ทำให้ log/status/progress ถูกเรียกจาก worker thread ได้อย่างปลอดภัย
-    # (Qt จะ queue ไปทำงานบน main thread ให้เอง)
-    sig_log = pyqtSignal(str)
-    sig_status = pyqtSignal(str, str)
-    sig_progress = pyqtSignal(int, int)
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle(
@@ -542,30 +427,13 @@ class SpssProcessorApp(QMainWindow):
         self.sandp_label_overrides = []
         self.agree_summary_cache_df = None
         self.is_reanalyze_mode = False
-        self.reanalyze_good_mode = False
-        self.good_filter_stats = None
-        self.good_filter_full_df = None
-        self.agree_json_auto_found = False
         self.e_group_mode_var = _Var(value="default")
         self.e_group_entry_var = _Var(value="")
         self.log_text = None
-        self._analysis_errors = []
-        self._analysis_skipped = []
-        self._beta_warnings = []
-        self._beta_zero_groups = []
-        self._beta_abs_used = False
-        self._sample_size_approx = False
-        self._respondent_key = _UNSET
-
-        # --- Worker thread state ---
-        self._worker = None
-        self._ui = {}
+        self._progress_timer = None
 
         # --- GUI Setup ---
         self.setup_gui()
-        self.sig_log.connect(self._append_log_ui)
-        self.sig_status.connect(self._apply_status_ui)
-        self.sig_progress.connect(self._apply_progress_ui)
         self.center_window()
 
     def center_window(self):
@@ -905,14 +773,8 @@ class SpssProcessorApp(QMainWindow):
             self.e_group_mode_var.set("group")
             self.e_group_entry.setEnabled(True)
 
-    # -----------------------------------------------------------------
-    # Thread-safe UI updates
-    # -----------------------------------------------------------------
     def update_status(self, text, bootstyle="info"):
-        """อัปเดตข้อความสถานะ (เรียกจาก thread ไหนก็ได้)"""
-        self.sig_status.emit(str(text), str(bootstyle))
-
-    def _apply_status_ui(self, text, bootstyle):
+        """อัปเดตข้อความสถานะ"""
         color_map = {
             "info": "#2196F3", "success": "#43A047",
             "warning": "#FF9800", "danger": "#D32F2F",
@@ -921,138 +783,16 @@ class SpssProcessorApp(QMainWindow):
         self.status_label.setText(text)
         self.status_label.setStyleSheet(
             f"color:{c}; font-size:11px;")
-        # ระหว่างมี worker ทำงาน event loop เดินอยู่แล้ว
-        # การเรียก processEvents ซ้ำเสี่ยง re-entrancy
-        if self._worker is None:
-            QApplication.processEvents()
+        QApplication.processEvents()
 
     def start_progress(self):
-        """แสดง Progress Bar แบบวิ่งไปเรื่อยๆ (ไม่ทราบจำนวนขั้น)"""
-        self.sig_progress.emit(-1, 0)
-
-    def set_progress(self, current, total):
-        """แสดง Progress Bar แบบทราบเปอร์เซ็นต์จริง"""
-        self.sig_progress.emit(int(current), int(total))
-
-    def stop_progress(self):
-        """ซ่อน Progress Bar"""
-        self.sig_progress.emit(-2, 0)
-
-    def _apply_progress_ui(self, current, total):
-        if current == -2:
-            self.progress.setVisible(False)
-            self.progress.setFormat("")
-            return
-        if current == -1 or total <= 0:
-            self.progress.setRange(0, 0)
-        else:
-            self.progress.setRange(0, total)
-            self.progress.setValue(min(current, total))
+        """เริ่มการทำงาน Progress Bar"""
+        self.progress.setRange(0, 0)
         self.progress.setVisible(True)
 
-    # -----------------------------------------------------------------
-    # Worker thread plumbing
-    # -----------------------------------------------------------------
-    def _snapshot_ui_inputs(self):
-        """อ่านค่าจาก widget ทั้งหมดเก็บไว้ก่อนเริ่ม thread
-
-        ห้ามอ่าน widget จาก worker thread จึงต้อง snapshot ไว้ล่วงหน้า
-        """
-        self._ui = {
-            'filter_text': self.filter_entry.text().strip(),
-            'e_group_mode': self.e_group_mode_var.get(),
-            'e_group_expr':
-                self.e_group_entry_var.get().strip(),
-            't2b_choice': self.t2b_choice_var.get(),
-            'summary_only': self.save_all_sheets_var.get(),
-        }
-        return self._ui
-
-    def _cross_filters(self):
-        """รายชื่อ filter ไขว้จากค่าที่ snapshot ไว้
-
-        ห้าม fallback ไปอ่าน widget เพราะอาจถูกเรียกจาก worker thread
-        """
-        text = self._ui.get('filter_text', '')
-        return [f.strip() for f in text.split(',') if f.strip()]
-
-    def _lock_ui(self):
-        """จำสถานะปุ่มแล้วปิดทั้งหมด"""
-        self._btn_state = {}
-        for name in ('btn_start_process',
-                     'btn_load_settings_process',
-                     'btn_reanalyze', 'btn_analyze_export',
-                     'btn_define_labels', 'btn_save_settings'):
-            b = getattr(self, name)
-            self._btn_state[name] = b.isEnabled()
-            b.setEnabled(False)
-        self._btn_state['filter_entry'] = \
-            self.filter_entry.isEnabled()
-        self.filter_entry.setEnabled(False)
-
-    def _unlock_ui(self):
-        """คืนสถานะปุ่มตามที่จำไว้"""
-        for name, was_enabled in getattr(
-                self, '_btn_state', {}).items():
-            getattr(self, name).setEnabled(was_enabled)
-
-    def _run_in_thread(self, fn, on_done, on_error=None):
-        """รัน fn บน worker thread แล้วเรียก on_done บน main thread"""
-        if self._worker is not None:
-            self._msg_warn(
-                "กำลังประมวลผลอยู่",
-                "มีงานกำลังทำงานค้างอยู่ กรุณารอให้เสร็จก่อน")
-            return None
-
-        self._lock_ui()
-        worker = _Worker(fn, parent=self)
-        self._worker = worker
-
-        def _cleanup():
-            self._worker = None
-            self._unlock_ui()
-            worker.deleteLater()
-
-        def _handle_done(result):
-            _cleanup()
-            on_done(result)
-
-        def _handle_error(message, tb_text):
-            _cleanup()
-            self.stop_progress()
-            self.log_message("")
-            self.log_message(f"✗ เกิดข้อผิดพลาด: {message}")
-            for line in tb_text.strip().splitlines():
-                self.log_message("    " + line)
-            self.update_status(f"ผิดพลาด: {message}", "danger")
-            if on_error:
-                on_error(message, tb_text)
-            else:
-                self._msg_error(
-                    "เกิดข้อผิดพลาด",
-                    f"{message}\n\n"
-                    "ดูรายละเอียดเพิ่มเติมได้ที่ Log ด้านขวา")
-
-        worker.sig_done.connect(_handle_done)
-        worker.sig_error.connect(_handle_error)
-        worker.start()
-        return worker
-
-    def closeEvent(self, event):
-        """กันปิดโปรแกรมกลางคันขณะ worker ยังทำงาน"""
-        if self._worker is not None and self._worker.isRunning():
-            wait_first = self._styled_confirm(
-                "ยังประมวลผลไม่เสร็จ",
-                "ยังมีงานประมวลผลค้างอยู่\n"
-                "ต้องการรอให้เสร็จก่อนปิดหรือไม่?",
-                yes_text="  รอให้เสร็จ  ",
-                no_text="  ปิดทันที  ",
-                kind='warning')
-            if wait_first:
-                event.ignore()
-                return
-            self._worker.wait(3000)
-        event.accept()
+    def stop_progress(self):
+        """หยุดการทำงาน Progress Bar"""
+        self.progress.setVisible(False)
 
     def _format_filter_val(self, var_name, value):
         """แปลงค่าตัวเลขเป็น SPSS value label (ถ้ามี)"""
@@ -1216,19 +956,26 @@ class SpssProcessorApp(QMainWindow):
 
         ws = workbook.create_sheet(title=sheet_name)
 
-        cross_filters = self._cross_filters()
+        filter_text = self.filter_entry.text().strip()
+        cross_filters = [
+            f.strip() for f in filter_text.split(',')
+            if f.strip()]
 
-        # Total ต้องมีบล็อกเดียวเสมอ แล้วต่อด้วยค่าของแต่ละ filter
-        # (เดิมใส่ Total ซ้ำทุก filter ทำให้คอลัมน์ซ้ำเมื่อระบุหลายตัว)
-        blocks = [('Total', df)]
-        for fvar in cross_filters:
-            if fvar not in df.columns:
-                continue
-            uvals = sorted(df[fvar].dropna().unique())
-            for val in uvals:
-                lbl = self._get_filter_val_label(fvar, val)
-                subset = df[df[fvar] == val]
-                blocks.append((lbl, subset))
+        blocks = []
+        if not cross_filters:
+            blocks.append(('Total', df))
+        else:
+            for fvar in cross_filters:
+                if fvar not in df.columns:
+                    continue
+                blocks.append(('Total', df))
+                uvals = sorted(
+                    df[fvar].dropna().unique())
+                for val in uvals:
+                    lbl = self._get_filter_val_label(
+                        fvar, val)
+                    subset = df[df[fvar] == val]
+                    blocks.append((lbl, subset))
 
         if not blocks:
             return
@@ -1315,6 +1062,14 @@ class SpssProcessorApp(QMainWindow):
 
             col_off += bw + gap
 
+    def _toggle_e_group_entry(self):
+        """เปิด/ปิดช่อง Entry สำหรับ E Group"""
+        if self.e_group_mode_var.get() == "group":
+            self.e_group_entry.setEnabled(True)
+        else:
+            self.e_group_entry.setEnabled(False)
+            self.e_group_entry_var.set("")
+
     def reset_state(self):
         """รีเซ็ตสถานะของโปรแกรมทั้งหมดเพื่อเริ่มใหม่"""
         self.df = None
@@ -1338,22 +1093,9 @@ class SpssProcessorApp(QMainWindow):
         self.sandp_label_overrides = []
         self.agree_summary_cache_df = None
         self.is_reanalyze_mode = False
-        self.reanalyze_good_mode = False
-        self.good_filter_stats = None
-        self.good_filter_full_df = None
-        self.agree_json_auto_found = False
         self.e_group_mode_var.set("default")
         self._rb_e_default.setChecked(True)
         self.e_group_entry_var.set("")
-        self._analysis_errors = []
-        self._analysis_skipped = []
-        self._beta_warnings = []
-        self._beta_zero_groups = []
-        self._beta_abs_used = False
-        self._sample_size_approx = False
-        self._respondent_key = _UNSET
-        self._ui = {}
-        self.log_text = None
 
         self.btn_analyze_export.setEnabled(False)
         self.btn_define_labels.setEnabled(False)
@@ -1387,10 +1129,6 @@ class SpssProcessorApp(QMainWindow):
     def start_process_with_settings(self):
         """เริ่มต้นกระบวนการโดยโหลดการตั้งค่าและไฟล์ SPSS อัตโนมัติ"""
         self.reset_state()
-        if not self._prompt_before_settings():
-            self.update_status("ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
-            return
-
         self.update_status("กำลังรอเลือกไฟล์การตั้งค่า...")
         settings_filepath, _ = QFileDialog.getOpenFileName(
             self, "เลือกไฟล์การตั้งค่า", "",
@@ -1404,7 +1142,7 @@ class SpssProcessorApp(QMainWindow):
                 settings_filepath,
                 require_pathfile=True)
         except Exception as e:
-            self._msg_error("โหลดไฟล์การตั้งค่าไม่สำเร็จ", str(e))
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถโหลดไฟล์การตั้งค่าได้: {e}")
             self.reset_state()
             return
 
@@ -1420,39 +1158,21 @@ class SpssProcessorApp(QMainWindow):
         """
         Workflow 3: โหลดไฟล์ที่ผ่านการประมวลผลแล้ว (Compute C) เพื่อวิเคราะห์ซ้ำ
         """
-        mode = self._ask_reanalyze_mode()
-        if mode is None:
-            self.update_status("ยกเลิกการวิเคราะห์ซ้ำ", "warning")
-            return
-
         self.reset_state()
         self.is_reanalyze_mode = True
-        self.reanalyze_good_mode = (mode == 'auto')
-
         if not self.load_processed_spss_file():
             return
 
-        if self.reanalyze_good_mode:
-            if not self._apply_good_filter_for_reanalyze():
-                self.reset_state()
-                return
-
         self._infer_variables_from_transformed_df()
-
-        if not self._prompt_before_settings():
-            self.update_status("ยกเลิกการวิเคราะห์ซ้ำ", "warning")
-            self.reset_state()
-            return
 
         self.update_status("กำลังรอเลือกไฟล์การตั้งค่า...")
         settings_filepath, _ = QFileDialog.getOpenFileName(
-            self, "เลือกไฟล์การตั้งค่า (จำเป็น)",
-            os.path.dirname(self.original_filepath or ""),
+            self, "เลือกไฟล์การตั้งค่า (จำเป็น)", "",
             "Excel Settings File (*.xlsx)")
         if not settings_filepath:
             self.update_status("ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
-            self._msg_warn(
-                "ต้องใช้ไฟล์การตั้งค่า",
+            QMessageBox.warning(
+                self, "ต้องใช้ไฟล์การตั้งค่า",
                 "โหมดวิเคราะห์ซ้ำจำเป็นต้องโหลดไฟล์ Setting")
             self.reset_state()
             return
@@ -1462,38 +1182,24 @@ class SpssProcessorApp(QMainWindow):
                 settings_filepath,
                 require_pathfile=False)
         except Exception as e:
-            self._msg_error(
-                "โหลดไฟล์การตั้งค่าไม่สำเร็จ", str(e))
+            QMessageBox.critical(
+                self, "ผิดพลาด",
+                f"ไม่สามารถโหลดไฟล์การตั้งค่าได้: {e}")
             self.reset_state()
             return
 
-        # หา Agree Original JSON ในโฟลเดอร์เดียวกันก่อน
-        # ถ้าไม่เจอค่อยให้ผู้ใช้เลือกเอง
-        json_filepath = self._auto_find_agree_json()
-        self.agree_json_auto_found = bool(json_filepath)
-
-        if json_filepath:
-            self.update_status(
-                f"พบ Agree JSON อัตโนมัติ: "
-                f"{os.path.basename(json_filepath)}", "success")
-        else:
-            self._styled_notice(
-                "ไม่พบไฟล์ Agree Original JSON",
-                "หาไฟล์ JSON ในโฟลเดอร์เดียวกับไฟล์ Compute C ไม่เจอ\n\n"
-                "กด \"ตกลง\" เพื่อเลือกไฟล์เอง",
-                emoji="\U0001F50D", accent="#F57C00")
-            json_filepath, _ = QFileDialog.getOpenFileName(
-                self,
-                "เลือกไฟล์ Agree Original JSON (จำเป็น)",
-                os.path.dirname(self.original_filepath or ""),
-                "JSON File (*.json)")
-            if not json_filepath:
-                self.update_status("ยกเลิกการเลือกไฟล์ JSON", "warning")
-                self._msg_warn(
-                    "ต้องใช้ไฟล์ JSON",
-                    "โหมดวิเคราะห์ซ้ำต้องเลือกไฟล์ Agree Original JSON")
-                self.reset_state()
-                return
+        json_filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "เลือกไฟล์ Agree Original JSON (จำเป็น)",
+            "",
+            "JSON File (*.json)")
+        if not json_filepath:
+            self.update_status("ยกเลิกการเลือกไฟล์ JSON", "warning")
+            QMessageBox.warning(
+                self, "ต้องใช้ไฟล์ JSON",
+                "โหมดวิเคราะห์ซ้ำต้องเลือกไฟล์ Agree Original JSON")
+            self.reset_state()
+            return
         self.agree_json_filepath_override = json_filepath
 
         self.update_status(
@@ -1506,615 +1212,18 @@ class SpssProcessorApp(QMainWindow):
             self.update_status(
                 f"Add Agree Original แล้ว ({cache_cols} คอลัมน์)",
                 "success")
-            self._msg_success(
-                "Add Agree Original แล้ว",
-                f"โหลดค่า Agree จาก JSON ({cache_cols} คอลัมน์)")
-        self.show_reanalyze_ready_panel(self.original_filepath)
+            QMessageBox.information(
+                self,
+                "สำเร็จ",
+                f"Add Agree Original แล้ว\nโหลดค่า Agree จาก JSON ({cache_cols} คอลัมน์)")
+        self.show_message_in_display(
+            "โหลดไฟล์สำเร็จ\n\nกรุณาตรวจสอบ Filter แล้วกด "
+            "'วิเคราะห์และส่งออก Excel'")
 
         self.btn_analyze_export.setEnabled(True)
         self.btn_define_labels.setEnabled(True)
         self.btn_save_settings.setEnabled(False)
         self.filter_entry.setEnabled(True)
-
-    # ===================================================================
-    # RE-ANALYZE : GOOD FILTER
-    # ===================================================================
-    # ไอคอน + สีหัวข้อ ของกล่องข้อความแต่ละชนิด
-    _NOTICE_KINDS = {
-        'info':     ("\U0001F4CB", "#1565C0"),
-        'success':  ("✅", "#2E7D32"),
-        'warning':  ("⚠", "#EF6C00"),
-        'error':    ("⛔", "#C62828"),
-        'question': ("❓", "#1565C0"),
-        'search':   ("\U0001F50D", "#F57C00"),
-    }
-
-    def _build_notice_dialog(self, kind, heading, detail, emoji=None):
-        """โครงกล่องข้อความสไตล์เดียวกับโปรแกรม (ยังไม่ใส่ปุ่ม)"""
-        default_emoji, accent = self._NOTICE_KINDS.get(
-            kind, self._NOTICE_KINDS['info'])
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle(heading)
-        dlg.setModal(True)
-        dlg.setMinimumWidth(520)
-        dlg.setMaximumWidth(680)
-        dlg.setStyleSheet(_DLG_QSS)
-
-        vl = QVBoxLayout(dlg)
-        vl.setContentsMargins(24, 20, 24, 18)
-        vl.setSpacing(14)
-
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        icon = QLabel(emoji or default_emoji)
-        icon.setFixedWidth(50)
-        icon.setStyleSheet(
-            "font-size:34px; background:transparent;")
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop
-                          | Qt.AlignmentFlag.AlignHCenter)
-        row.addWidget(icon)
-
-        tv = QVBoxLayout()
-        tv.setSpacing(6)
-        h = QLabel(str(heading))
-        h.setWordWrap(True)
-        h.setStyleSheet(
-            f"color:{accent}; font-size:16px; font-weight:700;"
-            "background:transparent;")
-        tv.addWidget(h)
-        if detail:
-            d = QLabel(str(detail))
-            d.setWordWrap(True)
-            d.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse)
-            d.setStyleSheet(
-                "color:#555; font-size:12px; background:transparent;")
-            tv.addWidget(d)
-        tv.addStretch()
-        row.addLayout(tv, 1)
-        vl.addLayout(row)
-        return dlg, vl
-
-    def _styled_notice(self, heading, detail, emoji=None,
-                       kind='info', ok_text="  ตกลง  "):
-        """กล่องแจ้งเตือนปุ่มเดียว — คืน True เมื่อกดตกลง"""
-        dlg, vl = self._build_notice_dialog(
-            kind, heading, detail, emoji)
-
-        btn = QPushButton(ok_text)
-        btn.setStyleSheet(_BTN_STYLES["danger"])
-        btn.setMinimumHeight(38)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setDefault(True)
-        btn.clicked.connect(dlg.accept)
-        vl.addWidget(btn)
-
-        dlg.adjustSize()
-        self._center_toplevel(dlg)
-        return dlg.exec() == QDialog.DialogCode.Accepted
-
-    def _styled_confirm(self, heading, detail,
-                        yes_text="  ตกลง  ", no_text="  ยกเลิก  ",
-                        kind='question'):
-        """กล่องยืนยันสองปุ่ม — คืน True เมื่อกดปุ่มยืนยัน"""
-        dlg, vl = self._build_notice_dialog(kind, heading, detail)
-
-        bar = QHBoxLayout()
-        bar.setSpacing(10)
-        btn_no = QPushButton(no_text)
-        btn_no.setStyleSheet(_BTN_STYLES["outline"])
-        btn_no.setMinimumHeight(38)
-        btn_no.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_no.clicked.connect(dlg.reject)
-        bar.addWidget(btn_no, 1)
-
-        btn_yes = QPushButton(yes_text)
-        btn_yes.setStyleSheet(_BTN_STYLES["danger"])
-        btn_yes.setMinimumHeight(38)
-        btn_yes.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_yes.setDefault(True)
-        btn_yes.clicked.connect(dlg.accept)
-        bar.addWidget(btn_yes, 1)
-        vl.addLayout(bar)
-
-        dlg.adjustSize()
-        self._center_toplevel(dlg)
-        return dlg.exec() == QDialog.DialogCode.Accepted
-
-    # --- ตัวแทน QMessageBox เดิม ให้หน้าตาเป็นชุดเดียวกันทั้งโปรแกรม ---
-    def _msg_info(self, heading, detail=""):
-        return self._styled_notice(heading, detail, kind='info')
-
-    def _msg_success(self, heading, detail=""):
-        return self._styled_notice(heading, detail, kind='success')
-
-    def _msg_warn(self, heading, detail=""):
-        return self._styled_notice(heading, detail, kind='warning')
-
-    def _msg_error(self, heading, detail=""):
-        return self._styled_notice(heading, detail, kind='error')
-
-    def _msg_ask(self, heading, detail=""):
-        return self._styled_confirm(heading, detail)
-
-    def _prompt_before_settings(self):
-        """แจ้งให้ทราบก่อนเปิดหน้าต่างเลือกไฟล์ Setting"""
-        return self._styled_notice(
-            "กรุณาเลือกไฟล์ Setting BS ก่อน",
-            "ขั้นตอนต่อไปจะเปิดหน้าต่างให้เลือกไฟล์ตั้งค่า\n"
-            "(ปกติชื่อ \"Setting BS.xlsx\" อยู่โฟลเดอร์เดียวกับไฟล์ SPSS)\n\n"
-            "กด \"ตกลง\" เพื่อเปิดหน้าต่างเลือกไฟล์",
-            emoji="\U0001F4CB")
-
-    def _auto_find_agree_json(self):
-        """หาไฟล์ Agree Original JSON ในโฟลเดอร์เดียวกันอัตโนมัติ
-
-        ลำดับการหา:
-        1) ชื่อตรงตามที่โปรแกรมบันทึกไว้ (<base> Agree Original.json)
-        2) ไฟล์ *Agree Original.json ในโฟลเดอร์เดียวกัน ถ้าเจอไฟล์เดียว
-        เจอหลายไฟล์หรือไม่เจอเลย -> คืน None เพื่อให้ผู้ใช้เลือกเอง
-        """
-        if not self.original_filepath:
-            return None
-
-        def _usable(path):
-            """ต้องอ่านได้และมีคอลัมน์ agree_ จริง"""
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    payload = json.load(f)
-            except Exception:
-                return False
-            return bool(payload.get('records')
-                        and payload.get('agree_columns'))
-
-        base = self._get_base_output_path()
-        if base:
-            exact = f"{base} Agree Original.json"
-            if os.path.exists(exact) and _usable(exact):
-                return exact
-
-        folder = os.path.dirname(self.original_filepath)
-        if not folder or not os.path.isdir(folder):
-            return None
-        matches = sorted(
-            p for p in glob.glob(
-                os.path.join(folder, "*Agree Original.json"))
-            if _usable(p))
-        if len(matches) == 1:
-            return matches[0]
-        return None
-
-    def _ask_reanalyze_mode(self):
-        """ถามว่าจะใช้ไฟล์ที่ตัดชุดมาแล้ว หรือให้ระบบตัดด้วยเงื่อนไข Good
-
-        คืน 'manual' / 'auto' / None (ยกเลิก)
-        """
-        dlg = QDialog(self)
-        dlg.setWindowTitle("โหมดวิเคราะห์ซ้ำ (Compute C)")
-        dlg.setModal(True)
-        dlg.setFixedWidth(580)
-        dlg.setStyleSheet(_DLG_QSS)
-
-        vl = QVBoxLayout(dlg)
-        vl.setContentsMargins(22, 18, 22, 18)
-        vl.setSpacing(6)
-
-        title = QLabel("🔄  เลือกวิธีตัดชุดข้อมูล")
-        title.setStyleSheet(
-            "color:#B71C1C; font-size:17px; font-weight:700;"
-            "background:transparent;")
-        vl.addWidget(title)
-
-        sub = QLabel(
-            "ก่อนวิเคราะห์ซ้ำ ต้องการให้ใช้ข้อมูลชุดไหน?")
-        sub.setStyleSheet(
-            "color:#777; font-size:11px; background:transparent;"
-            "padding-bottom:8px;")
-        vl.addWidget(sub)
-
-        choice = {"v": None}
-
-        def make_card(emoji, heading, detail, accent, value):
-            card = _ClickableCard()
-            card.setStyleSheet(
-                "_ClickableCard{"
-                "background:#FFFFFF;"
-                "border:1.5px solid #E0E0E0;"
-                f"border-left:5px solid {accent};"
-                "border-radius:10px;}"
-                "_ClickableCard:hover{"
-                f"background:#FFF7F7; border:1.5px solid {accent};"
-                f"border-left:5px solid {accent};}}")
-
-            cl = QVBoxLayout(card)
-            cl.setContentsMargins(18, 14, 18, 14)
-            cl.setSpacing(4)
-
-            head_lb = QLabel(f"{emoji}   {heading}")
-            head_lb.setStyleSheet(
-                "font-size:13px; font-weight:700; color:#333;"
-                "background:transparent; border:none;")
-            detail_lb = QLabel(detail)
-            detail_lb.setWordWrap(True)
-            detail_lb.setStyleSheet(
-                "font-size:11px; color:#777;"
-                "background:transparent; border:none;")
-            for lb in (head_lb, detail_lb):
-                lb.setAttribute(
-                    Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                cl.addWidget(lb)
-
-            def _pick():
-                choice["v"] = value
-                dlg.accept()
-
-            card.clicked.connect(_pick)
-            vl.addWidget(card)
-            return card
-
-        make_card(
-            "📄", "1.  ใช้ไฟล์ที่ตัดชุดมาเองแล้ว",
-            "วิเคราะห์ทุกแถวในไฟล์ตามปกติ (พฤติกรรมเดิม)",
-            "#1976D2", "manual")
-
-        make_card(
-            "⚙️", "2.  ให้ระบบตัดชุดให้ (เงื่อนไข Good)",
-            "สร้างตัวแปร Good แล้วใช้เฉพาะ Good = 1 มาวิเคราะห์",
-            "#C62828", "auto")
-
-        note = QLabel(
-            "เงื่อนไข Good ตรวจความสอดคล้องระหว่าง A กับ "
-            "N_S / N_P / N_C / N_E\n"
-            "แถวที่ไม่สอดคล้อง (รวมถึง A = 0) จะถูกกำหนดเป็น Good = 2 "
-            "และตัดออก")
-        note.setWordWrap(True)
-        note.setStyleSheet(
-            "color:#888; font-size:10px; background:#F5F5F5;"
-            "border-radius:6px; padding:9px 11px; margin-top:6px;")
-        vl.addWidget(note)
-
-        btn_cancel = QPushButton("ยกเลิก")
-        btn_cancel.setStyleSheet(_BTN_STYLES["outline"])
-        btn_cancel.setMinimumHeight(34)
-        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cancel.clicked.connect(dlg.reject)
-        vl.addWidget(btn_cancel)
-
-        dlg.adjustSize()
-        self._center_toplevel(dlg)
-        dlg.exec()
-        return choice["v"]
-
-    # เงื่อนไข Good ที่ใช้ร่วมกันทุกตัวชี้วัด (N_S / N_P / N_C / N_E)
-    # แปลตรงจาก SPSS syntax:  (ค่า A ที่เข้าเงื่อนไข, ทิศทาง, เกณฑ์)
-    _GOOD_RULES = (
-        # ขอบล่าง: A สูงแต่คะแนนต่ำเกินไป
-        ((8,), 'lt', 0.7),
-        ((7,), 'lt', 0.6),
-        ((6,), 'lt', 0.5),
-        ((5,), 'lt', 0.4),
-        ((4,), 'lt', 0.3),
-        ((3,), 'lt', 0.2),
-        ((2,), 'lt', 0.1),
-        # ขอบบน: A ต่ำแต่คะแนนสูงเกินไป
-        ((0,), 'gt', 0.2),
-        ((1,), 'gt', 0.3),
-        ((2,), 'gt', 0.5),
-        ((3,), 'gt', 0.7),
-        ((4,), 'gt', 0.8),
-        ((5,), 'gt', 0.9),
-    )
-    _GOOD_METRICS = ('N_S', 'N_P', 'N_C', 'N_E')
-
-    def _compute_good_filter(self, df):
-        """สร้าง Series ของตัวแปร Good (1 = ผ่าน, 2 = ตัดออก)
-
-        เทียบเท่า SPSS syntax: เริ่มที่ Good = 1 แล้วถ้าเข้าเงื่อนไขใด
-        เงื่อนไขหนึ่งจะกลายเป็น 2 — ค่า missing ไม่เข้าเงื่อนไขใดเลย
-        จึงคงเป็น 1 เหมือนพฤติกรรมของ SPSS
-        """
-        required = ('A',) + self._GOOD_METRICS
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            raise RuntimeError(
-                "ไม่สามารถสร้างตัวแปร Good ได้ "
-                f"เนื่องจากไม่พบคอลัมน์: {', '.join(missing)}\n"
-                "กรุณาตรวจสอบว่าเลือกไฟล์ที่ผ่านการ Compute C แล้ว")
-
-        a = pd.to_numeric(df['A'], errors='coerce')
-        bad = (a == 0)   # IF A=0 Good=2
-
-        for metric in self._GOOD_METRICS:
-            x = pd.to_numeric(df[metric], errors='coerce')
-            for a_values, op, threshold in self._GOOD_RULES:
-                hit = (x < threshold) if op == 'lt' else (x > threshold)
-                bad = bad | (a.isin(a_values) & hit)
-
-        return pd.Series(
-            np.where(bad.to_numpy(), 2.0, 1.0),
-            index=df.index, dtype=float)
-
-    def _metric_rule_ok(self, a_value, x_value):
-        """ค่า (A, X) คู่นี้ผ่านเงื่อนไข Good ของตัวชี้วัดเดียวหรือไม่
-
-        ใช้กฎชุดเดียวกับ _compute_good_filter แต่ดูทีละตัวชี้วัด
-        (แถวจริงอาจยังถูกตัดจากตัวชี้วัดอื่นได้)
-        """
-        if a_value is None or x_value is None:
-            return True
-        try:
-            a_value = float(a_value)
-            x_value = float(x_value)
-        except (TypeError, ValueError):
-            return True
-        if np.isnan(a_value) or np.isnan(x_value):
-            return True
-        if a_value == 0:
-            return False
-        for a_values, op, threshold in self._GOOD_RULES:
-            if a_value not in a_values:
-                continue
-            if op == 'lt' and x_value < threshold:
-                return False
-            if op == 'gt' and x_value > threshold:
-                return False
-        return True
-
-    def _metric_rule_pass_series(self, a_series, x_series):
-        """เวกเตอร์: แต่ละแถวผ่านเงื่อนไขของตัวชี้วัดนี้หรือไม่"""
-        bad = (a_series == 0)
-        for a_values, op, threshold in self._GOOD_RULES:
-            hit = (x_series < threshold) if op == 'lt' \
-                else (x_series > threshold)
-            bad = bad | (a_series.isin(a_values) & hit)
-        return ~bad
-
-    def _build_good_crosstab(self, metric):
-        """ตาราง Cross: แถว = ค่า metric (ปัดทศนิยม 2), คอลัมน์ = A
-
-        คืน (total, passed, a_values, x_values) หรือ None ถ้าทำไม่ได้
-        นับจากข้อมูลเต็มก่อนตัด เพื่อให้เห็นว่าเงื่อนไขตัดตรงไหนไปบ้าง
-        """
-        df = self.good_filter_full_df
-        if df is None or df.empty:
-            return None
-        if 'A' not in df.columns or metric not in df.columns:
-            return None
-
-        a = pd.to_numeric(df['A'], errors='coerce')
-        x = pd.to_numeric(df[metric], errors='coerce')
-        ok = self._metric_rule_pass_series(a, x)
-
-        sub = pd.DataFrame({
-            'A': a, 'X': x.round(2), 'ok': ok.astype(int),
-        }).dropna(subset=['A', 'X'])
-        if sub.empty:
-            return None
-
-        total = pd.crosstab(sub['X'], sub['A'])
-        passed = pd.crosstab(
-            sub['X'], sub['A'],
-            values=sub['ok'], aggfunc='sum')
-        passed = passed.reindex(
-            index=total.index, columns=total.columns).fillna(0)
-        return (total, passed,
-                list(total.columns), list(total.index))
-
-    def _build_crosstab_table(self, metric):
-        """สร้าง QTableWidget ของตาราง Cross A x metric"""
-        built = self._build_good_crosstab(metric)
-        if built is None:
-            lb = QLabel(f"ไม่มีข้อมูลสำหรับ {metric}")
-            lb.setStyleSheet("color:#888; padding:20px;")
-            return lb
-
-        total, passed, a_vals, x_vals = built
-        n_rows, n_cols = len(x_vals), len(a_vals)
-
-        tw = QTableWidget(n_rows + 1, n_cols + 1)
-        tw.setHorizontalHeaderLabels(
-            [(str(int(a)) if float(a).is_integer() else f"{a:g}")
-             for a in a_vals] + ["Grand Total"])
-        tw.setVerticalHeaderLabels(
-            [f"{x:.2f}" for x in x_vals] + ["Grand Total"])
-        tw.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers)
-        tw.setAlternatingRowColors(False)
-
-        green = QColor('#A9D08E')
-        yellow = QColor('#FFE699')
-        mixed = QColor('#F4B183')
-        totals_bg = QColor('#EDEDED')
-
-        for r, xv in enumerate(x_vals):
-            for c, av in enumerate(a_vals):
-                cnt = int(total.iat[r, c])
-                n_ok = int(passed.iat[r, c])
-                rule_ok = self._metric_rule_ok(av, xv)
-
-                item = QTableWidgetItem(str(cnt) if cnt else "")
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight
-                    | Qt.AlignmentFlag.AlignVCenter)
-
-                # ปกติสีตามกฎ แต่ถ้าแถวจริงในช่องไม่ตรงกับกฎ
-                # (เกิดจากการปัดทศนิยม) ให้เป็นสีส้มเตือน
-                expected_ok = cnt if rule_ok else 0
-                if cnt and n_ok != expected_ok:
-                    item.setBackground(mixed)
-                    item.setToolTip(
-                        f"ผ่าน {n_ok} / {cnt} แถว "
-                        "(ค่าจริงคร่อมเกณฑ์หลังปัดทศนิยม)")
-                else:
-                    item.setBackground(green if rule_ok else yellow)
-                tw.setItem(r, c, item)
-
-            gt = QTableWidgetItem(str(int(total.iloc[r].sum())))
-            gt.setBackground(totals_bg)
-            gt.setFont(QFontObj('Segoe UI', 9, QFontObj.Weight.Bold))
-            gt.setTextAlignment(
-                Qt.AlignmentFlag.AlignRight
-                | Qt.AlignmentFlag.AlignVCenter)
-            tw.setItem(r, n_cols, gt)
-
-        for c in range(n_cols):
-            gt = QTableWidgetItem(str(int(total.iloc[:, c].sum())))
-            gt.setBackground(totals_bg)
-            gt.setFont(QFontObj('Segoe UI', 9, QFontObj.Weight.Bold))
-            gt.setTextAlignment(
-                Qt.AlignmentFlag.AlignRight
-                | Qt.AlignmentFlag.AlignVCenter)
-            tw.setItem(n_rows, c, gt)
-
-        grand = QTableWidgetItem(str(int(total.to_numpy().sum())))
-        grand.setBackground(totals_bg)
-        grand.setFont(QFontObj('Segoe UI', 9, QFontObj.Weight.Bold))
-        grand.setTextAlignment(
-            Qt.AlignmentFlag.AlignRight
-            | Qt.AlignmentFlag.AlignVCenter)
-        tw.setItem(n_rows, n_cols, grand)
-
-        self._fit_table_to_content(tw)
-        return tw
-
-    def _fit_table_to_content(self, tw, row_height=22):
-        """ขยายตารางให้พอดีเนื้อหา จะได้ไม่มี scrollbar ในตัวตารางเอง
-
-        - คอลัมน์ยืดเต็มความกว้างที่มี (คอลัมน์ Grand Total จึงไม่โดนตัด)
-        - ล็อกความสูงเท่าจำนวนแถวจริง (เห็นครบทุกแถว)
-        ให้หน้าเพจด้านนอกเป็นตัวเลื่อนแทน
-        """
-        tw.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        tw.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        header = tw.horizontalHeader()
-        header.setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
-        header.setMinimumSectionSize(38)
-
-        tw.verticalHeader().setDefaultSectionSize(row_height)
-        for r in range(tw.rowCount()):
-            tw.setRowHeight(r, row_height)
-
-        # ล็อกความสูงหัวตารางไว้ จะได้คำนวณความสูงรวมได้แน่นอน
-        # (ถ้าอ่านจาก sizeHint ตอนยังไม่แสดงผล จะได้ค่าน้อยกว่าจริง)
-        header_h = max(header.sizeHint().height(), 28)
-        header.setFixedHeight(header_h)
-
-        total_h = (header_h
-                   + row_height * tw.rowCount()
-                   + 2 * tw.frameWidth() + 2)
-        tw.setFixedHeight(total_h)
-        tw.setSizePolicy(QSizePolicy.Policy.Expanding,
-                         QSizePolicy.Policy.Fixed)
-        return total_h
-
-    def _save_good_sav(self, df_with_good):
-        """เขียนตัวแปร Good กลับลงไฟล์ SPSS ที่โหลดเข้ามา (ทับไฟล์เดิม)
-
-        เขียนลงไฟล์ชั่วคราวก่อนแล้วค่อย os.replace ทับ เพื่อไม่ให้
-        ไฟล์ต้นทางเสียหายถ้าเขียนไม่สำเร็จกลางคัน
-        """
-        target = self.original_filepath
-        if not target:
-            return None
-
-        folder = os.path.dirname(target) or "."
-        tmp_path = os.path.join(
-            folder, f"~good_tmp_{os.path.basename(target)}")
-        try:
-            column_labels = [
-                'Good filter (1=Good, 2=Not Good)' if col == 'Good'
-                else str(self.spss_variable_labels.get(col, col))
-                for col in df_with_good.columns
-            ]
-            value_labels = {'Good': {1.0: 'Good', 2.0: 'Not Good'}}
-            for col, labels in self.spss_value_labels.items():
-                if col in df_with_good.columns \
-                        and isinstance(labels, dict) and labels:
-                    value_labels[col] = labels
-
-            pyreadstat.write_sav(
-                df_with_good, tmp_path,
-                column_labels=column_labels,
-                variable_value_labels=value_labels)
-            os.replace(tmp_path, target)
-            return target
-        except Exception as e:
-            # เขียนไม่สำเร็จ -> ทิ้งไฟล์ชั่วคราว ไฟล์เดิมยังอยู่ครบ
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-            self.update_status(
-                f"บันทึกตัวแปร Good ลงไฟล์ไม่สำเร็จ: {e}", "warning")
-            return None
-
-    def _apply_good_filter_for_reanalyze(self):
-        """สร้างตัวแปร Good แล้วคัดเหลือเฉพาะ Good = 1 ไว้วิเคราะห์"""
-        if self.transformed_df is None or self.transformed_df.empty:
-            self._msg_error(
-                "ไม่มีข้อมูล", "ไม่มีข้อมูลสำหรับสร้างตัวแปร Good")
-            return False
-
-        self.update_status("กำลังสร้างตัวแปร Good...")
-        try:
-            good = self._compute_good_filter(self.transformed_df)
-        except Exception as e:
-            self._msg_error("ผิดพลาด", str(e))
-            return False
-
-        df = self.transformed_df.copy()
-        df['Good'] = good
-
-        total = len(df)
-        n_good = int((df['Good'] == 1).sum())
-        n_drop = total - n_good
-
-        saved_path = self._save_good_sav(df)
-
-        if n_good == 0:
-            self._msg_error(
-                "ไม่เหลือข้อมูล",
-                "เงื่อนไข Good ตัดข้อมูลออกทั้งหมด (Good = 1 เหลือ 0 แถว)\n\n"
-                "กรุณาตรวจสอบข้อมูล หรือเลือกโหมด "
-                "'ใช้ไฟล์ที่ตัดชุดมาเองแล้ว' แทน")
-            return False
-
-        # เก็บข้อมูลเต็ม (ก่อนตัด) ไว้ทำตาราง Cross ให้ตรวจสอบ
-        self.good_filter_full_df = df
-        self.transformed_df = df[df['Good'] == 1].reset_index(drop=True)
-        self._respondent_key = _UNSET   # ข้อมูลเปลี่ยน ต้องตรวจรหัสผู้ตอบใหม่
-        self.good_filter_stats = {
-            'total': total,
-            'good': n_good,
-            'dropped': n_drop,
-            'good_pct': (n_good / total * 100) if total else 0.0,
-            'saved_path': saved_path,
-        }
-
-        detail = (
-            f"ข้อมูลทั้งหมด : {total:,} แถว\n"
-            f"Good = 1 (ใช้วิเคราะห์) : {n_good:,} แถว "
-            f"({self.good_filter_stats['good_pct']:.1f}%)\n"
-            f"Good = 2 (ตัดออก) : {n_drop:,} แถว")
-        if saved_path:
-            detail += (
-                "\n\nบันทึกตัวแปร Good ลงไฟล์ SPSS ที่โหลดเข้ามาแล้ว:\n"
-                f"{saved_path}")
-        else:
-            detail += ("\n\n⚠ บันทึกตัวแปร Good ลงไฟล์ไม่สำเร็จ "
-                       "(ไฟล์เดิมยังอยู่ครบ)")
-        self._msg_success("สร้างตัวแปร Good เรียบร้อยแล้ว", detail)
-
-        self.update_status(
-            f"ตัดชุดด้วยเงื่อนไข Good: เหลือ {n_good:,}/{total:,} แถว",
-            "success")
-        return True
 
     def load_spss_file(self, filepath=None):
         """โหลดไฟล์ SPSS ดั้งเดิม โดยรับ Path หรือเปิด Dialog"""
@@ -2129,7 +1238,7 @@ class SpssProcessorApp(QMainWindow):
 
         if not os.path.exists(filepath):
             self.update_status("ไฟล์ SPSS ไม่พบ", "danger")
-            self._msg_error("ไม่พบไฟล์ที่ระบุ", filepath)
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่พบไฟล์ที่ระบุ:\n{filepath}")
             return False
 
         self.start_progress()
@@ -2148,7 +1257,7 @@ class SpssProcessorApp(QMainWindow):
             return True
         except Exception as e:
             self.update_status("โหลดไฟล์ผิดพลาด", "danger")
-            self._msg_error("โหลดไฟล์ไม่สำเร็จ", str(e))
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถโหลดไฟล์ได้: {e}")
             self.stop_progress()
             self.reset_state()
             return False
@@ -2182,8 +1291,8 @@ class SpssProcessorApp(QMainWindow):
             return True
         except Exception as e:
             self.update_status("โหลดไฟล์ผิดพลาด", "danger")
-            self._msg_error(
-                "โหลดไฟล์ที่ประมวลผลแล้วไม่สำเร็จ", str(e))
+            QMessageBox.critical(self, "ผิดพลาด",
+                f"ไม่สามารถโหลดไฟล์ที่ประมวลผลแล้วได้: {e}")
             self.stop_progress()
             self.reset_state()
             return False
@@ -2712,9 +1821,9 @@ class SpssProcessorApp(QMainWindow):
                     selected_lw.item(i).text())
             self.c_vars_to_compute = items
             if not items:
-                self._msg_warn(
-                    "ยังไม่ได้เลือกตัวแปร",
-                    "กรุณาเลือกตัวแปรอย่างน้อย 1 ตัว")
+                QMessageBox.warning(
+                    dlg, "คำเตือน",
+                    "คุณยังไม่ได้เลือกตัวแปรใดๆ")
                 return
             dlg.accept()
             QTimer.singleShot(
@@ -2739,24 +1848,16 @@ class SpssProcessorApp(QMainWindow):
         dlg.exec()
 
     def run_c_compute_and_proceed(self):
-        """รันการคำนวณ C และไปขั้นตอนเลือกตัวแปรอื่นๆ
-
-        Compute C เป็นการคำนวณ pandas ล้วนๆ ที่เร็วมาก และต้องเปิด
-        dialog ต่อทันที จึงรันบน main thread ต่อไป
-        """
+        """รันการคำนวณ C และไปขั้นตอนเลือกตัวแปรอื่นๆ"""
         self.start_progress()
         self.update_status(f"เลือก {len(self.c_vars_to_compute)} ตัวแปร. กำลัง Compute C...")
-        try:
-            self._compute_c_variables_logic()
-        except Exception as e:
-            self.stop_progress()
+        if self._compute_c_variables_logic():
+            self.update_status(f"Compute C สำเร็จ! สร้าง {len(self.computed_c_cols)} ตัวแปร.", "success")
+            self.open_aspe_selector()
+        else:
             self.update_status("Compute C ผิดพลาด", "danger")
-            self._msg_error("ผิดพลาด", str(e))
             self.reset_state()
-            return
-        self.update_status(f"Compute C สำเร็จ! สร้าง {len(self.computed_c_cols)} ตัวแปร.", "success")
         self.stop_progress()
-        self.open_aspe_selector()
 
     def open_aspe_selector(self):
         """เปิดหน้าต่างเลือก A,S,P,E + AgreeS,AgreeP + T2B"""
@@ -2897,140 +1998,118 @@ class SpssProcessorApp(QMainWindow):
         self._center_toplevel(dlg)
         dlg.exec()
 
-    def _transform_pipeline(self, with_compute_c):
-        """ขั้นตอนประมวลผลหนัก — รันบน worker thread เท่านั้น
-
-        ห้ามแตะ widget โดยตรง ใช้ log_message/update_status/set_progress
-        ซึ่งส่งผ่าน signal ให้ main thread ทำงานแทน
-        """
+    def run_full_transformation_and_save(self):
+        self.start_progress()
+        self.show_log_panel("กำลังประมวลผลข้อมูล (Step 1)...")
         start_time = time.time()
-        total_steps = 4 if with_compute_c else 3
-        step = 0
 
         self.log_message("=" * 50)
-        self.log_message(
-            "เริ่มกระบวนการประมวลผลจากไฟล์ตั้งค่า"
-            if with_compute_c
-            else "เริ่มกระบวนการประมวลผลข้อมูล")
+        self.log_message("เริ่มกระบวนการประมวลผลข้อมูล")
         self.log_message("=" * 50)
-        if not with_compute_c:
-            self.log_message(
-                f"Compute C: {len(self.computed_c_cols)} ตัวแปร")
+        self.log_message(f"Compute C: {len(self.computed_c_cols)} ตัวแปร")
         self.log_message("")
-        self.set_progress(step, total_steps)
 
-        if with_compute_c:
-            step += 1
-            self.log_message(f"[{step}/{total_steps}] กำลัง Compute C...")
-            self.update_status("กำลัง Compute C จากการตั้งค่า...")
-            self._compute_c_variables_logic()
-            self.log_message(
-                f"   ✓ Compute C สำเร็จ ({len(self.computed_c_cols)} ตัวแปร)")
-            self.set_progress(step, total_steps)
-            self.log_message("")
-
-        step += 1
-        self.log_message(f"[{step}/{total_steps}] กำลัง Recode ตัวแปร A...")
+        self.log_message("[1/3] กำลัง Recode ตัวแปร A...")
         self.update_status("กำลัง Recode ตัวแปร A...")
-        self._recode_a_variables_logic()
-        self.log_message(
-            f"   ✓ Recode A สำเร็จ ({len(self.za_cols)} ตัวแปร ZA)")
-        self.set_progress(step, total_steps)
+        if not self._recode_a_variables_logic():
+            self.log_message("   ✗ Recode A ผิดพลาด")
+            self.update_status("Recode A ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ Recode A สำเร็จ ({len(self.za_cols)} ตัวแปร ZA)")
 
         self.log_message("")
-        step += 1
-        self.log_message(
-            f"[{step}/{total_steps}] กำลังแปลงข้อมูล (Variables to Cases)...")
+        self.log_message("[2/3] กำลังแปลงข้อมูล (Variables to Cases)...")
         self.update_status("กำลังแปลงข้อมูล (Variables to Cases)...")
-        self._run_full_transformation_logic()
-        self.log_message(
-            f"   ✓ แปลงข้อมูลสำเร็จ ({len(self.transformed_df)} แถว)")
-        self.set_progress(step, total_steps)
+        if not self._run_full_transformation_logic():
+            self.log_message("   ✗ แปลงข้อมูลผิดพลาด")
+            self.update_status("แปลงข้อมูลผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ แปลงข้อมูลสำเร็จ ({len(self.transformed_df)} แถว)")
 
         self.log_message("")
-        step += 1
-        self.log_message(f"[{step}/{total_steps}] กำลังบันทึกไฟล์ .sav...")
-        self.update_status(
-            "แปลงข้อมูลสำเร็จ. กำลังบันทึกไฟล์อัตโนมัติ...", "success")
-        self._auto_save_spss(self.transformed_df)
+        self.log_message("[3/3] กำลังบันทึกไฟล์ .sav...")
+        self.update_status("แปลงข้อมูลสำเร็จ. กำลังบันทึกไฟล์อัตโนมัติ...", "success")
+        if not self._auto_save_spss(self.transformed_df):
+            self.log_message("   ✗ บันทึกไม่สำเร็จ")
+            self.update_status("บันทึก .sav อัตโนมัติไม่สำเร็จ", "danger"); self.stop_progress(); self.reset_state(); return
         self.log_message("   ✓ บันทึก .sav สำเร็จ")
-        self.set_progress(step, total_steps)
 
         elapsed = time.time() - start_time
         self.log_message("")
         self.log_message("=" * 50)
-        self.log_message(
-            f"ประมวลผลข้อมูลเสร็จสมบูรณ์ (ใช้เวลา {elapsed:.1f} วินาที)")
+        self.log_message(f"ประมวลผลข้อมูลเสร็จสมบูรณ์ (ใช้เวลา {elapsed:.1f} วินาที)")
         self.log_message("=" * 50)
         self.log_message("")
-        return True
+        self.log_message("กรุณาใส่ Filter (ถ้ามี) และกด 'วิเคราะห์และส่งออก Excel'")
 
-    def _on_transform_failed(self, message, tb_text):
-        """เคลียร์ state เมื่อขั้นตอนแปลงข้อมูลล้มเหลว"""
-        self._msg_error(
-            "ประมวลผลไม่สำเร็จ",
-            f"{message}\n\nดูรายละเอียดเพิ่มเติมได้ที่ Log ด้านขวา")
-        self.reset_state()
-
-    def run_full_transformation_and_save(self):
-        self._snapshot_ui_inputs()
-        self.show_log_panel("กำลังประมวลผลข้อมูล (Step 1)...")
-        self.start_progress()
-
-        def _done(_result):
-            self.stop_progress()
-            self.log_message(
-                "กรุณาใส่ Filter (ถ้ามี) และกด 'วิเคราะห์และส่งออก Excel'")
-            self.update_status("ประมวลผลข้อมูลสำเร็จ", "success")
-            self.btn_analyze_export.setEnabled(True)
-            self.btn_define_labels.setEnabled(True)
-            self.btn_save_settings.setEnabled(True)
-            self.filter_entry.setEnabled(True)
-
-        self._run_in_thread(
-            lambda: self._transform_pipeline(with_compute_c=False),
-            _done,
-            self._on_transform_failed)
+        self.btn_analyze_export.setEnabled(True)
+        self.btn_define_labels.setEnabled(True)
+        self.btn_save_settings.setEnabled(True)
+        self.filter_entry.setEnabled(True)
+        self.stop_progress()
 
     def run_processing_with_loaded_settings(self):
-        self._snapshot_ui_inputs()
-        self.show_log_panel("กำลังประมวลผลข้อมูล (จากไฟล์ตั้งค่า)...")
         self.start_progress()
+        self.show_log_panel("กำลังประมวลผลข้อมูล (จากไฟล์ตั้งค่า)...")
+        start_time = time.time()
 
-        def _done(_result):
-            self.stop_progress()
-            self.log_message("กำลังเริ่มวิเคราะห์และส่งออกอัตโนมัติ...")
-            self.update_status(
-                "ประมวลผลข้อมูลสำเร็จ. เริ่มการวิเคราะห์และส่งออกอัตโนมัติ...",
-                "info")
-            self.btn_analyze_export.setEnabled(True)
-            self.btn_define_labels.setEnabled(True)
-            self.btn_save_settings.setEnabled(True)
-            self.filter_entry.setEnabled(True)
-            QTimer.singleShot(
-                100,
-                lambda: self.run_analysis_and_export(automated=True))
+        self.log_message("=" * 50)
+        self.log_message("เริ่มกระบวนการประมวลผลจากไฟล์ตั้งค่า")
+        self.log_message("=" * 50)
+        self.log_message("")
 
-        self._run_in_thread(
-            lambda: self._transform_pipeline(with_compute_c=True),
-            _done,
-            self._on_transform_failed)
+        self.log_message("[1/4] กำลัง Compute C...")
+        self.update_status("กำลัง Compute C จากการตั้งค่า...")
+        if not self._compute_c_variables_logic():
+            self.log_message("   ✗ Compute C ผิดพลาด")
+            self.update_status("Compute C ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ Compute C สำเร็จ ({len(self.computed_c_cols)} ตัวแปร)")
+
+        self.log_message("")
+        self.log_message("[2/4] กำลัง Recode ตัวแปร A...")
+        self.update_status("กำลัง Recode ตัวแปร A...")
+        if not self._recode_a_variables_logic():
+            self.log_message("   ✗ Recode A ผิดพลาด")
+            self.update_status("Recode A ผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ Recode A สำเร็จ ({len(self.za_cols)} ตัวแปร ZA)")
+
+        self.log_message("")
+        self.log_message("[3/4] กำลังแปลงข้อมูล (Variables to Cases)...")
+        self.update_status("กำลังแปลงข้อมูล (Variables to Cases)...")
+        if not self._run_full_transformation_logic():
+            self.log_message("   ✗ แปลงข้อมูลผิดพลาด")
+            self.update_status("แปลงข้อมูลผิดพลาด", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message(f"   ✓ แปลงข้อมูลสำเร็จ ({len(self.transformed_df)} แถว)")
+
+        self.log_message("")
+        self.log_message("[4/4] กำลังบันทึกไฟล์ .sav...")
+        self.update_status("แปลงข้อมูลสำเร็จ. กำลังบันทึกไฟล์อัตโนมัติ...", "success")
+        if not self._auto_save_spss(self.transformed_df):
+            self.log_message("   ✗ บันทึกไม่สำเร็จ")
+            self.update_status("บันทึก .sav อัตโนมัติไม่สำเร็จ", "danger"); self.stop_progress(); self.reset_state(); return
+        self.log_message("   ✓ บันทึก .sav สำเร็จ")
+
+        elapsed = time.time() - start_time
+        self.log_message("")
+        self.log_message("=" * 50)
+        self.log_message(f"ประมวลผลเสร็จ (ใช้เวลา {elapsed:.1f} วินาที)")
+        self.log_message("=" * 50)
+        self.log_message("")
+        self.log_message("กำลังเริ่มวิเคราะห์และส่งออกอัตโนมัติ...")
+
+        self.update_status("ประมวลผลข้อมูลสำเร็จ. เริ่มการวิเคราะห์และส่งออกอัตโนมัติ...", "info")
+        QTimer.singleShot(100, lambda: self.run_analysis_and_export(automated=True))
 
     # ===================================================================
     # PROCESSING LOGIC (Back-end)
     # ===================================================================
     def _compute_c_variables_logic(self):
-        """คำนวณตัวแปร C — โยน RuntimeError เมื่อผิดพลาด
-        (ห้ามเปิด QMessageBox จากที่นี่ เพราะรันบน worker thread)"""
         if not self.c_vars_to_compute:
-            raise RuntimeError(
-                "ไม่มีตัวแปรที่ถูกเลือกสำหรับคำนวณ C")
+            QMessageBox.critical(self, "ผิดพลาด", "ไม่มีตัวแปรที่ถูกเลือกสำหรับคำนวณ C")
+            return False
         try:
             first_var = self.c_vars_to_compute[0]
             if '#' not in first_var:
-                raise RuntimeError(
-                    f"ตัวแปรที่เลือก ({first_var}) ไม่มีรูปแบบที่ถูกต้อง "
-                    "(เช่น 'PREFIX#GROUP$ITEM')")
+                QMessageBox.critical(self, "รูปแบบผิดพลาด", f"ตัวแปรที่เลือก ({first_var}) ไม่มีรูปแบบที่ถูกต้อง (เช่น 'PREFIX#GROUP$ITEM')")
+                return False
             deduced_prefix = first_var.split('#')[0]
             pattern = re.compile(rf"^{re.escape(deduced_prefix)}#(\d+)\$(\d+)")
             groups = {}
@@ -3042,17 +2121,16 @@ class SpssProcessorApp(QMainWindow):
                         groups[group_num] = []
                     groups[group_num].append(col)
             if not groups:
-                raise RuntimeError(
-                    f"ไม่พบตัวแปรที่ตรงกับรูปแบบ '{deduced_prefix}#Group$Item' "
-                    "จากตัวแปรที่คุณเลือก")
+                QMessageBox.critical(self, "ผิดพลาด", f"ไม่พบตัวแปรที่ตรงกับรูปแบบ '{deduced_prefix}#Group$Item' จากตัวแปรที่คุณเลือก")
+                return False
 
             self.computed_c_cols = []
             new_cols_data = {}
 
             max_item_num = max((int(m.group(2)) for c in self.c_vars_to_compute if (m := pattern.match(c))), default=0)
             if max_item_num == 0:
-                raise RuntimeError(
-                    "ไม่สามารถหา Item number สูงสุดจากตัวแปรที่เลือกสำหรับ C ได้")
+                QMessageBox.critical(self, "ผิดพลาด", "ไม่สามารถหา Item number สูงสุดจากตัวแปรที่เลือกสำหรับ C ได้")
+                return False
 
             for j in range(1, max_item_num + 1):
                 for i in sorted(groups.keys()):
@@ -3068,19 +2146,16 @@ class SpssProcessorApp(QMainWindow):
                         self.computed_c_cols.append(new_c_name)
 
             if not self.computed_c_cols:
-                raise RuntimeError(
-                    "ไม่สามารถสร้างตัวแปร C ได้ "
-                    "อาจเพราะโครงสร้างตัวแปรไม่ถูกต้อง")
+                QMessageBox.warning(self, "ไม่สำเร็จ", "ไม่สามารถสร้างตัวแปร C ได้ อาจเพราะโครงสร้างตัวแปรไม่ถูกต้อง")
+                return False
 
             if new_cols_data:
                 self.df = pd.concat([self.df, pd.DataFrame(new_cols_data)], axis=1)
 
             return True
-        except RuntimeError:
-            raise
         except Exception as e:
-            raise RuntimeError(
-                f"เกิดข้อผิดพลาดระหว่างคำนวณตัวแปร C: {e}") from e
+            QMessageBox.critical(self, "ผิดพลาด", f"เกิดข้อผิดพลาดระหว่างคำนวณตัวแปร C: {e}")
+            return False
 
     def _recode_a_variables_logic(self):
         a_vars_to_process = self.vars_to_transform.get('A', [])
@@ -3093,7 +2168,9 @@ class SpssProcessorApp(QMainWindow):
 
             for var in a_vars_to_process:
                 if var in self.df.columns and pd.api.types.is_numeric_dtype(self.df[var]):
-                    self.df[var] = self.df[var].replace(9, 0)
+                    temp_series = self.df[var].copy()
+                    temp_series.replace(9, 0, inplace=True)
+                    self.df[var] = temp_series
 
                     za_var_name = 'Z' + var
                     new_za_cols_data[za_var_name] = self.df[var].map(za_map).fillna(self.df[var])
@@ -3104,8 +2181,8 @@ class SpssProcessorApp(QMainWindow):
 
             return True
         except Exception as e:
-            raise RuntimeError(
-                f"เกิดข้อผิดพลาดขณะแปลงค่าตัวแปร A: {e}") from e
+            QMessageBox.critical(self, "Recode Error", f"เกิดข้อผิดพลาดขณะแปลงค่าตัวแปร A: {e}")
+            return False
 
     def _run_full_transformation_logic(self):
         try:
@@ -3141,45 +2218,21 @@ class SpssProcessorApp(QMainWindow):
                     if grp not in maps['C']: maps['C'][grp] = {}
                     maps['C'][grp][idx] = var; groups['C'].add(grp); max_index = max(max_index, idx)
 
-            if max_index == 0:
-                raise RuntimeError(
-                    "ไม่สามารถหา Index สำหรับการแปลงข้อมูลได้\n"
-                    "กรุณาตรวจสอบรูปแบบของตัวแปรที่เลือก")
+            if max_index == 0: QMessageBox.critical(self, "ผิดพลาด", "ไม่สามารถหา Index สำหรับการแปลงข้อมูลได้\nกรุณาตรวจสอบรูปแบบของตัวแปรที่เลือก"); return False
 
-            # --- Variables to Cases (vectorized) ---
-            # เดิมวนด้วย iterrows สร้าง dict ทีละเรคอร์ด ทำให้ช้าตาม
-            # (จำนวนผู้ตอบ x max_index) ตอนนี้สร้างทีละ Index1 แบบทั้งคอลัมน์
-            # แล้วค่อย concat ผลลัพธ์เหมือนเดิมทุกประการ
-            base_df = temp_df.reset_index(drop=True)
-            id_cols = [c for c in self.id_vars
-                       if c in base_df.columns]
+            new_data = []
+            for _, row in temp_df.iterrows():
+                base_record = {k: row[k] for k in self.id_vars}
+                for j in range(1, max_index + 1):
+                    new_record = base_record.copy(); new_record['Index1'] = j
+                    if (a_source := maps['A'].get(j)) and a_source in row: new_record['A'] = row[a_source]
+                    if (za_source := maps['ZA'].get(j)) and za_source in row: new_record['ZA'] = row[za_source]
+                    for key in ['S', 'P', 'E', 'C']:
+                        for i in sorted(list(groups[key])):
+                            if (source_var := maps[key].get(i, {}).get(j)) and source_var in row: new_record[f'{key}_{i}'] = row[source_var]
+                    new_data.append(new_record)
 
-            frames = []
-            for j in range(1, max_index + 1):
-                part = base_df[id_cols].copy()
-                part['Index1'] = j
-
-                if (a_source := maps['A'].get(j)) \
-                        and a_source in base_df.columns:
-                    part['A'] = base_df[a_source]
-                if (za_source := maps['ZA'].get(j)) \
-                        and za_source in base_df.columns:
-                    part['ZA'] = base_df[za_source]
-
-                for key in ['S', 'P', 'E', 'C']:
-                    for i in sorted(groups[key]):
-                        source_var = maps[key].get(i, {}).get(j)
-                        if source_var and source_var in base_df.columns:
-                            part[f'{key}_{i}'] = base_df[source_var]
-
-                frames.append(part)
-
-            # sort_index แบบ stable ทำให้ได้ลำดับเดิม คือ
-            # ผู้ตอบคนที่ 1 ครบทุก Index1 ก่อน แล้วจึงเป็นคนถัดไป
-            self.transformed_df = (
-                pd.concat(frames)
-                .sort_index(kind='stable')
-                .reset_index(drop=True))
+            self.transformed_df = pd.DataFrame(new_data)
 
             value_cols = [col for col in ['A', 'ZA'] if col in self.transformed_df.columns]
             for key in ['S', 'P', 'E', 'C']: value_cols.extend([c for c in self.transformed_df.columns if c.startswith(f"{key}_")])
@@ -3190,10 +2243,8 @@ class SpssProcessorApp(QMainWindow):
                 if cols := [c for c in self.transformed_df.columns if c.startswith(f'{key}_')]: self.transformed_df[col_name] = self.transformed_df[cols].mean(axis=1)
 
             # --- E Group Mode: merge specified E groups ---
-            # อ่านจาก snapshot เท่านั้น ห้ามแตะ widget จาก worker thread
-            if self._ui.get('e_group_mode', 'default') == "group":
-                e_group_expr = self._ui.get(
-                    'e_group_expr', '').strip()
+            if self.e_group_mode_var.get() == "group":
+                e_group_expr = self.e_group_entry_var.get().strip()
                 if e_group_expr:
                     try:
                         e_group_nums = [int(x.strip()) for x in e_group_expr.split('+')]
@@ -3222,14 +2273,10 @@ class SpssProcessorApp(QMainWindow):
             final_ordered_cols.extend(sorted_new_keys)
 
             self.transformed_df = self.transformed_df[[c for c in final_ordered_cols if c in self.transformed_df.columns]]
-            self._respondent_key = _UNSET   # ข้อมูลเปลี่ยน ต้องตรวจใหม่
             self._build_compute_sav_metadata(maps)
             return True
-        except RuntimeError:
-            raise
         except Exception as e:
-            raise RuntimeError(
-                f"เกิดข้อผิดพลาดระหว่างการแปลงข้อมูล: {e}") from e
+            QMessageBox.critical(self, "ผิดพลาด", f"เกิดข้อผิดพลาดระหว่างการแปลงข้อมูล: {e}"); return False
 
     def _build_compute_sav_metadata(self, maps):
         """เตรียม SPSS metadata (column labels + value labels) สำหรับไฟล์ Compute C"""
@@ -3295,9 +2342,11 @@ class SpssProcessorApp(QMainWindow):
 
     def _auto_save_spss(self, dataframe_to_save):
         if dataframe_to_save is None:
-            raise RuntimeError("ไม่มีข้อมูลให้บันทึก")
+            QMessageBox.warning(self, "คำเตือน", "ไม่มีข้อมูลให้บันทึก")
+            return False
         if not self.original_filepath:
-            raise RuntimeError("ไม่พบ Path ของไฟล์ต้นฉบับ")
+            QMessageBox.critical(self, "ผิดพลาด", "ไม่พบ Path ของไฟล์ต้นฉบับ")
+            return False
 
         try:
             base, _ = os.path.splitext(self.original_filepath)
@@ -3328,8 +2377,8 @@ class SpssProcessorApp(QMainWindow):
             self.update_status(f"บันทึกไฟล์ใหม่ที่: {new_filepath}", "success")
             return True
         except Exception as e:
-            raise RuntimeError(
-                f"ไม่สามารถบันทึกไฟล์อัตโนมัติได้: {e}") from e
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถบันทึกไฟล์อัตโนมัติได้: {e}")
+            return False
 
     def _extract_spss_metadata(self, meta):
         """สกัด variable labels + value labels ให้ครบที่สุดจาก meta"""
@@ -3389,227 +2438,16 @@ class SpssProcessorApp(QMainWindow):
     def show_message_in_display(self, message_text):
         """แสดงข้อความในพื้นที่แสดงผลด้านขวา"""
         self._clear_right_panel()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(
-            "QScrollArea{border:none; background:transparent;}")
-        holder = QWidget()
-        hl = QVBoxLayout(holder)
-        hl.setContentsMargins(26, 24, 26, 24)
         lb = QLabel(message_text)
         lb.setStyleSheet(
-            "color:#37474F; font-size:13px;"
-            "line-height:170%;")
+            "color:#444; font-size:14px;"
+            "font-weight:500;")
         lb.setWordWrap(True)
-        lb.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
         lb.setAlignment(
             Qt.AlignmentFlag.AlignTop
             | Qt.AlignmentFlag.AlignLeft)
-        hl.addWidget(lb)
-        hl.addStretch()
-        scroll.setWidget(holder)
-        self.right_frame.layout().addWidget(scroll)
-
-    # -----------------------------------------------------------------
-    # Rich "ready to analyse" panel
-    # -----------------------------------------------------------------
-    def _stat_tile(self, value, caption, sub, accent, bg):
-        """กล่องตัวเลขสรุป 1 ช่อง"""
-        card = QFrame()
-        card.setStyleSheet(
-            f"QFrame{{background:{bg}; border-radius:12px;"
-            f"border:1px solid rgba(0,0,0,0.05);}}")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(16, 14, 16, 14)
-        cl.setSpacing(2)
-
-        v = QLabel(value)
-        v.setStyleSheet(
-            f"color:{accent}; font-size:26px; font-weight:700;"
-            "background:transparent; border:none;")
-        cl.addWidget(v)
-
-        c = QLabel(caption)
-        c.setStyleSheet(
-            "color:#455A64; font-size:12px; font-weight:600;"
-            "background:transparent; border:none;")
-        cl.addWidget(c)
-
-        if sub:
-            s = QLabel(sub)
-            s.setStyleSheet(
-                "color:#90A4AE; font-size:10px;"
-                "background:transparent; border:none;")
-            cl.addWidget(s)
-        return card
-
-    def show_reanalyze_ready_panel(self, source_path):
-        """หน้าสรุปหลังโหลดไฟล์ในโหมดวิเคราะห์ซ้ำ"""
-        self._clear_right_panel()
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(
-            "QScrollArea{border:none; background:transparent;}")
-        page = QWidget()
-        pl = QVBoxLayout(page)
-        pl.setContentsMargins(28, 24, 28, 24)
-        pl.setSpacing(14)
-        scroll.setWidget(page)
-        self.right_frame.layout().addWidget(scroll)
-
-        # ---- header ----
-        head = QLabel("✅  โหลดไฟล์สำเร็จ")
-        head.setStyleSheet(
-            "color:#2E7D32; font-size:21px; font-weight:700;"
-            "background:transparent;")
-        pl.addWidget(head)
-
-        if source_path:
-            fname = QLabel(os.path.basename(source_path))
-            fname.setStyleSheet(
-                "color:#78909C; font-size:11px;"
-                "background:transparent;")
-            fname.setWordWrap(True)
-            pl.addWidget(fname)
-
-        st = self.good_filter_stats
-        if st:
-            # ---- section title ----
-            sec = QLabel("ตัดชุดด้วยเงื่อนไข Good (System)")
-            sec.setStyleSheet(
-                "color:#B71C1C; font-size:13px; font-weight:700;"
-                "background:transparent; padding-top:6px;")
-            pl.addWidget(sec)
-
-            # ---- stat tiles ----
-            tiles = QHBoxLayout()
-            tiles.setSpacing(10)
-            tiles.addWidget(self._stat_tile(
-                f"{st['total']:,}", "ข้อมูลทั้งหมด", "แถว",
-                "#37474F", "#ECEFF1"))
-            tiles.addWidget(self._stat_tile(
-                f"{st['good']:,}", "Good = 1",
-                f"ใช้วิเคราะห์  ({st['good_pct']:.1f}%)",
-                "#2E7D32", "#E8F5E9"))
-            tiles.addWidget(self._stat_tile(
-                f"{st['dropped']:,}", "Good = 2",
-                f"ตัดออก  ({100 - st['good_pct']:.1f}%)",
-                "#C62828", "#FFEBEE"))
-            pl.addLayout(tiles)
-
-            # ---- ratio bar ----
-            bar = QFrame()
-            bar.setFixedHeight(10)
-            bar.setStyleSheet(
-                "QFrame{background:#ECEFF1; border-radius:5px;}")
-            bl = QHBoxLayout(bar)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(0)
-            keep = QFrame()
-            keep.setStyleSheet(
-                "background:#66BB6A;"
-                "border-top-left-radius:5px;"
-                "border-bottom-left-radius:5px;")
-            drop = QFrame()
-            drop.setStyleSheet(
-                "background:#EF9A9A;"
-                "border-top-right-radius:5px;"
-                "border-bottom-right-radius:5px;")
-            bl.addWidget(keep, max(int(round(st['good_pct'] * 10)), 1))
-            bl.addWidget(drop, max(int(round(
-                (100 - st['good_pct']) * 10)), 1))
-            pl.addWidget(bar)
-
-            # ---- verification file ----
-            if st.get('saved_path'):
-                cap = QLabel(
-                    "บันทึกตัวแปร Good ลงไฟล์ SPSS ที่โหลดเข้ามาแล้ว "
-                    "(ครบทุกแถว)")
-                cap.setStyleSheet(
-                    "color:#607D8B; font-size:11px; font-weight:600;"
-                    "background:transparent; padding-top:6px;")
-                pl.addWidget(cap)
-
-                box = QLabel(st['saved_path'])
-                box.setWordWrap(True)
-                box.setTextInteractionFlags(
-                    Qt.TextInteractionFlag.TextSelectableByMouse)
-                box.setStyleSheet(
-                    "color:#455A64; font-size:10px;"
-                    "font-family:Consolas,monospace;"
-                    "background:#F5F7F8; border:1px solid #E0E0E0;"
-                    "border-radius:8px; padding:10px 12px;")
-                pl.addWidget(box)
-
-        # ---- agree json ----
-        if self.agree_json_filepath_override:
-            cap = QLabel(
-                "ไฟล์ Agree Original JSON"
-                + ("  (พบอัตโนมัติ)" if self.agree_json_auto_found
-                   else "  (เลือกเอง)"))
-            cap.setStyleSheet(
-                "color:#607D8B; font-size:11px; font-weight:600;"
-                "background:transparent; padding-top:6px;")
-            pl.addWidget(cap)
-
-            jb = QLabel(os.path.basename(
-                self.agree_json_filepath_override))
-            jb.setWordWrap(True)
-            jb.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse)
-            jb.setStyleSheet(
-                "color:#455A64; font-size:10px;"
-                "font-family:Consolas,monospace;"
-                "background:#F5F7F8; border:1px solid #E0E0E0;"
-                "border-radius:8px; padding:10px 12px;")
-            pl.addWidget(jb)
-
-        # ---- ตาราง Cross A x N_S/N_P/N_C/N_E ----
-        if self.good_filter_full_df is not None:
-            sec2 = QLabel("ตาราง Cross : A × N_S / N_P / N_C / N_E")
-            sec2.setStyleSheet(
-                "color:#B71C1C; font-size:13px; font-weight:700;"
-                "background:transparent; padding-top:10px;")
-            pl.addWidget(sec2)
-
-            hint = QLabel(
-                "นับจากข้อมูลเต็มก่อนตัด — แถว = ค่าตัวชี้วัด, "
-                "คอลัมน์ = A\n"
-                "🟩 อยู่ในช่วงที่เงื่อนไขยอมรับ   "
-                "🟨 ถูกเงื่อนไขตัด   "
-                "🟧 ค่าจริงคร่อมเกณฑ์หลังปัดทศนิยม")
-            hint.setWordWrap(True)
-            hint.setStyleSheet(
-                "color:#78909C; font-size:10px;"
-                "background:transparent;")
-            pl.addWidget(hint)
-
-            tabs = QTabWidget()
-            tallest = 0
-            for metric in ('N_S', 'N_P', 'N_C', 'N_E'):
-                page_w = self._build_crosstab_table(metric)
-                tabs.addTab(page_w, f"  {metric}  ")
-                tallest = max(tallest, page_w.minimumHeight())
-            # ล็อกความสูงตามแท็บที่แถวเยอะสุด ทุกแท็บจะเห็นครบโดยไม่ต้องเลื่อน
-            tabs.setFixedHeight(
-                tallest + tabs.tabBar().sizeHint().height() + 16)
-            pl.addWidget(tabs)
-
-        # ---- next step callout ----
-        nxt = QLabel(
-            "ขั้นตอนถัดไป\n"
-            "ตรวจสอบช่อง Filter ทางซ้าย แล้วกด "
-            "'วิเคราะห์และส่งออก Excel'")
-        nxt.setWordWrap(True)
-        nxt.setStyleSheet(
-            "color:#0D47A1; font-size:12px; font-weight:600;"
-            "background:#E3F2FD; border-left:4px solid #1976D2;"
-            "border-radius:8px; padding:12px 14px; margin-top:8px;")
-        pl.addWidget(nxt)
-
-        pl.addStretch()
+        lb.setContentsMargins(20, 20, 20, 20)
+        self.right_frame.layout().addWidget(lb)
 
     def show_log_panel(self, title="Processing Log"):
         """แสดง Live Log Panel ในพื้นที่ด้านขวา"""
@@ -3629,19 +2467,19 @@ class SpssProcessorApp(QMainWindow):
             self.log_text)
 
     def log_message(self, message):
-        """เพิ่มข้อความลงใน Log Panel (เรียกจาก thread ไหนก็ได้)"""
-        self.sig_log.emit(str(message))
-
-    def _append_log_ui(self, message):
-        if self.log_text is None:
+        """เพิ่มข้อความลงใน Log Panel"""
+        if not hasattr(self, 'log_text') \
+                or self.log_text is None:
             return
         try:
             self.log_text.append(message)
             sb = self.log_text.verticalScrollBar()
             sb.setValue(sb.maximum())
+            QApplication.processEvents()
         except RuntimeError:
             # ป้องกันกรณี widget ถูกลบระหว่างงานยาว
             self.log_text = None
+            return
 
     def _load_factor_output_text_from_excel(self):
         filepath = self.last_excel_filepath
@@ -3764,8 +2602,8 @@ class SpssProcessorApp(QMainWindow):
     # ===================================================================
     def open_label_editor(self):
         if self.transformed_df is None:
-            self._msg_error(
-                "ยังไม่มีข้อมูล",
+            QMessageBox.critical(
+                self, "ผิดพลาด",
                 "ยังไม่มีข้อมูลที่ประมวลผลแล้ว")
             return
 
@@ -3810,7 +2648,8 @@ class SpssProcessorApp(QMainWindow):
                 t = ent.text().strip()
                 if t:
                     self.index1_labels[cd] = t
-            self._msg_success(
+            QMessageBox.information(
+                dlg, "สำเร็จ",
                 "บันทึก Labels เรียบร้อยแล้ว")
             dlg.accept()
 
@@ -3825,85 +2664,31 @@ class SpssProcessorApp(QMainWindow):
         dlg.exec()
 
     def run_analysis_and_export(self, automated=False):
-        """เตรียมการบน main thread แล้วส่งงานหนักไปให้ worker thread"""
         if self.transformed_df is None:
-            self._msg_error("ยังไม่มีข้อมูลสำหรับวิเคราะห์",
-                "ไม่พบข้อมูลที่แปลงแล้ว (Transformed Data)")
+            QMessageBox.critical(self, "ผิดพลาด", "ไม่มีข้อมูลที่แปลงแล้ว (Transformed Data) สำหรับการวิเคราะห์")
             return
 
         self.update_status("กำลังเตรียมการวิเคราะห์...")
+        self.start_progress()
 
-        # snapshot ค่าจาก widget ก่อน แล้ว logic จะอ่านจาก snapshot เท่านั้น
-        self._snapshot_ui_inputs()
-        cross_filters = self._cross_filters()
+        primary_filter = "Index1"
+        filter_text = self.filter_entry.text().strip()
+        cross_filters = [f.strip() for f in filter_text.split(',') if f.strip()]
 
         if not cross_filters and not automated:
-            ret = self._msg_ask(
-                "ยังไม่ได้ระบุ Filter ไขว้",
-                "จะวิเคราะห์เฉพาะ Index1 อย่างเดียว\n"
+            ret = QMessageBox.question(
+                self, "ยืนยัน",
+                "ยังไม่ได้ระบุ Filter ไขว้\n"
                 "ต้องการดำเนินการต่อหรือไม่?")
-            if not ret:
+            if ret != QMessageBox.StandardButton.Yes:
+                self.stop_progress()
                 self.update_status("ยกเลิกโดยผู้ใช้", "warning")
                 return
 
-        self.show_log_panel("กำลังวิเคราะห์ข้อมูล...")
-        self.start_progress()
-
-        def _done(payload):
-            self.stop_progress()
-            if payload is None:
-                return
-            final_output, final_message = payload
-            self.update_status(
-                "วิเคราะห์และส่งออกเสร็จสมบูรณ์", "success")
-
-            notes = []
-            if self._analysis_errors:
-                notes.append(
-                    f"⚠ Factor/Regression ล้มเหลว "
-                    f"{len(self._analysis_errors)} กลุ่ม "
-                    "(B.S/B.P/B.C/B.E ของกลุ่มนั้นเป็น 0)")
-            if self._beta_zero_groups:
-                notes.append(
-                    f"⚠ {len(self._beta_zero_groups)} กลุ่มมี "
-                    "B.S–B.E = 0 ทั้งหมด → Index = 0 ด้วย")
-            if self._beta_warnings and not self._beta_abs_used:
-                notes.append(
-                    f"⚠ {len(self._beta_warnings)} กลุ่มมีสัดส่วน "
-                    "B.S–B.E เกิน 100 หรือติดลบ\n"
-                    "     (ผลรวมยังเป็น 100 เสมอ แต่ค่ารายตัวพองเพราะ "
-                    "beta ติดลบ\n"
-                    "      มักแปลว่ากลุ่มนั้นฐานน้อยเกินไป ไม่ควรนำไปใช้)")
-
-            if notes:
-                self._msg_warn(
-                    "เสร็จแล้ว แต่มีข้อควรระวัง",
-                    f"{final_message}\n\n" + "\n\n".join(notes)
-                    + "\n\nดูรายละเอียดรายกลุ่มได้ที่ Log ด้านขวา")
-            else:
-                self._msg_success(
-                    "วิเคราะห์และส่งออกเสร็จสมบูรณ์", final_message)
-            QTimer.singleShot(
-                300,
-                lambda: self.display_analysis_tabs(final_output))
-
-        self._run_in_thread(
-            lambda: self._analysis_pipeline(cross_filters),
-            _done)
-
-    def _analysis_pipeline(self, cross_filters):
-        """งานวิเคราะห์+ส่งออกทั้งหมด — รันบน worker thread เท่านั้น"""
-        primary_filter = "Index1"
         if not cross_filters:
             cross_filters = ['']
 
-        self._analysis_errors = []
-        self._analysis_skipped = []
-        self._beta_warnings = []
-        self._beta_zero_groups = []
-        self._beta_abs_used = False
-        self._sample_size_approx = False
-        self._respondent_key = _UNSET
+        self.show_log_panel("กำลังวิเคราะห์ข้อมูล...")
         start_time = time.time()
 
         self.log_message("=" * 50)
@@ -3912,21 +2697,13 @@ class SpssProcessorApp(QMainWindow):
         self.log_message(f"Primary Filter: {primary_filter}")
         cf_display = ', '.join(cross_filters) if cross_filters[0] else '(ไม่ระบุ)'
         self.log_message(f"Cross Filter(s): {cf_display}")
-        self.log_message(
-            f"E Correlation Mode: {self._ui.get('e_group_mode', 'default')}")
-        self.log_message(
-            "Correlation Mode: ABS (cor_S_* / cor_P_* / CorE_* "
-            "ใช้ค่าสัมบูรณ์)")
-        if self._use_abs_beta():
-            self.log_message(
-                "B.S–B.E Mode: ABS (ใช้ |beta| — ไม่มีค่าติดลบ)")
+        self.log_message(f"E Correlation Mode: {self.e_group_mode_var.get()}")
         self.log_message("")
 
         total_filters = len(cross_filters)
         steps_per_filter = 3
         total_steps = total_filters * steps_per_filter + 1
         current_step = 0
-        self.set_progress(0, total_steps)
 
         all_summary_parts = []
         all_results = OrderedDict()
@@ -3941,8 +2718,13 @@ class SpssProcessorApp(QMainWindow):
             else:
                 self.log_message(
                     "ไม่พบ Agree Original JSON (ยกเลิก: โหมดนี้ห้ามคำนวณใหม่)")
-                raise RuntimeError(
+                self.stop_progress()
+                self.update_status(
+                    "ไม่พบ Agree Original JSON", "danger")
+                QMessageBox.critical(
+                    self, "ผิดพลาด",
                     "โหมดวิเคราะห์ซ้ำต้องใช้ค่า Agree จาก JSON เท่านั้น")
+                return
 
         for idx, cross_filter in enumerate(cross_filters):
             f_label = cross_filter if cross_filter else '(ไม่ระบุ)'
@@ -3954,20 +2736,17 @@ class SpssProcessorApp(QMainWindow):
             current_step += 1
             self.update_status(f"สร้าง Summary ({f_label})...")
             self.log_message(f"[{current_step}/{total_steps}] กำลังสร้าง Summary ({f_label})...")
-            try:
-                part_summary = self._create_summary_df_logic(
-                    primary_filter=primary_filter,
-                    cross_filter=cross_filter
-                )
-            except Exception as e:
-                self.log_message(f"   ✗ สร้าง Summary ไม่สำเร็จ: {e}")
+            part_summary = self._create_summary_df_logic(
+                primary_filter=primary_filter,
+                cross_filter=cross_filter
+            )
+            if part_summary is None:
+                self.log_message("   ✗ สร้าง Summary ไม่สำเร็จ")
                 if total_filters == 1:
-                    raise
+                    self.stop_progress(); return
                 current_step += 2
-                self.set_progress(current_step, total_steps)
                 continue
             self.log_message(f"   ✓ Summary สำเร็จ ({len(part_summary)} แถว)")
-            self.set_progress(current_step, total_steps)
 
             # --- T2B ---
             current_step += 1
@@ -3987,26 +2766,22 @@ class SpssProcessorApp(QMainWindow):
                     self.log_message("   ✓ T2B สำเร็จ")
             except Exception as e:
                 self.log_message(f"   ⚠ ข้ามการคำนวณ T2B: {e}")
-            self.set_progress(current_step, total_steps)
 
             # --- Factor & Regression ---
             current_step += 1
             self.log_message("")
             self.update_status(f"รัน Factor & Regression ({f_label})...")
             self.log_message(f"[{current_step}/{total_steps}] กำลังรัน Factor & Regression ({f_label})...")
-            try:
-                part_results, part_output = self._run_factor_regression_logic(
-                    primary_filter=primary_filter,
-                    cross_filter=cross_filter
-                )
-            except Exception as e:
-                self.log_message(f"   ✗ Factor/Regression ไม่สำเร็จ: {e}")
+            part_results, part_output = self._run_factor_regression_logic(
+                primary_filter=primary_filter,
+                cross_filter=cross_filter
+            )
+            if part_results is None:
+                self.log_message("   ✗ Factor/Regression ไม่สำเร็จ")
                 if total_filters == 1:
-                    raise
-                self.set_progress(current_step, total_steps)
+                    self.stop_progress(); return
                 continue
             self.log_message(f"   ✓ วิเคราะห์สำเร็จ ({len(part_results)} กลุ่ม)")
-            self.set_progress(current_step, total_steps)
 
             # --- ตัด Overall และ Index1-only ออกจาก filter ตัวที่ 2 เป็นต้นไป ---
             if idx > 0 and part_summary is not None:
@@ -4026,7 +2801,8 @@ class SpssProcessorApp(QMainWindow):
 
         # --- รวมผลลัพธ์ทั้งหมด ---
         if not all_summary_parts:
-            raise RuntimeError("ไม่มีผลลัพธ์ที่สร้างได้")
+            self.log_message("✗ ไม่มีผลลัพธ์ที่สร้างได้")
+            self.stop_progress(); return
 
         final_summary = pd.concat(all_summary_parts, ignore_index=True)
         final_output = '\n'.join(all_output_parts)
@@ -4036,15 +2812,20 @@ class SpssProcessorApp(QMainWindow):
                 self._apply_agree_summary_cache_by_position(
                     final_summary)
             if copy_status != "ok":
+                self.stop_progress()
                 self.update_status("วาง Agree จาก JSON ไม่สำเร็จ", "danger")
                 if copy_status.startswith("row_mismatch:"):
                     _, c_rows, s_rows = copy_status.split(":")
-                    raise RuntimeError(
+                    QMessageBox.critical(
+                        self, "ผิดพลาด",
                         "จำนวนแถวไม่ตรงกันระหว่าง JSON กับ Summary\n"
                         f"JSON={c_rows} แถว, Summary={s_rows} แถว\n"
                         "โหมดวิเคราะห์ซ้ำถูกตั้งให้วาง Agree ทั้งชุดแบบไม่ map")
-                raise RuntimeError(
-                    "ไม่สามารถวาง Agree Original จาก JSON ได้")
+                else:
+                    QMessageBox.critical(
+                        self, "ผิดพลาด",
+                        "ไม่สามารถวาง Agree Original จาก JSON ได้")
+                return
             self.log_message(
                 f"✓ Add Agree Original แล้ว (วางตรงตามลำดับ {copied_cells} ค่า)")
 
@@ -4053,168 +2834,31 @@ class SpssProcessorApp(QMainWindow):
         self.log_message("")
         self.update_status("กำลังบันทึกผลลัพธ์ลง Excel...")
         self.log_message(f"[{current_step}/{total_steps}] กำลังบันทึกผลลัพธ์ลง Excel...")
-        final_message = self.save_all_results_to_excel(
-            final_summary, all_results, final_output)
+        self.save_all_results_to_excel(final_summary, all_results, final_output)
         self.log_message("   ✓ บันทึก Excel สำเร็จ")
-        self.set_progress(current_step, total_steps)
-
-        # --- สรุปกลุ่มที่วิเคราะห์ไม่ได้ ---
-        if self._analysis_skipped:
-            self.log_message("")
-            self.log_message(
-                f"ℹ ข้าม {len(self._analysis_skipped)} กลุ่ม (ข้อมูลไม่พอ):")
-            for name, reason in self._analysis_skipped[:10]:
-                self.log_message(f"    - {name}: {reason}")
-            if len(self._analysis_skipped) > 10:
-                self.log_message(
-                    f"    ... และอีก {len(self._analysis_skipped) - 10} กลุ่ม")
-
-        if self._analysis_errors:
-            self.log_message("")
-            self.log_message(
-                f"⚠ Factor/Regression ล้มเหลว "
-                f"{len(self._analysis_errors)} กลุ่ม "
-                "(B.S/B.P/B.C/B.E ของกลุ่มนั้นจะเป็น 0):")
-            for name, reason in self._analysis_errors[:10]:
-                self.log_message(f"    - {name}: {reason}")
-            if len(self._analysis_errors) > 10:
-                self.log_message(
-                    f"    ... และอีก {len(self._analysis_errors) - 10} กลุ่ม")
-
-        if self._sample_size_approx:
-            self.log_message("")
-            self.log_message(
-                "⚠ SampleSize เป็นค่าประมาณ เพราะไฟล์ไม่มีคอลัมน์ระดับ"
-                "ผู้ตอบ (เช่น RESPID) ให้ใช้ตัดข้อมูลซ้ำ")
-            self.log_message(
-                "   ใช้จำนวนแถวสูงสุดของ Index1 เดียวแทน "
-                "ซึ่งจะถูกต้องเมื่อผู้ตอบทุกคนตอบครบทุก Index1")
-
-        if self._beta_zero_groups:
-            self.log_message("")
-            self.log_message(
-                f"⚠ {len(self._beta_zero_groups)} กลุ่มมี B.S–B.E = 0 "
-                "ทั้งหมด (ไม่มีผล Regression) → Index = 0 ด้วย:")
-            for name in self._beta_zero_groups[:10]:
-                self.log_message(f"    - {name}")
-            if len(self._beta_zero_groups) > 10:
-                self.log_message(
-                    f"    ... และอีก {len(self._beta_zero_groups) - 10} กลุ่ม")
-
-        if self._beta_warnings:
-            self.log_message("")
-            if self._beta_abs_used:
-                self.log_message(
-                    f"ℹ {len(self._beta_warnings)} กลุ่มมี beta ติดลบ "
-                    "— แปลงเป็นค่าสัมบูรณ์ (ABS) แล้ว")
-                self.log_message(
-                    "   B.x = |beta| / ผลรวม|beta| × 100 "
-                    "จึงอยู่ในช่วง 0–100 และรวมกันได้ 100")
-                self.log_message(
-                    "   หมายเหตุ: ปัจจัยที่สัมพันธ์กลับทางกับ A "
-                    "จะถูกนับเป็น 'สำคัญ' เท่ากับปัจจัยที่สัมพันธ์ตามทาง")
-            else:
-                self.log_message(
-                    f"⚠ {len(self._beta_warnings)} กลุ่มมีสัดส่วน B.S–B.E "
-                    "ที่เชื่อถือไม่ได้")
-                self.log_message(
-                    "   (B.x = beta / ผลรวม beta × 100 "
-                    "จึงรวมกันได้ 100 เสมอ")
-                self.log_message(
-                    "    แต่เมื่อมี beta ติดลบ ผลรวมจะเล็กลงจนค่ารายตัว"
-                    "พองเกิน")
-                self.log_message(
-                    "    100 หรือติดลบ — มักแปลว่ากลุ่มนั้น n น้อยเกินไป)")
-            for w in self._beta_warnings[:10]:
-                lo, hi = w['span']
-                self.log_message(
-                    f"    - {w['filter']}: beta ติดลบ {w['n_negative']} ตัว, "
-                    f"ผลรวม{'|beta|' if self._beta_abs_used else ' beta'} "
-                    f"= {w['total']:.4f}, "
-                    f"ช่วง B = {lo:.1f} ถึง {hi:.1f}")
-            if len(self._beta_warnings) > 10:
-                self.log_message(
-                    f"    ... และอีก {len(self._beta_warnings) - 10} กลุ่ม")
 
         elapsed = time.time() - start_time
         self.log_message("")
         self.log_message("=" * 50)
         self.log_message(f"เสร็จสมบูรณ์ (ใช้เวลา {elapsed:.1f} วินาที)")
         self.log_message("=" * 50)
+        self.log_message("")
+        self.log_message("กำลังโหลดหน้าแสดงผลการวิเคราะห์...")
+        QApplication.processEvents()
 
-        return final_output, final_message
+        QTimer.singleShot(1500, lambda: self.display_analysis_tabs(final_output))
 
+        self.stop_progress()
+        self.update_status("วิเคราะห์และส่งออกเสร็จสมบูรณ์", "success")
 
-    def _detect_respondent_key(self):
-        """หาคอลัมน์ที่ทำหน้าที่เป็นรหัสผู้ตอบใน transformed_df
-
-        เกณฑ์: ภายใน Index1 เดียวกัน ค่าต้องไม่ซ้ำเลย
-        คอลัมน์อย่าง GENDER หรือ Good จะไม่ผ่านเกณฑ์นี้ ทำให้เลือกได้
-        เฉพาะรหัสผู้ตอบจริง (เช่น RESPID) ผลลัพธ์ถูก cache ไว้ใช้ซ้ำ
-        """
-        if self._respondent_key is not _UNSET:
-            return self._respondent_key
-
-        self._respondent_key = None
-        df = self.transformed_df
-        if df is None or df.empty:
-            return None
-
-        candidates = [c for c in self.id_vars if c in df.columns]
-        if not candidates:
-            return None
-
-        if 'Index1' in df.columns:
-            slices = [sub for _, sub in df.groupby('Index1')]
-        else:
-            slices = [df]
-
-        for col in candidates:
-            if df[col].isna().any():
-                continue
-            if all(not sub[col].duplicated().any() for sub in slices):
-                self._respondent_key = col
-                break
-        return self._respondent_key
-
-    def _unique_sample_size(self, df_group):
-        """จำนวนผู้ตอบจริงของกลุ่ม (ไม่นับซ้ำ)
-
-        transformed_df เป็น long format คือ 1 แถวต่อผู้ตอบ 1 คน
-        ต่อ 1 Index1 ดังนั้นจำนวนแถวจึงไม่ใช่จำนวนผู้ตอบ
-        """
-        if df_group is None or df_group.empty:
-            return 0
-
-        # 1) ถ้าหารหัสผู้ตอบได้ ให้นับค่าไม่ซ้ำของคอลัมน์นั้นตรงๆ
-        key = self._detect_respondent_key()
-        if key and key in df_group.columns:
-            return int(df_group[key].nunique(dropna=True))
-
-        # 2) ไม่มีรหัสผู้ตอบชัดเจน -> dedup ด้วย id_vars ทั้งชุด
-        #    (วิธีเดียวกับที่ใช้หาฐาน %T2B) แต่ถ้ามี id_var ตัวใดไม่คงที่
-        #    ภายในผู้ตอบคนเดียว ตัวเลขจะสูงเกินจริง จึงถือว่าเป็นค่าประมาณ
-        keys = [c for c in self.id_vars if c in df_group.columns]
-        if keys:
-            self._sample_size_approx = True
-            return int(len(df_group[keys].drop_duplicates()))
-
-        # 3) ไม่มีคอลัมน์ระดับผู้ตอบเลย (ไฟล์มีแต่คอลัมน์โมเดล)
-        #    ประมาณจากจำนวนแถวสูงสุดของ Index1 เดียว
-        self._sample_size_approx = True
-        if 'Index1' in df_group.columns:
-            per_index = df_group.groupby('Index1').size()
-            if len(per_index):
-                return int(per_index.max())
-        return int(len(df_group))
 
     def _create_summary_df_logic(self, primary_filter, cross_filter):
         """ตรรกะการสร้าง Summary DataFrame"""
         try:
             cols_to_average = [col for col in self.transformed_df.columns if re.match(r'^(S|P|C|E)_\d+$', col)]
             if not cols_to_average:
-                raise RuntimeError(
-                    "ไม่พบข้อมูลคอลัมน์ S, P, C, E สำหรับสร้างสรุป")
+                QMessageBox.warning(self, "คำเตือน", "ไม่พบข้อมูลคอลัมน์ S, P, C, E สำหรับสร้างสรุป")
+                return None
             corr_df = self.transformed_df.copy()
 
             # --- E Group Mode: E columns ถูก merge แล้วจาก transformation (เช่น E_45) ---
@@ -4271,13 +2915,11 @@ class SpssProcessorApp(QMainWindow):
                                     pass
 
                         summary_row_df['Index1'] = index1_val
-                        summary_row_df['SampleSize'] = \
-                            self._unique_sample_size(df_group)
                         summary_list.append(summary_row_df)
 
             if not summary_list:
-                raise RuntimeError(
-                    "ไม่พบข้อมูลสำหรับสร้างสรุปตาม Filter ที่กำหนด")
+                QMessageBox.warning(self, "ไม่มีข้อมูล", "ไม่พบข้อมูลสำหรับสร้างสรุปตาม Filter ที่กำหนด")
+                return None
 
             final_summary_df = pd.concat(summary_list, ignore_index=True)
 
@@ -4326,23 +2968,17 @@ class SpssProcessorApp(QMainWindow):
                 for name, df_group in corr_groups.items():
                     if df_group.empty:
                         continue
-                    # ใช้ค่าสัมบูรณ์ของ correlation ทุกรอบการรัน
-                    # เพื่อไม่ให้ cor_S_* / cor_P_* / CorE_* ติดลบ
-                    # (ดูความแรงของความสัมพันธ์ ไม่สนทิศทาง)
                     row = {'Filter': name}
                     if s_cols:
-                        s_corr = df_group[s_cols].corrwith(
-                            df_group['A']).abs()
+                        s_corr = df_group[s_cols].corrwith(df_group['A'])
                         for col, val in s_corr.items():
                             row['cor_' + col] = val
                     if p_cols:
-                        p_corr = df_group[p_cols].corrwith(
-                            df_group['A']).abs()
+                        p_corr = df_group[p_cols].corrwith(df_group['A'])
                         for col, val in p_corr.items():
                             row['cor_' + col] = val
                     if source_e_cols:
-                        e_corr = df_group[source_e_cols].corrwith(
-                            df_group['A']).abs()
+                        e_corr = df_group[source_e_cols].corrwith(df_group['A'])
                         for col, val in e_corr.items():
                             row[rename_dict.get(col, col)] = val
                     corr_rows.append(row)
@@ -4352,11 +2988,9 @@ class SpssProcessorApp(QMainWindow):
                     final_summary_df = pd.merge(final_summary_df, corr_by_filter_df, on='Filter', how='left')
 
             return final_summary_df
-        except RuntimeError:
-            raise
         except Exception as e:
-            raise RuntimeError(
-                f"ไม่สามารถสร้างข้อมูลสรุปได้: {e}") from e
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถสร้างข้อมูลสรุปได้: {e}")
+            return None
 
     def _calculate_and_add_t2b_values(self, summary_df, primary_filter="Index1", cross_filter=None):
         """คำนวณ %T2B สำหรับ AgreeS/P ตามลำดับการเลือก"""
@@ -4386,8 +3020,7 @@ class SpssProcessorApp(QMainWindow):
         if not self.id_vars:
             raise ValueError("Identifier variables (id_vars) not found.")
 
-        t2b_choice = self._ui.get(
-            't2b_choice', self.t2b_choice_var.get())
+        t2b_choice = self.t2b_choice_var.get()
         good_codes = [5, 4] if t2b_choice == "5+4" else [1, 2]
         # รองรับกรณีชื่อจากไฟล์ Setting มี space แฝง
         tr_col_lookup = {
@@ -4494,9 +3127,7 @@ class SpssProcessorApp(QMainWindow):
 
         if primary_filter and primary_filter not in all_cols: primary_filter = ""
         if cross_filter and cross_filter not in all_cols: cross_filter = ""
-        if primary_filter and primary_filter == cross_filter:
-            raise RuntimeError(
-                "Filter หลัก และ Filter ไขว้ ต้องเป็นคนละคอลัมน์")
+        if primary_filter and primary_filter == cross_filter: QMessageBox.warning(self, "คำเตือน", "Filter หลัก และ Filter ไขว้ ต้องเป็นคนละคอลัมน์"); return None, None
 
         results_for_saving = OrderedDict()
         old_stdout = sys.stdout; sys.stdout = captured_output = io.StringIO()
@@ -4529,8 +3160,7 @@ class SpssProcessorApp(QMainWindow):
                 if df_group.empty:
                     print("ไม่มีข้อมูลสำหรับกลุ่มนี้")
                     continue
-                if results := self._run_single_analysis(
-                        df_group.copy(), group_name=name):
+                if results := self._run_single_analysis(df_group.copy()):
                     results_for_saving[name] = results
 
             full_output_text = captured_output.getvalue()
@@ -4539,44 +3169,28 @@ class SpssProcessorApp(QMainWindow):
             return results_for_saving, full_output_text
         except Exception as e:
             sys.stdout = old_stdout; captured_output.close()
-            if isinstance(e, RuntimeError):
-                raise
-            raise RuntimeError(
-                f"เกิดข้อผิดพลาดระหว่างการวิเคราะห์ Factor/Regression: {e}") from e
+            QMessageBox.critical(self, "ผิดพลาด", f"เกิดข้อผิดพลาดระหว่างการวิเคราะห์ Factor/Regression:\n{e}")
+            return None, None
 
-    def _run_single_analysis(self, target_df, group_name=''):
-        """รันการวิเคราะห์ 1 ชุด (Factor -> Regression)
-
-        แยกความผิดพลาด 2 ประเภท:
-        - ValueError = ข้อมูลไม่พอสำหรับกลุ่มย่อยนี้ (ปกติ, แค่ข้าม)
-        - อื่นๆ = ความผิดพลาดจริง เช่น library ไม่ compatible
-          ต้องเก็บไว้แจ้งผู้ใช้ ไม่ใช่กลืนเงียบจนได้ Beta = 0 ทั้งไฟล์
-        """
+    def _run_single_analysis(self, target_df):
+        """รันการวิเคราะห์ 1 ชุด (Factor -> Regression)"""
         try:
             factor_scores_df, sorted_loadings_df, factor_to_variable_map = self.perform_factor_analysis(target_df)
             if factor_scores_df is not None:
                 analysis_df = target_df.join(factor_scores_df)
                 beta_df, beta_sorted_df, _ = self.perform_regression_analysis(analysis_df, factor_to_variable_map)
                 return {'loadings': sorted_loadings_df, 'beta': beta_df, 'beta_sorted': beta_sorted_df}
-        except ValueError as e:
-            print(f"\n!!! ข้อมูลไม่พอสำหรับกลุ่มนี้: {e}\n!!! ข้ามการวิเคราะห์กลุ่มนี้...\n")
-            self._analysis_skipped.append((group_name, str(e)))
         except Exception as e:
-            detail = f"{type(e).__name__}: {e}"
-            print(f"\n!!! เกิดข้อผิดพลาดในการวิเคราะห์กลุ่มนี้: {detail}\n"
-                  f"{traceback.format_exc()}\n")
-            self._analysis_errors.append((group_name, detail))
+            print(f"\n!!! เกิดข้อผิดพลาดในการวิเคราะห์กลุ่มนี้: {e}\n!!! ข้ามการวิเคราะห์กลุ่มนี้...\n")
         return {}
 
     def save_settings(self):
         """บันทึกการตั้งค่าทั้งหมดลงใน Excel สองชีทโดยอัตโนมัติ"""
         if not self.original_filepath:
-            self._msg_error("บันทึกการตั้งค่าไม่ได้",
-                            "ยังไม่ได้โหลดไฟล์ SPSS ต้นฉบับ")
+            QMessageBox.critical(self, "ผิดพลาด", "ไม่สามารถบันทึกการตั้งค่าได้ เนื่องจากยังไม่ได้โหลดไฟล์ SPSS ต้นฉบับ")
             return
         if not self.c_vars_to_compute and not any(self.vars_to_transform.values()):
-            self._msg_error("ไม่มีอะไรให้บันทึก",
-                            "ยังไม่ได้ตั้งค่าตัวแปร")
+            QMessageBox.critical(self, "ผิดพลาด", "ยังไม่มีการตั้งค่าตัวแปรให้บันทึก")
             return
 
         try:
@@ -4641,10 +3255,10 @@ class SpssProcessorApp(QMainWindow):
                     labels_df.to_excel(writer, sheet_name='Label', index=False)
 
             self.update_status(f"บันทึกการตั้งค่าสำเร็จที่: {filepath}", "success")
-            self._msg_success("บันทึกการตั้งค่าเรียบร้อยแล้ว", filepath)
+            QMessageBox.information(self, "สำเร็จ", f"บันทึกการตั้งค่าทั้งหมดเรียบร้อยแล้ว\nที่: {filepath}")
         except Exception as e:
             self.update_status("บันทึกการตั้งค่าผิดพลาด", "danger")
-            self._msg_error("บันทึกไฟล์การตั้งค่าไม่สำเร็จ", str(e))
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถบันทึกไฟล์การตั้งค่าได้: {e}")
 
     def _build_sandp_df(self):
         """สร้างข้อมูลชีท SandP จากตัวแปรที่เลือก S/P"""
@@ -4695,40 +3309,6 @@ class SpssProcessorApp(QMainWindow):
         if not rows:
             return pd.DataFrame(columns=cols)
         return pd.DataFrame(rows, columns=cols)
-
-    def _format_summary_sheet(self, worksheet):
-        """หัวตารางชีท Summary: ตัวหนา + สีพื้น + เส้นตาราง + ตรึงที่ B2
-
-        ใช้โทนเดียวกับหัวตารางชีท SandP เพื่อให้ทั้งไฟล์เป็นชุดเดียวกัน
-        """
-        header_fill = PatternFill(
-            start_color='4F81BD', end_color='4F81BD',
-            fill_type='solid')
-        header_font = Font(color='FFFFFF', bold=True, size=11)
-        thin = Border(
-            left=Side(style='thin', color='7F7F7F'),
-            right=Side(style='thin', color='7F7F7F'),
-            top=Side(style='thin', color='7F7F7F'),
-            bottom=Side(style='thin', color='7F7F7F'))
-        center = Alignment(
-            horizontal='center', vertical='center', wrap_text=True)
-
-        for cell in worksheet[1]:
-            if cell.value is None:
-                continue
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.border = thin
-            cell.alignment = center
-
-        worksheet.row_dimensions[1].height = 30
-
-        # คอลัมน์ข้อความด้านซ้ายกว้างพอให้อ่านหัวตารางออก
-        for col_letter, width in (
-                ('A', 12), ('B', 30), ('C', 12), ('D', 22)):
-            worksheet.column_dimensions[col_letter].width = width
-
-        worksheet.freeze_panes = 'B2'
 
     def _format_sandp_sheet(self, workbook):
         """จัดรูปแบบชีท SandP ให้เหมือนเทมเพลต"""
@@ -4826,16 +3406,10 @@ class SpssProcessorApp(QMainWindow):
                 workbook[sname].sheet_properties.tabColor = color
 
     def save_all_results_to_excel(self, summary_df, results_dict, full_output_text):
-        """บันทึกข้อมูลสรุปและผลวิเคราะห์ลง Excel — คืนข้อความสรุปผล
-
-        รันบน worker thread จึงห้ามเปิด dialog จากที่นี่
-        """
+        """บันทึกข้อมูลสรุปและผลวิเคราะห์ทั้งหมดลงในไฟล์ Excel ไฟล์เดียวโดยอัตโนมัติ"""
         if not self.original_filepath:
-            raise RuntimeError(
-                "ไม่สามารถบันทึกผลลัพธ์ได้ "
-                "เนื่องจากไม่พบ Path ของไฟล์ต้นฉบับ")
-
-        summary_only = self._ui.get('summary_only', True)
+            QMessageBox.critical(self, "ผิดพลาด", "ไม่สามารถบันทึกผลลัพธ์ได้ เนื่องจากไม่พบ Path ของไฟล์ต้นฉบับ")
+            return
 
         try:
             base, _ = os.path.splitext(self.original_filepath)
@@ -4852,8 +3426,7 @@ class SpssProcessorApp(QMainWindow):
                     if self.spss_original_order:
                         rawdata_df = rawdata_df[self.spss_original_order]
                 except Exception as e:
-                    self.log_message(
-                        f"   ⚠ ไม่สามารถโหลด Rawdata จากไฟล์ SPSS ได้: {e}")
+                    QMessageBox.warning(self, "Rawdata Warning", f"ไม่สามารถโหลด Rawdata จากไฟล์ SPSS ได้: {e}")
 
             expected_factors = ['N_S', 'N_P', 'N_C', 'N_E']
             template_rows = []
@@ -4879,14 +3452,7 @@ class SpssProcessorApp(QMainWindow):
                     if factor not in template_df.columns:
                         template_df[factor] = 0
 
-                # โหมด ABS: ใช้ |beta| เป็นฐานคิดสัดส่วน ทำให้ B.S–B.E
-                # ไม่มีค่าติดลบ และผลรวมยังเป็น 100 เหมือนเดิม
-                use_abs = self._use_abs_beta()
-                raw_betas = template_df[expected_factors].copy()
-                basis = raw_betas.abs() if use_abs else raw_betas
-                template_df[expected_factors] = basis
-
-                template_df['Total'] = basis.sum(axis=1)
+                template_df['Total'] = template_df[expected_factors].sum(axis=1)
 
                 beta_ratio_cols_names = {'N_S': 'B.S', 'N_P': 'B.P', 'N_C': 'B.C', 'N_E': 'B.E'}
                 for factor, ratio_name in beta_ratio_cols_names.items():
@@ -4895,10 +3461,6 @@ class SpssProcessorApp(QMainWindow):
                         (template_df[factor] / template_df['Total']) * 100,
                         0
                     )
-
-                self._collect_beta_warnings(
-                    template_df, expected_factors,
-                    raw_betas=raw_betas, use_abs=use_abs)
 
             beta_cols_to_add = ['B.S', 'B.P', 'B.C', 'B.E']
             if 'Filter' in template_df.columns:
@@ -4930,9 +3492,7 @@ class SpssProcessorApp(QMainWindow):
                     if header is None: continue
 
                     format_str = None
-                    if header == 'SampleSize':
-                        format_str = '#,##0'
-                    elif header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
+                    if header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
                         (header.startswith(('S_', 'P_', 'E_')) and 'cor' not in header):
                         format_str = '0.00'
                     elif header.startswith('C_'):
@@ -4961,25 +3521,18 @@ class SpssProcessorApp(QMainWindow):
                         worksheet.conditional_formatting.add(
                             cell_range, rule)
 
-                # ชีท 3 ตัวนี้จะถูกลบทิ้งอยู่ดีในโหมด "บันทึกเฉพาะ Summary"
-                # จึงข้ามไปเลย ประหยัดทั้งเวลาเขียนและรอบ load/save ซ้ำ
-                if not summary_only:
-                    if self.transformed_df is not None:
-                        self.transformed_df.to_excel(writer, sheet_name='Sheet Dummy', index=False)
-
+                self.transformed_df.to_excel(writer, sheet_name='Sheet Dummy', index=False)
                 if rawdata_df is not None:
                     rawdata_df.to_excel(writer, sheet_name='Rawdata', index=False)
+                if not template_df.empty:
+                    final_template_cols = ['Filter', 'N_S', 'N_P', 'N_C', 'N_E', 'Total', 'B.S', 'B.P', 'B.C', 'B.E']
+                    template_df = template_df.reindex(columns=[col for col in final_template_cols if col in template_df.columns])
+                    template_df.to_excel(writer, sheet_name='Factor_Template', index=False)
 
-                if not summary_only:
-                    if not template_df.empty:
-                        final_template_cols = ['Filter', 'N_S', 'N_P', 'N_C', 'N_E', 'Total', 'B.S', 'B.P', 'B.C', 'B.E']
-                        template_df = template_df.reindex(columns=[col for col in final_template_cols if col in template_df.columns])
-                        template_df.to_excel(writer, sheet_name='Factor_Template', index=False)
-
-                    output_lines = full_output_text.splitlines()
-                    safe_lines = ["'" + line if line.strip().startswith(('=', '-', '+', '@')) else line for line in output_lines]
-                    output_df = pd.DataFrame(safe_lines, columns=["Analysis Log"])
-                    output_df.to_excel(writer, sheet_name="Factor_Output", index=False)
+                output_lines = full_output_text.splitlines()
+                safe_lines = ["'" + line if line.strip().startswith(('=', '-', '+', '@')) else line for line in output_lines]
+                output_df = pd.DataFrame(safe_lines, columns=["Analysis Log"])
+                output_df.to_excel(writer, sheet_name="Factor_Output", index=False)
 
                 for ca_prefix, ca_sheet in [
                         ('S', 'Correspondence(S)'),
@@ -4987,7 +3540,6 @@ class SpssProcessorApp(QMainWindow):
                     self._write_ca_sheet(
                         workbook, ca_sheet, ca_prefix)
 
-                self._format_summary_sheet(worksheet)
                 self._format_sandp_sheet(workbook)
                 self._apply_sheet_tab_colors(workbook)
 
@@ -5003,7 +3555,19 @@ class SpssProcessorApp(QMainWindow):
                             name, offset=idx
                             - workbook.sheetnames.index(name))
 
-            if summary_only:
+            if self.save_all_sheets_var.get():
+                self.update_status("กำลังลบชีทที่ไม่จำเป็น...", "info")
+                workbook = openpyxl.load_workbook(filepath)
+                keep = {'Summary', 'SandP', 'Rawdata',
+                        'Correspondence(S)',
+                        'Correspondence(P)'}
+                sheets_to_delete = [
+                    s for s in workbook.sheetnames
+                    if s not in keep]
+                for sheet_name in sheets_to_delete:
+                    workbook.remove(workbook[sheet_name])
+                self._apply_sheet_tab_colors(workbook)
+                workbook.save(filepath)
                 final_message = f"บันทึก Excel (Summary + SandP + Rawdata) เรียบร้อยแล้วที่:\n{filepath}"
             else:
                 final_message = f"บันทึก Excel (Full Report) เรียบร้อยแล้วที่:\n{filepath}"
@@ -5012,68 +3576,11 @@ class SpssProcessorApp(QMainWindow):
                 final_message += "\n\nบันทึก Agree Original JSON เรียบร้อยแล้ว"
 
             self.update_status("บันทึก Excel สำเร็จ", "success")
-            return final_message
+            QMessageBox.information(self, "สำเร็จ", final_message)
 
         except Exception as e:
             self.update_status("บันทึก Excel ผิดพลาด", "danger")
-            raise RuntimeError(
-                f"ไม่สามารถบันทึกไฟล์ Excel ได้: {e}") from e
-
-    def _use_abs_beta(self):
-        """ใช้ |beta| เป็นฐานคิดสัดส่วน B.S–B.E หรือไม่
-
-        เปิดเฉพาะโหมดวิเคราะห์ซ้ำที่ให้ระบบตัดชุดด้วยเงื่อนไข Good
-        เพื่อไม่ให้ตัวเลขของ workflow อื่นเปลี่ยนไปจากเดิม
-        """
-        return bool(self.is_reanalyze_mode
-                    and self.reanalyze_good_mode)
-
-    def _collect_beta_warnings(self, template_df, factors,
-                               raw_betas=None, use_abs=False):
-        """หากลุ่มที่สัดส่วน B.S–B.E ต้องระวัง
-
-        B.x = beta_x / Σbeta × 100 จึงรวมกันได้ 100 เสมอโดยนิยาม
-        แต่ถ้ามี beta ตัวใดติดลบ ตัวหารจะเล็กลงจนสัดส่วนพองเกิน 100
-        หรือติดลบ — เป็นสัญญาณว่ากลุ่มนั้น n น้อย/โมเดลไม่นิ่ง
-
-        เมื่อเปิดโหมด ABS ค่าจะไม่หลุดช่วง 0–100 แล้ว แต่ยังรายงาน
-        กลุ่มที่ beta เดิมติดลบไว้ให้ทราบ
-        ฟังก์ชันนี้แค่ตรวจจับเพื่อรายงาน ไม่แก้ไขตัวเลขใดๆ
-        """
-        self._beta_warnings = []
-        self._beta_zero_groups = []
-        self._beta_abs_used = bool(use_abs)
-        if template_df is None or template_df.empty:
-            return
-
-        ratio_cols = ['B.S', 'B.P', 'B.C', 'B.E']
-        for pos, (_, row) in enumerate(template_df.iterrows()):
-            name = row.get('Filter', '')
-            total = row.get('Total', 0)
-
-            if not total:
-                self._beta_zero_groups.append(name)
-                continue
-
-            # นับ beta ติดลบจากค่าดิบก่อนทำ ABS เสมอ
-            if raw_betas is not None and pos < len(raw_betas):
-                raw = [raw_betas.iloc[pos].get(f, 0) for f in factors]
-            else:
-                raw = [row.get(f, 0) for f in factors]
-            ratios = [row.get(c, 0) for c in ratio_cols
-                      if c in template_df.columns]
-            if not ratios:
-                continue
-
-            n_negative = sum(1 for v in raw if v < 0)
-            out_of_range = any(v < 0 or v > 100 for v in ratios)
-            if n_negative or out_of_range:
-                self._beta_warnings.append({
-                    'filter': name,
-                    'total': float(total),
-                    'n_negative': n_negative,
-                    'span': (min(ratios), max(ratios)),
-                })
+            QMessageBox.critical(self, "ผิดพลาด", f"ไม่สามารถบันทึกไฟล์ Excel ได้: {e}")
 
     def _prepare_final_excel_df(self, final_summary_df):
         """จัดเรียงคอลัมน์และเตรียม DataFrame สำหรับเขียนลง Excel"""
@@ -5097,7 +3604,7 @@ class SpssProcessorApp(QMainWindow):
                 idx_val = idx_val + final_summary_df[avg_col] * final_summary_df[beta_col]
         final_summary_df['Index'] = idx_val / 100
 
-        main_order = ['Code Index1', 'Labe Index1', 'SampleSize', 'Filter', 'S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E']
+        main_order = ['Code Index1', 'Labe Index1', 'Filter', 'S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E']
         final_summary_df.rename(columns={'Index1':'Code Index1'}, inplace=True)
 
         core_cols = sorted([c for c in final_summary_df.columns if c.startswith('CorE_')], key=lambda x: int(x.split('_')[1]))
@@ -5140,7 +3647,7 @@ class SpssProcessorApp(QMainWindow):
         factor_to_variable_map = {v: k for k, v in primary_factor_map.items()}
         sort_list = sorted([(int(primary_factor_map[var].replace('Factor', '')), -abs_loadings.loc[var].max(), var) for var in abs_loadings.index])
         sorted_loadings_df = loadings_rotated_df.loc[[var for _, _, var in sort_list]]
-        print(_df_map(sorted_loadings_df, lambda x: f"{x:.3f}" if abs(x) >= 0.4 else "")); print("\n" + "-"*50 + "\n")
+        print(sorted_loadings_df.applymap(lambda x: f"{x:.3f}" if abs(x) >= 0.4 else "")); print("\n" + "-"*50 + "\n")
         print("คำนวณ Factor Scores ด้วยวิธี Anderson-Rubin (PCA)...\n")
         Z = StandardScaler().fit_transform(df_factor); R = df_factor.corr().values; inv_R = inv(R)
         temp_matrix = L.T @ inv_R @ L; eigvals, eigvecs = eigh(temp_matrix)
