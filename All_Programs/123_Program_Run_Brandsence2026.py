@@ -545,6 +545,8 @@ class SpssProcessorApp(QMainWindow):
         self.reanalyze_good_mode = False
         self.good_filter_stats = None
         self.good_filter_full_df = None
+        self._good_reference_cache = None
+        self._good_k_used = None
         self.agree_json_auto_found = False
         self.e_group_mode_var = _Var(value="default")
         self.e_group_entry_var = _Var(value="")
@@ -554,6 +556,8 @@ class SpssProcessorApp(QMainWindow):
         self._beta_warnings = []
         self._beta_zero_groups = []
         self._beta_abs_used = False
+        self._weak_beta_cells = []
+        self._weak_model_groups = []
         self._sample_size_approx = False
         self._respondent_key = _UNSET
 
@@ -1341,6 +1345,8 @@ class SpssProcessorApp(QMainWindow):
         self.reanalyze_good_mode = False
         self.good_filter_stats = None
         self.good_filter_full_df = None
+        self._good_reference_cache = None
+        self._good_k_used = None
         self.agree_json_auto_found = False
         self.e_group_mode_var.set("default")
         self._rb_e_default.setChecked(True)
@@ -1350,6 +1356,8 @@ class SpssProcessorApp(QMainWindow):
         self._beta_warnings = []
         self._beta_zero_groups = []
         self._beta_abs_used = False
+        self._weak_beta_cells = []
+        self._weak_model_groups = []
         self._sample_size_approx = False
         self._respondent_key = _UNSET
         self._ui = {}
@@ -1786,33 +1794,58 @@ class SpssProcessorApp(QMainWindow):
         dlg.exec()
         return choice["v"]
 
-    # เงื่อนไข Good ที่ใช้ร่วมกันทุกตัวชี้วัด (N_S / N_P / N_C / N_E)
-    # แปลตรงจาก SPSS syntax:  (ค่า A ที่เข้าเงื่อนไข, ทิศทาง, เกณฑ์)
-    _GOOD_RULES = (
-        # ขอบล่าง: A สูงแต่คะแนนต่ำเกินไป
-        ((8,), 'lt', 0.7),
-        ((7,), 'lt', 0.6),
-        ((6,), 'lt', 0.5),
-        ((5,), 'lt', 0.4),
-        ((4,), 'lt', 0.3),
-        ((3,), 'lt', 0.2),
-        ((2,), 'lt', 0.1),
-        # ขอบบน: A ต่ำแต่คะแนนสูงเกินไป
-        ((0,), 'gt', 0.2),
-        ((1,), 'gt', 0.3),
-        ((2,), 'gt', 0.5),
-        ((3,), 'gt', 0.7),
-        ((4,), 'gt', 0.8),
-        ((5,), 'gt', 0.9),
-    )
     _GOOD_METRICS = ('N_S', 'N_P', 'N_C', 'N_E')
+    # ตัวคูณความเข้ม: เบี่ยงจาก "ค่าที่ควรเป็นตาม A" เกิน k เท่าของ
+    # ความเบี่ยงเบนปกติ -> ตัด ปรับตัวนี้ตัวเดียวก็พอ (ไม่ต้องตั้งเกณฑ์
+    # รายตัวชี้วัด/รายงานใหม่ทุกครั้ง) เพราะ median/spread คำนวณจาก
+    # ข้อมูลจริงของแต่ละงานเอง สเกลเปลี่ยน (จำนวนข้อ, binary/likert)
+    # เกณฑ์ก็ปรับตาม k=4.0 ค่อนข้างหลวม (เก็บคนตอบปกติไว้เกือบหมด)
+    # จับเฉพาะคนที่ตอบขัดแย้งชัดเจน ใช้ยืนยันกับข้อมูลจริงแล้วว่า
+    # กลุ่มย่อยยังคำนวณได้ครบ ไม่พังเหมือนเกณฑ์ผูกค่าคงที่แบบเดิม
+    _GOOD_DEFAULT_K = 4.0
 
-    def _compute_good_filter(self, df):
+    @staticmethod
+    def _good_spread(residual):
+        """ความกว้างของการเบี่ยงเบนแบบทนค่าผิดปกติ (MAD -> IQR -> SD)
+
+        คืน None ถ้าคำนวณไม่ได้ (ข้อมูลไม่มีความแปรปรวนเลย)
+        """
+        r = pd.Series(residual).dropna()
+        if r.empty:
+            return None
+        mad = (r - r.median()).abs().median() * 1.4826
+        iqr = (r.quantile(.75) - r.quantile(.25)) / 1.349
+        for v in (mad, iqr, r.std()):
+            if v and v > 1e-9:
+                return float(v)
+        return None
+
+    def _good_reference(self, df):
+        """คำนวณ (ค่าที่ควรเป็นต่อระดับ A, ความเบี่ยงเบนปกติ) ของแต่ละ
+        ตัวชี้วัด จากข้อมูลจริงในไฟล์นี้ — ทำให้เกณฑ์ปรับตามสเกล/
+        จำนวนข้อของแต่ละงานเองโดยอัตโนมัติ ไม่ต้องตั้งเลขต่องาน
+
+        คืน dict: metric -> (median_series ต่อค่า A, spread หรือ None)
+        """
+        a = pd.to_numeric(df['A'], errors='coerce')
+        ref = {}
+        for m in self._GOOD_METRICS:
+            if m not in df.columns:
+                continue
+            x = pd.to_numeric(df[m], errors='coerce')
+            med = x.groupby(a).median()
+            resid = x - a.map(med)
+            ref[m] = (med, self._good_spread(resid))
+        return ref
+
+    def _compute_good_filter(self, df, k=None):
         """สร้าง Series ของตัวแปร Good (1 = ผ่าน, 2 = ตัดออก)
 
-        เทียบเท่า SPSS syntax: เริ่มที่ Good = 1 แล้วถ้าเข้าเงื่อนไขใด
-        เงื่อนไขหนึ่งจะกลายเป็น 2 — ค่า missing ไม่เข้าเงื่อนไขใดเลย
-        จึงคงเป็น 1 เหมือนพฤติกรรมของ SPSS
+        เงื่อนไข:
+          - A = 0 (ปฏิเสธแบรนด์) ตัดเสมอ — ตามกฎธุรกิจเดิม เพราะคนกลุ่มนี้
+            เอาไปวางบนบันได consistency ของคนที่ "รู้จักแบรนด์" ไม่ได้
+          - ตัวชี้วัดใดเบี่ยงจาก "ค่าที่ควรเป็นตามระดับ A" เกิน k เท่าของ
+            ความเบี่ยงเบนปกติ -> ตัด (คนตอบไม่สอดคล้องกับพฤติกรรมจริง)
         """
         required = ('A',) + self._GOOD_METRICS
         missing = [c for c in required if c not in df.columns]
@@ -1822,24 +1855,33 @@ class SpssProcessorApp(QMainWindow):
                 f"เนื่องจากไม่พบคอลัมน์: {', '.join(missing)}\n"
                 "กรุณาตรวจสอบว่าเลือกไฟล์ที่ผ่านการ Compute C แล้ว")
 
-        a = pd.to_numeric(df['A'], errors='coerce')
-        bad = (a == 0)   # IF A=0 Good=2
+        if k is None:
+            k = self._GOOD_DEFAULT_K
 
-        for metric in self._GOOD_METRICS:
-            x = pd.to_numeric(df[metric], errors='coerce')
-            for a_values, op, threshold in self._GOOD_RULES:
-                hit = (x < threshold) if op == 'lt' else (x > threshold)
-                bad = bad | (a.isin(a_values) & hit)
+        a = pd.to_numeric(df['A'], errors='coerce')
+        bad = (a == 0)   # ปฏิเสธแบรนด์ -> ตัดเสมอ
+
+        ref = self._good_reference(df)
+        # เก็บไว้ให้ตาราง Cross ใช้เกณฑ์ชุดเดียวกับที่ตัดจริง
+        self._good_reference_cache = ref
+        self._good_k_used = k
+
+        for m, (med, spread) in ref.items():
+            if spread is None:
+                continue
+            x = pd.to_numeric(df[m], errors='coerce')
+            resid = x - a.map(med)
+            bad = bad | (resid.abs() > k * spread).fillna(False)
 
         return pd.Series(
             np.where(bad.to_numpy(), 2.0, 1.0),
             index=df.index, dtype=float)
 
-    def _metric_rule_ok(self, a_value, x_value):
+    def _metric_rule_ok(self, metric, a_value, x_value, ref=None, k=None):
         """ค่า (A, X) คู่นี้ผ่านเงื่อนไข Good ของตัวชี้วัดเดียวหรือไม่
 
-        ใช้กฎชุดเดียวกับ _compute_good_filter แต่ดูทีละตัวชี้วัด
-        (แถวจริงอาจยังถูกตัดจากตัวชี้วัดอื่นได้)
+        ใช้เกณฑ์ชุดเดียวกับ _compute_good_filter (median/spread) แต่ดู
+        ทีละตัวชี้วัด (แถวจริงอาจยังถูกตัดจากตัวชี้วัดอื่นได้)
         """
         if a_value is None or x_value is None:
             return True
@@ -1852,29 +1894,51 @@ class SpssProcessorApp(QMainWindow):
             return True
         if a_value == 0:
             return False
-        for a_values, op, threshold in self._GOOD_RULES:
-            if a_value not in a_values:
-                continue
-            if op == 'lt' and x_value < threshold:
-                return False
-            if op == 'gt' and x_value > threshold:
-                return False
-        return True
 
-    def _metric_rule_pass_series(self, a_series, x_series):
+        if ref is None:
+            ref = getattr(self, '_good_reference_cache', None) or {}
+        if metric not in ref:
+            return True
+        med, spread = ref[metric]
+        if spread is None:
+            return True
+        expected = med.get(a_value)
+        if expected is None or (
+                isinstance(expected, float) and np.isnan(expected)):
+            return True
+        if k is None:
+            # getattr(..., default) ไม่ช่วยตรงนี้ เพราะ _good_k_used
+            # ถูก init เป็น None เสมอ (attribute มีอยู่แล้ว ไม่ใช่ไม่มี)
+            # ต้องเช็ค None explicit ถึงจะ fallback ไป default ได้จริง
+            k = getattr(self, '_good_k_used', None)
+            if k is None:
+                k = self._GOOD_DEFAULT_K
+        return abs(x_value - expected) <= k * spread
+
+    def _metric_rule_pass_series(self, metric, a_series, x_series,
+                                 ref=None, k=None):
         """เวกเตอร์: แต่ละแถวผ่านเงื่อนไขของตัวชี้วัดนี้หรือไม่"""
         bad = (a_series == 0)
-        for a_values, op, threshold in self._GOOD_RULES:
-            hit = (x_series < threshold) if op == 'lt' \
-                else (x_series > threshold)
-            bad = bad | (a_series.isin(a_values) & hit)
+        if ref is None:
+            ref = getattr(self, '_good_reference_cache', None) or {}
+        if metric in ref:
+            med, spread = ref[metric]
+            if spread is not None:
+                if k is None:
+                    k = getattr(self, '_good_k_used', None)
+                    if k is None:
+                        k = self._GOOD_DEFAULT_K
+                resid = x_series - a_series.map(med)
+                bad = bad | (resid.abs() > k * spread).fillna(False)
         return ~bad
 
     def _build_good_crosstab(self, metric):
         """ตาราง Cross: แถว = ค่า metric (ปัดทศนิยม 2), คอลัมน์ = A
 
-        คืน (total, passed, a_values, x_values) หรือ None ถ้าทำไม่ได้
+        คืน (total, passed, a_values, x_values, ref) หรือ None ถ้าทำไม่ได้
         นับจากข้อมูลเต็มก่อนตัด เพื่อให้เห็นว่าเงื่อนไขตัดตรงไหนไปบ้าง
+        คำนวณ ref (median/spread) สดจาก good_filter_full_df เสมอ
+        เพื่อให้ตรงกับข้อมูลที่กำลังแสดง ไม่พึ่งพา cache จากรอบก่อน
         """
         df = self.good_filter_full_df
         if df is None or df.empty:
@@ -1882,9 +1946,10 @@ class SpssProcessorApp(QMainWindow):
         if 'A' not in df.columns or metric not in df.columns:
             return None
 
+        ref = self._good_reference(df)
         a = pd.to_numeric(df['A'], errors='coerce')
         x = pd.to_numeric(df[metric], errors='coerce')
-        ok = self._metric_rule_pass_series(a, x)
+        ok = self._metric_rule_pass_series(metric, a, x, ref=ref)
 
         sub = pd.DataFrame({
             'A': a, 'X': x.round(2), 'ok': ok.astype(int),
@@ -1899,7 +1964,7 @@ class SpssProcessorApp(QMainWindow):
         passed = passed.reindex(
             index=total.index, columns=total.columns).fillna(0)
         return (total, passed,
-                list(total.columns), list(total.index))
+                list(total.columns), list(total.index), ref)
 
     def _build_crosstab_table(self, metric):
         """สร้าง QTableWidget ของตาราง Cross A x metric"""
@@ -1909,7 +1974,7 @@ class SpssProcessorApp(QMainWindow):
             lb.setStyleSheet("color:#888; padding:20px;")
             return lb
 
-        total, passed, a_vals, x_vals = built
+        total, passed, a_vals, x_vals, ref = built
         n_rows, n_cols = len(x_vals), len(a_vals)
 
         tw = QTableWidget(n_rows + 1, n_cols + 1)
@@ -1931,7 +1996,7 @@ class SpssProcessorApp(QMainWindow):
             for c, av in enumerate(a_vals):
                 cnt = int(total.iat[r, c])
                 n_ok = int(passed.iat[r, c])
-                rule_ok = self._metric_rule_ok(av, xv)
+                rule_ok = self._metric_rule_ok(metric, av, xv, ref=ref)
 
                 item = QTableWidgetItem(str(cnt) if cnt else "")
                 item.setTextAlignment(
@@ -2438,10 +2503,20 @@ class SpssProcessorApp(QMainWindow):
         if not json_filepath:
             return False
 
+        # แปลง NaN เป็น None ตอนสร้าง record เพื่อให้เขียนเป็น null
+        # (json.dump จะเขียน NaN ซึ่งไม่ใช่ JSON มาตรฐาน เครื่องมืออื่นอ่านไม่ได้)
+        records = []
+        for rec in payload_df.to_dict(orient='records'):
+            records.append({
+                k: (None if (v is not None and not isinstance(v, str)
+                             and pd.isna(v)) else v)
+                for k, v in rec.items()
+            })
+
         payload = {
             'key_columns': key_cols,
             'agree_columns': agree_cols,
-            'records': payload_df.to_dict(orient='records')
+            'records': records
         }
         with open(
                 json_filepath,
@@ -2451,7 +2526,8 @@ class SpssProcessorApp(QMainWindow):
                 payload,
                 f,
                 ensure_ascii=False,
-                indent=2)
+                indent=2,
+                allow_nan=False)
 
         self.agree_summary_cache_df = payload_df
         return True
@@ -2579,6 +2655,89 @@ class SpssProcessorApp(QMainWindow):
             if summary_df[col].isna().any():
                 return True
         return False
+
+    @staticmethod
+    def _agree_row_key(filter_text, index1_value):
+        """คีย์จับคู่แถว Summary กับ record ใน Agree JSON
+
+        ใช้ "รหัส Index1 (ตัวเลข) + ส่วน cross filter" เพราะข้อความ
+        Index1=... ในไฟล์ Compute C เป็น value label (Index1=True Online)
+        ต่างจากรอบปกติที่เป็นตัวเลข (Index1=1) จึงตัดส่วนนั้นทิ้ง
+        แล้วใช้คอลัมน์ Index1 ที่เป็นตัวเลขแทน
+        """
+        try:
+            if index1_value is None or pd.isna(index1_value):
+                idx = 0
+            else:
+                idx = int(float(index1_value))
+        except (TypeError, ValueError):
+            idx = 0
+
+        def _norm(part):
+            txt = str(part).strip().replace(' ', '').lower()
+            txt = re.sub(r'(?<==)(-?\d+)\.0$', r'\1', txt)
+            return txt
+
+        parts = [p for p in str(filter_text).split('+') if str(p).strip()]
+        cross = sorted(
+            _norm(p) for p in parts
+            if not str(p).strip().startswith('Index1='))
+        return f"{idx}|{'+'.join(cross)}"
+
+    def _apply_agree_summary_cache_by_key(self, summary_df):
+        """เติม agree_* จาก JSON โดยจับคู่ด้วยคีย์ ไม่ใช่ลำดับแถว
+
+        ทนกรณีจำนวนแถวไม่เท่ากัน เช่นเงื่อนไข Good ตัดบางกลุ่มหายไปหมด
+        คืน (df, จำนวนแถวที่จับคู่ได้, จำนวนค่าที่วาง, รายชื่อแถวที่ไม่เจอ)
+        """
+        cache = self.agree_summary_cache_df
+        if summary_df is None or summary_df.empty:
+            return summary_df, 0, 0, []
+        if cache is None or cache.empty \
+                or 'Filter' not in cache.columns:
+            return summary_df, 0, 0, []
+
+        agree_cols = [c for c in cache.columns
+                      if str(c).startswith('agree_')]
+        if not agree_cols:
+            return summary_df, 0, 0, []
+
+        cache_idx = (cache['Index1'] if 'Index1' in cache.columns
+                     else pd.Series(0, index=cache.index))
+        cache_keys = [
+            self._agree_row_key(f, i)
+            for f, i in zip(cache['Filter'], cache_idx)]
+
+        lookup = {}
+        for pos, key in enumerate(cache_keys):
+            if key not in lookup:
+                lookup[key] = {
+                    c: cache.iloc[pos][c] for c in agree_cols}
+
+        out = summary_df.copy()
+        for c in agree_cols:
+            if c not in out.columns:
+                out[c] = np.nan
+
+        out_idx = (out['Index1'] if 'Index1' in out.columns
+                   else pd.Series(0, index=out.index))
+        out_keys = pd.Series(
+            [self._agree_row_key(f, i)
+             for f, i in zip(out['Filter'], out_idx)],
+            index=out.index)
+
+        cells = 0
+        for c in agree_cols:
+            mapped = out_keys.map(
+                {k: v[c] for k, v in lookup.items()})
+            fill = mapped.notna()
+            cells += int(fill.sum())
+            out[c] = np.where(fill, mapped, out[c])
+
+        found = out_keys.isin(lookup.keys())
+        unmatched = [
+            str(v) for v in out.loc[~found, 'Filter'].tolist()]
+        return out, int(found.sum()), cells, unmatched
 
     def _apply_agree_summary_cache_by_position(self, summary_df):
         """โหมด Re-analyze: แปะ agree_* ทั้งชุดตามลำดับแถว (ไม่ map key)"""
@@ -3857,29 +4016,46 @@ class SpssProcessorApp(QMainWindow):
             self.update_status(
                 "วิเคราะห์และส่งออกเสร็จสมบูรณ์", "success")
 
-            notes = []
+            alerts = []
             if self._analysis_errors:
-                notes.append(
+                alerts.append(
                     f"⚠ Factor/Regression ล้มเหลว "
                     f"{len(self._analysis_errors)} กลุ่ม "
                     "(B.S/B.P/B.C/B.E ของกลุ่มนั้นเป็น 0)")
             if self._beta_zero_groups:
-                notes.append(
+                alerts.append(
                     f"⚠ {len(self._beta_zero_groups)} กลุ่มมี "
                     "B.S–B.E = 0 ทั้งหมด → Index = 0 ด้วย")
-            if self._beta_warnings and not self._beta_abs_used:
-                notes.append(
-                    f"⚠ {len(self._beta_warnings)} กลุ่มมีสัดส่วน "
-                    "B.S–B.E เกิน 100 หรือติดลบ\n"
-                    "     (ผลรวมยังเป็น 100 เสมอ แต่ค่ารายตัวพองเพราะ "
-                    "beta ติดลบ\n"
-                    "      มักแปลว่ากลุ่มนั้นฐานน้อยเกินไป ไม่ควรนำไปใช้)")
 
-            if notes:
+            if self._weak_model_groups:
+                alerts.append(
+                    f"⚠ {len(self._weak_model_groups)} กลุ่มที่โมเดลอธิบาย"
+                    f"ข้อมูลได้น้อย (R² < {self._RELIABILITY_R2:.2f})\n"
+                    "     ทั้งแถวเชื่อถือไม่ได้ ไม่ควรนำไปตีความ")
+            if self._weak_beta_cells:
+                alerts.append(
+                    f"⚠ {len(self._weak_beta_cells)} ช่องที่ค่า B "
+                    f"แยกจากศูนย์ไม่ได้ทางสถิติ (p > {self._RELIABILITY_P})\n"
+                    "     คำนวณได้แต่เป็น noise — อย่าตีความว่า "
+                    "'ปัจจัยนี้ไม่สำคัญ'")
+
+            info = []
+            if self._beta_warnings:
+                info.append(
+                    f"ℹ {len(self._beta_warnings)} กลุ่มมี beta ติดลบ "
+                    "— แปลงเป็นค่าสัมบูรณ์ (ABS) ให้แล้ว B.S–B.E "
+                    "จึงอยู่ในช่วง 0–100 ปกติ")
+
+            if alerts:
                 self._msg_warn(
                     "เสร็จแล้ว แต่มีข้อควรระวัง",
-                    f"{final_message}\n\n" + "\n\n".join(notes)
+                    f"{final_message}\n\n"
+                    + "\n\n".join(alerts + info)
                     + "\n\nดูรายละเอียดรายกลุ่มได้ที่ Log ด้านขวา")
+            elif info:
+                self._msg_success(
+                    "วิเคราะห์และส่งออกเสร็จสมบูรณ์",
+                    f"{final_message}\n\n" + "\n\n".join(info))
             else:
                 self._msg_success(
                     "วิเคราะห์และส่งออกเสร็จสมบูรณ์", final_message)
@@ -3902,6 +4078,8 @@ class SpssProcessorApp(QMainWindow):
         self._beta_warnings = []
         self._beta_zero_groups = []
         self._beta_abs_used = False
+        self._weak_beta_cells = []
+        self._weak_model_groups = []
         self._sample_size_approx = False
         self._respondent_key = _UNSET
         start_time = time.time()
@@ -3917,9 +4095,8 @@ class SpssProcessorApp(QMainWindow):
         self.log_message(
             "Correlation Mode: ABS (cor_S_* / cor_P_* / CorE_* "
             "ใช้ค่าสัมบูรณ์)")
-        if self._use_abs_beta():
-            self.log_message(
-                "B.S–B.E Mode: ABS (ใช้ |beta| — ไม่มีค่าติดลบ)")
+        self.log_message(
+            "B.S–B.E Mode: ABS (ใช้ |beta| — ไม่มีค่าติดลบ/เกิน 100)")
         self.log_message("")
 
         total_filters = len(cross_filters)
@@ -4032,21 +4209,57 @@ class SpssProcessorApp(QMainWindow):
         final_output = '\n'.join(all_output_parts)
 
         if use_json_agree_cache:
-            final_summary, copied_cells, copy_status = \
-                self._apply_agree_summary_cache_by_position(
-                    final_summary)
-            if copy_status != "ok":
-                self.update_status("วาง Agree จาก JSON ไม่สำเร็จ", "danger")
-                if copy_status.startswith("row_mismatch:"):
-                    _, c_rows, s_rows = copy_status.split(":")
+            n_json = len(self.agree_summary_cache_df) \
+                if self.agree_summary_cache_df is not None else 0
+            n_sum = len(final_summary)
+
+            # จับคู่ด้วยคีย์ (Index1 + cross filter) ก่อน — วิธีนี้ทนกรณี
+            # จำนวนแถวไม่เท่ากัน เช่นเงื่อนไข Good ตัดบางกลุ่มหายไปหมด
+            keyed, matched, cells, unmatched = \
+                self._apply_agree_summary_cache_by_key(final_summary)
+
+            if matched:
+                final_summary = keyed
+                self.log_message(
+                    f"✓ Add Agree Original แล้ว "
+                    f"(จับคู่ด้วยคีย์ {matched}/{n_sum} แถว, {cells} ค่า)")
+                if n_json != n_sum:
+                    self.log_message(
+                        f"   หมายเหตุ: JSON มี {n_json} แถว "
+                        f"แต่ Summary มี {n_sum} แถว "
+                        "(ปกติเมื่อเงื่อนไข Good ตัดบางกลุ่มออก)")
+                if unmatched:
+                    self.log_message(
+                        f"   ⚠ ไม่พบค่า Agree ของ {len(unmatched)} แถว "
+                        "(ปล่อยว่างไว้):")
+                    for name in unmatched[:10]:
+                        self.log_message(f"      - {name}")
+                    if len(unmatched) > 10:
+                        self.log_message(
+                            f"      ... และอีก {len(unmatched) - 10} แถว")
+            else:
+                # จับคู่ด้วยคีย์ไม่ได้เลย -> ลองวางตามลำดับแบบเดิม
+                # (รองรับไฟล์ JSON เก่าที่คีย์ไม่เข้ากัน)
+                final_summary, copied_cells, copy_status = \
+                    self._apply_agree_summary_cache_by_position(
+                        final_summary)
+                if copy_status != "ok":
+                    self.update_status(
+                        "วาง Agree จาก JSON ไม่สำเร็จ", "danger")
+                    if copy_status.startswith("row_mismatch:"):
+                        _, c_rows, s_rows = copy_status.split(":")
+                        raise RuntimeError(
+                            "ไม่สามารถจับคู่ค่า Agree จาก JSON กับ Summary ได้\n"
+                            f"JSON={c_rows} แถว, Summary={s_rows} แถว\n\n"
+                            "สาเหตุที่พบบ่อย: ไฟล์ JSON มาจากงานอื่น "
+                            "หรือใช้ Filter ไม่ตรงกับรอบที่สร้าง JSON\n"
+                            "กรุณาตรวจสอบว่าเลือกไฟล์ Agree Original JSON "
+                            "ของงานเดียวกัน และตั้ง Filter ให้ตรงกัน")
                     raise RuntimeError(
-                        "จำนวนแถวไม่ตรงกันระหว่าง JSON กับ Summary\n"
-                        f"JSON={c_rows} แถว, Summary={s_rows} แถว\n"
-                        "โหมดวิเคราะห์ซ้ำถูกตั้งให้วาง Agree ทั้งชุดแบบไม่ map")
-                raise RuntimeError(
-                    "ไม่สามารถวาง Agree Original จาก JSON ได้")
-            self.log_message(
-                f"✓ Add Agree Original แล้ว (วางตรงตามลำดับ {copied_cells} ค่า)")
+                        "ไม่สามารถวาง Agree Original จาก JSON ได้")
+                self.log_message(
+                    f"✓ Add Agree Original แล้ว "
+                    f"(วางตรงตามลำดับ {copied_cells} ค่า)")
 
         # --- บันทึก Excel ---
         current_step += 1
@@ -4103,38 +4316,60 @@ class SpssProcessorApp(QMainWindow):
 
         if self._beta_warnings:
             self.log_message("")
-            if self._beta_abs_used:
-                self.log_message(
-                    f"ℹ {len(self._beta_warnings)} กลุ่มมี beta ติดลบ "
-                    "— แปลงเป็นค่าสัมบูรณ์ (ABS) แล้ว")
-                self.log_message(
-                    "   B.x = |beta| / ผลรวม|beta| × 100 "
-                    "จึงอยู่ในช่วง 0–100 และรวมกันได้ 100")
-                self.log_message(
-                    "   หมายเหตุ: ปัจจัยที่สัมพันธ์กลับทางกับ A "
-                    "จะถูกนับเป็น 'สำคัญ' เท่ากับปัจจัยที่สัมพันธ์ตามทาง")
-            else:
-                self.log_message(
-                    f"⚠ {len(self._beta_warnings)} กลุ่มมีสัดส่วน B.S–B.E "
-                    "ที่เชื่อถือไม่ได้")
-                self.log_message(
-                    "   (B.x = beta / ผลรวม beta × 100 "
-                    "จึงรวมกันได้ 100 เสมอ")
-                self.log_message(
-                    "    แต่เมื่อมี beta ติดลบ ผลรวมจะเล็กลงจนค่ารายตัว"
-                    "พองเกิน")
-                self.log_message(
-                    "    100 หรือติดลบ — มักแปลว่ากลุ่มนั้น n น้อยเกินไป)")
+            self.log_message(
+                f"ℹ {len(self._beta_warnings)} กลุ่มมี beta ติดลบ "
+                "— แปลงเป็นค่าสัมบูรณ์ (ABS) แล้ว")
+            self.log_message(
+                "   B.x = |beta| / ผลรวม|beta| × 100 "
+                "จึงอยู่ในช่วง 0–100 และรวมกันได้ 100")
+            self.log_message(
+                "   หมายเหตุ: ปัจจัยที่สัมพันธ์กลับทางกับ A "
+                "จะถูกนับเป็น 'สำคัญ' เท่ากับปัจจัยที่สัมพันธ์ตามทาง")
             for w in self._beta_warnings[:10]:
                 lo, hi = w['span']
                 self.log_message(
                     f"    - {w['filter']}: beta ติดลบ {w['n_negative']} ตัว, "
-                    f"ผลรวม{'|beta|' if self._beta_abs_used else ' beta'} "
-                    f"= {w['total']:.4f}, "
+                    f"ผลรวม|beta| = {w['total']:.4f}, "
                     f"ช่วง B = {lo:.1f} ถึง {hi:.1f}")
             if len(self._beta_warnings) > 10:
                 self.log_message(
                     f"    ... และอีก {len(self._beta_warnings) - 10} กลุ่ม")
+
+        if self._weak_model_groups:
+            self.log_message("")
+            self.log_message(
+                f"⚠ {len(self._weak_model_groups)} กลุ่มที่โมเดลอธิบาย"
+                f"ข้อมูลได้น้อย (R² < {self._RELIABILITY_R2:.2f})")
+            self.log_message(
+                "   ทั้งแถวเชื่อถือไม่ได้ ไม่ควรนำ B.S–B.E / Index "
+                "ไปตีความเป็นข้อค้นพบ:")
+            for g in self._weak_model_groups[:10]:
+                self.log_message(
+                    f"    - {g['filter']}: R² = {g['r2']:.3f} "
+                    f"(n = {g['n']})")
+            if len(self._weak_model_groups) > 10:
+                self.log_message(
+                    f"    ... และอีก {len(self._weak_model_groups) - 10} กลุ่ม")
+
+        if self._weak_beta_cells:
+            self.log_message("")
+            self.log_message(
+                f"⚠ {len(self._weak_beta_cells)} ช่องที่ค่า B "
+                f"แยกจากศูนย์ไม่ได้ทางสถิติ (p > {self._RELIABILITY_P})")
+            self.log_message(
+                "   คำนวณได้ แต่เป็น noise ไม่ใช่สัญญาณจริง "
+                "— มักเกิดเมื่อตัวชี้วัดนั้น")
+            self.log_message(
+                "   แทบไม่มีความหลากหลายในกลุ่มย่อยนั้น "
+                "(อย่าตีความว่า 'ปัจจัยนี้ไม่สำคัญ'):")
+            for c in sorted(self._weak_beta_cells,
+                            key=lambda x: -x['p'])[:12]:
+                self.log_message(
+                    f"    - {c['filter']} | {c['ratio_col']} = "
+                    f"{c['value']:.2f}  (p = {c['p']:.3f}, n = {c['n']})")
+            if len(self._weak_beta_cells) > 12:
+                self.log_message(
+                    f"    ... และอีก {len(self._weak_beta_cells) - 12} ช่อง")
 
         elapsed = time.time() - start_time
         self.log_message("")
@@ -4556,8 +4791,12 @@ class SpssProcessorApp(QMainWindow):
             factor_scores_df, sorted_loadings_df, factor_to_variable_map = self.perform_factor_analysis(target_df)
             if factor_scores_df is not None:
                 analysis_df = target_df.join(factor_scores_df)
-                beta_df, beta_sorted_df, _ = self.perform_regression_analysis(analysis_df, factor_to_variable_map)
-                return {'loadings': sorted_loadings_df, 'beta': beta_df, 'beta_sorted': beta_sorted_df}
+                beta_df, beta_sorted_df, _, diagnostics = \
+                    self.perform_regression_analysis(
+                        analysis_df, factor_to_variable_map)
+                return {'loadings': sorted_loadings_df, 'beta': beta_df,
+                        'beta_sorted': beta_sorted_df,
+                        'diagnostics': diagnostics}
         except ValueError as e:
             print(f"\n!!! ข้อมูลไม่พอสำหรับกลุ่มนี้: {e}\n!!! ข้ามการวิเคราะห์กลุ่มนี้...\n")
             self._analysis_skipped.append((group_name, str(e)))
@@ -4858,6 +5097,7 @@ class SpssProcessorApp(QMainWindow):
             expected_factors = ['N_S', 'N_P', 'N_C', 'N_E']
             template_rows = []
 
+            diag_by_filter = {}
             for filter_name in summary_df['Filter']:
                 row_data = {'Filter': filter_name}
                 analysis_result = results_dict.get(filter_name)
@@ -4866,6 +5106,9 @@ class SpssProcessorApp(QMainWindow):
                     betas = analysis_result['beta_sorted']['Beta'].to_dict()
                     for factor in expected_factors:
                         row_data[factor] = betas.get(factor, 0)
+                    if analysis_result.get('diagnostics'):
+                        diag_by_filter[filter_name] = \
+                            analysis_result['diagnostics']
                 else:
                     for factor in expected_factors:
                         row_data[factor] = 0
@@ -4899,6 +5142,8 @@ class SpssProcessorApp(QMainWindow):
                 self._collect_beta_warnings(
                     template_df, expected_factors,
                     raw_betas=raw_betas, use_abs=use_abs)
+                self._collect_reliability_warnings(
+                    template_df, expected_factors, diag_by_filter)
 
             beta_cols_to_add = ['B.S', 'B.P', 'B.C', 'B.E']
             if 'Filter' in template_df.columns:
@@ -5020,13 +5265,69 @@ class SpssProcessorApp(QMainWindow):
                 f"ไม่สามารถบันทึกไฟล์ Excel ได้: {e}") from e
 
     def _use_abs_beta(self):
-        """ใช้ |beta| เป็นฐานคิดสัดส่วน B.S–B.E หรือไม่
+        """ใช้ |beta| เป็นฐานคิดสัดส่วน B.S–B.E เสมอ
 
-        เปิดเฉพาะโหมดวิเคราะห์ซ้ำที่ให้ระบบตัดชุดด้วยเงื่อนไข Good
-        เพื่อไม่ให้ตัวเลขของ workflow อื่นเปลี่ยนไปจากเดิม
+        สาเหตุที่ B.S–B.E ติดลบ/เกิน 100 คือ N_S/N_P/N_C/N_E สัมพันธ์กัน
+        เองสูงมาก (multicollinearity) ทำให้ regression beta พลิกเป็น
+        ลบได้ในบางกลุ่ม — เป็นปัญหาเชิงโครงสร้างที่เกิดได้ทุก workflow
+        ไม่ใช่เฉพาะตอนตัดข้อมูลด้วย Good จึงเปิด ABS ไว้เสมอ
+
+        B.x = |beta_x| / Σ|beta| × 100 การันตีทางคณิตศาสตร์ว่าอยู่ใน
+        ช่วง 0–100 และรวมกันได้ 100 เสมอ ไม่กระทบ N_S/N_P/N_C/N_E,
+        Factor Analysis, ค่า beta ดิบ, Correlation, T2B หรือ SampleSize
+        เลย — กลุ่มที่ beta บวกอยู่แล้ว (ส่วนใหญ่) ค่า B.x จะเท่าเดิม
+        ทุกประการ เปลี่ยนเฉพาะกลุ่มที่ beta เคยติดลบเท่านั้น
         """
-        return bool(self.is_reanalyze_mode
-                    and self.reanalyze_good_mode)
+        return True
+
+    # เกณฑ์บอกว่า "เลขนี้เชื่อไม่ได้" -- ไม่ได้ใช้ตัดหรือแก้ค่าใดๆ
+    # ใช้แจ้งเตือนเท่านั้น เพื่อไม่ให้เอาเลขที่เป็น noise ไปตีความ
+    _RELIABILITY_P = 0.05     # beta ที่ p เกินนี้ = แยกจากศูนย์ไม่ได้
+    _RELIABILITY_R2 = 0.30    # R2 ต่ำกว่านี้ = โมเดลอธิบายกลุ่มนี้ไม่ได้
+
+    def _collect_reliability_warnings(self, template_df, factors,
+                                      diag_by_filter):
+        """หาแถว/เซลล์ที่ตัวเลขคำนวณได้ แต่ทางสถิติเชื่อถือไม่ได้
+
+        ต่างจาก _collect_beta_warnings ที่ดูเรื่อง beta ติดลบ อันนี้ดูว่า
+        beta "แยกจากศูนย์ได้จริงไหม" (p-value) และโมเดลอธิบายกลุ่มนั้น
+        ได้แค่ไหน (R2) -- เพราะเซลล์ที่ n ผ่านเกณฑ์แล้วก็ยังอาจเป็น noise
+        ได้ ถ้าตัวชี้วัดนั้นไม่มีความหลากหลายพอในกลุ่มย่อยนั้น
+
+        ไม่แก้ไขตัวเลขใดๆ เก็บไว้รายงานเท่านั้น
+        """
+        self._weak_beta_cells = []
+        self._weak_model_groups = []
+        if template_df is None or template_df.empty or not diag_by_filter:
+            return
+
+        ratio_of = {'N_S': 'B.S', 'N_P': 'B.P',
+                    'N_C': 'B.C', 'N_E': 'B.E'}
+        for _, row in template_df.iterrows():
+            name = row.get('Filter', '')
+            diag = diag_by_filter.get(name)
+            if not diag:
+                continue
+
+            r2 = diag.get('r_squared')
+            n_rows = diag.get('n_rows')
+            if r2 is not None and r2 < self._RELIABILITY_R2:
+                self._weak_model_groups.append({
+                    'filter': name, 'r2': float(r2),
+                    'n': n_rows,
+                })
+
+            for f in factors:
+                p = diag.get('p_values', {}).get(f)
+                if p is None or (isinstance(p, float) and np.isnan(p)):
+                    continue
+                if p > self._RELIABILITY_P:
+                    self._weak_beta_cells.append({
+                        'filter': name, 'metric': f,
+                        'ratio_col': ratio_of.get(f, f),
+                        'value': float(row.get(ratio_of.get(f, f), 0) or 0),
+                        'p': float(p), 'n': n_rows,
+                    })
 
     def _collect_beta_warnings(self, template_df, factors,
                                raw_betas=None, use_abs=False):
@@ -5170,9 +5471,26 @@ class SpssProcessorApp(QMainWindow):
         score_to_factor_map = {f'FAC{i+1}_1': f'Factor{i+1}' for i in range(4)}
         renamed_betas = betas.rename(index=lambda score_name: factor_to_variable_map.get(score_to_factor_map.get(score_name)))
         valid_order = [v for v in ['N_S', 'N_P', 'N_C', 'N_E'] if v in renamed_betas.index]
-        beta_sorted_df = pd.DataFrame({'Beta': renamed_betas}).loc[valid_order]; print(beta_sorted_df); print("\n" + "-"*50 + "\n")
+        beta_sorted_df = pd.DataFrame({'Beta': renamed_betas}).loc[valid_order]
+
+        # p-value ของแต่ละ beta และ R2 -- statsmodels คำนวณไว้แล้วตอน fit
+        # ดึงมาเก็บเพื่อบอกว่าเลขไหน "แยกจากศูนย์ไม่ได้" (ไม่มีนัยสำคัญ)
+        # ไม่กระทบการคำนวณ Beta/B.x/Index ใดๆ เป็นข้อมูลประกอบเท่านั้น
+        renamed_p = model.pvalues.drop('const').rename(
+            index=lambda s: factor_to_variable_map.get(
+                score_to_factor_map.get(s)))
+        beta_sorted_df['p_value'] = [
+            renamed_p.get(v, np.nan) for v in valid_order]
+        print(beta_sorted_df); print("\n" + "-"*50 + "\n")
+
+        diagnostics = {
+            'r_squared': float(model.rsquared),
+            'n_rows': int(len(df_regression)),
+            'p_values': {v: float(renamed_p.get(v, np.nan))
+                         for v in valid_order},
+        }
         zpred = model.predict(X)
-        return beta_df, beta_sorted_df, zpred
+        return beta_df, beta_sorted_df, zpred, diagnostics
 
 
 
