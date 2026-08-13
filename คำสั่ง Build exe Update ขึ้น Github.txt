@@ -20,12 +20,12 @@ git push origin main --tags
 
 ****New2026 - ลำดับที่ถูกต้องสำหรับ Build Version ใหม่****
 
-# (ผมแก้ CURRENT_VERSION = "1.1.73" ให้ได้)
+# (ผมแก้ CURRENT_VERSION = "1.1.78" ให้ได้)
 git add -A
-git commit -m "Bump version to 1.1.76"
+git commit -m "Bump version to 1.1.78"
 git push origin main
-git tag -f v1.1.76
-git push -f origin v1.1.76
+git tag -f v1.1.78
+git push -f origin v1.1.78
 
 
 

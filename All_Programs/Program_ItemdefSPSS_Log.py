@@ -92,19 +92,16 @@ def get_base_name_heuristic(var_name):
     Handles more complex patterns for grouping including _r<number> and prefix_num_suffix.
     """
 
-    # --- NEW 1.55: I_<loopIndex>_<stem>_<subIndex>  -> base = "I_<loopIndex>_<stem>"
-    # ตัวอย่าง: I_1_a4_1, I_1_a4_10, I_2_a4_3  -> I_1_a4, I_2_a4
-    # (ต้องมาก่อน Heuristic 1.6)
-    m_i_num_stem_num = re.match(r'^I_(\d+)_([A-Za-z]\w*)_(\d+)$', var_name)
-    if m_i_num_stem_num:
-        loop_idx = m_i_num_stem_num.group(1)
-        stem = m_i_num_stem_num.group(2)
-        return f"I_{loop_idx}_{stem}"
-
+    # --- REMOVED 1.57: กฎเดิม 1.55 (I_<loopIndex>_<stem>_<subIndex> -> "I_<loopIndex>_<stem>")
+    # ถูกยกเลิก เพราะทำให้ base ยังมีเลข loop ติดอยู่ ตัวแปรอย่าง
+    # I_1_s14_1, I_2_s14_1, ... I_13_s14_1 จึงได้ base ต่างกันทุกตัว
+    # และถูกแยกเป็น Loop ID คนละอัน (s14_1, s14_2, ... s14_13) แทนที่จะรวมเป็น s14_1 อันเดียว
+    # ตอนนี้ปล่อยให้ตกไปที่กฎ 1.6 (I_\d+_(.+)$) ซึ่งจะได้ base = "s14_1" / "a4_1" เหมือนกันทุก loop
     # =========================================================================
     # เดิม: 1.4 s13_1_1 -> s13_1
+    # (ข้ามกรณี I_<n>_... เพื่อไม่ให้เลข loop ค้างอยู่ใน base เช่น I_1_s13_1_1)
     match_s_num_num = re.match(r'(.+_\d+)_(\d+)$', var_name)
-    if match_s_num_num:
+    if match_s_num_num and not re.match(r'I_\d+_', var_name):
         base_part = match_s_num_num.group(1)
         if not base_part.endswith('_O') and not base_part.endswith('_r'):
             return base_part
@@ -116,8 +113,7 @@ def get_base_name_heuristic(var_name):
         if base_part:
             return base_part
 
-    # 1.6 I_num_basename -> basename (เช่น I_1_q4_Oth -> q4_Oth)
-    # ** จะไม่โดนกรณี I_<n>_<stem>_<sub> เพราะถูกจับโดย 1.55 ไปก่อนแล้ว **
+    # 1.6 I_num_basename -> basename (เช่น I_1_q4_Oth -> q4_Oth, I_1_s14_1 -> s14_1)
     match_i_num_base = re.match(r'I_\d+_(.+)$', var_name)
     if match_i_num_base and not re.search(r'_O\d+$', match_i_num_base.group(1)):
         base_part = match_i_num_base.group(1)
@@ -207,6 +203,12 @@ class SpssToExcelConverter:
         self.last_read_meta = None # Cache for SPSS metadata
         self.variable_loop_types = {} # Stores {var_name: "SA"/"MA"/"Loop Text"/"Loop Numeric"}
         self.user_defined_loop_names = {} # Stores {first_var_name: "user_loop_id"}
+        # --- NEW 1.57: Manual Loop Group ---
+        # ผู้ใช้เลือกตัวแปรเป็นช่วงแล้วสั่งรวมเป็น Loop เดียวเอง โดยไม่ผ่าน Heuristic
+        # แต่ละรายการ: {'name': Loop ID, 'type': SA/MA/Loop Text/Loop Numeric,
+        #               'subs': [ตัวแปรตัวแทนของแต่ละ Loop sub],
+        #               'vars': [ตัวแปรจริงทั้งหมดในกลุ่ม]}
+        self.manual_loop_groups = []
 
         # --- GUI Widgets ---
 
@@ -433,6 +435,7 @@ class SpssToExcelConverter:
             self.variable_loop_types.clear()
             self.codes_to_delete_confirmed = set()
             self.user_defined_loop_names.clear()
+            self.manual_loop_groups.clear()
             self.last_read_meta = None
             #print("Cleared previous loop definitions, confirmed deletions, and loop names.", flush=True)
 
@@ -791,6 +794,42 @@ class SpssToExcelConverter:
         self.root.wait_window(validation_window)
     # --- End of Updated _show_validation_window ---
 
+    # --- NEW 1.57: Manual Loop Group helpers ---
+    def get_manual_group_of_var(self, var_name):
+        """คืน dict ของ Manual Group ที่ตัวแปรนี้สังกัดอยู่ (ถ้ามี) ไม่งั้นคืน None"""
+        if not var_name:
+            return None
+        for group in self.manual_loop_groups:
+            if var_name in group['vars']:
+                return group
+        return None
+
+    def get_manual_group_var_set(self):
+        """คืน set ของตัวแปรทั้งหมดที่ถูกจองไว้โดย Manual Group"""
+        reserved = set()
+        for group in self.manual_loop_groups:
+            reserved.update(group['vars'])
+        return reserved
+
+    def build_manual_group_entries(self, var_name_to_index):
+        """
+        สร้างรายการ Manual Group ที่พร้อมใช้งาน โดยเรียง subs/vars ตามลำดับในไฟล์ SPSS
+        และตัดตัวแปรที่ไม่มีอยู่ในไฟล์ปัจจุบันออก
+        คืนค่า list ของ (first_var, group_dict, ordered_subs, ordered_vars)
+        """
+        entries = []
+        for group in self.manual_loop_groups:
+            ordered_vars = sorted([v for v in group['vars'] if v in var_name_to_index],
+                                  key=lambda v: var_name_to_index[v])
+            ordered_subs = sorted([v for v in group['subs'] if v in var_name_to_index],
+                                  key=lambda v: var_name_to_index[v])
+            if not ordered_vars or not ordered_subs:
+                print(f"  Warning: Manual Group '{group['name']}' ไม่พบตัวแปรในไฟล์ปัจจุบัน ข้ามไป", flush=True)
+                continue
+            entries.append((ordered_vars[0], group, ordered_subs, ordered_vars))
+        entries.sort(key=lambda e: var_name_to_index[e[0]])
+        return entries
+
     def show_loop_definition_window(self):
         """แสดงหน้าต่างให้ผู้ใช้กำหนดประเภท Loop (SA/MA/Loop Text/Loop Numeric) สำหรับแต่ละตัวแปร (แสดง _O<n> เป็นกลุ่ม)"""
         print("--- Opening Loop Definition Window (Grouping _O<n> Display) ---", flush=True) # Updated message
@@ -875,17 +914,22 @@ class SpssToExcelConverter:
                     processed_items.add(var_name)
 
             # --- Create GUI Window ---
-            loop_window = tk.Toplevel(self.root); loop_window.title("กำหนดตัวแปร Loop (SA/MA/Text/Numeric)"); loop_window.geometry("650x550"); loop_window.grab_set()
-            lbl_instruction = tk.Label(loop_window, text="เลือกแถว (ใช้ Shift/Ctrl) แล้วกดปุ่มด้านล่าง หรือคลิก 'Loop Type' เพื่อสลับ (SA<->MA<->Text<->Numeric<->ว่าง)"); lbl_instruction.pack(pady=(10, 5))
+            loop_window = tk.Toplevel(self.root); loop_window.title("กำหนดตัวแปร Loop (SA/MA/Text/Numeric)"); loop_window.geometry("820x600"); loop_window.grab_set()
+            lbl_instruction = tk.Label(loop_window, text="เลือกแถว (ใช้ Shift/Ctrl) แล้วกดปุ่มด้านล่าง หรือคลิก 'Loop Type' เพื่อสลับ (SA<->MA<->Text<->Numeric<->ว่าง)"); lbl_instruction.pack(pady=(10, 2))
+            lbl_manual = tk.Label(loop_window, text="Manual Group: เลือกช่วงตัวแปร -> กด 'รวมเป็น Loop เดียว' -> ติ๊กเลือก Loop Type (โปรแกรมจะไม่ใช้กฎอัตโนมัติกับกลุ่มนี้)", fg="#0000AA"); lbl_manual.pack(pady=(0, 5))
             tree_frame = ttk.Frame(loop_window); tree_frame.pack(fill='both', expand=True, padx=10, pady=5)
-            columns = ('loop_type',); tree = ttk.Treeview(tree_frame, columns=columns, show='tree headings', selectmode='extended')
-            tree.heading('#0', text='Variable Name / Group'); tree.heading('loop_type', text='Loop Type') # Updated heading
-            tree.column('#0', width=350, stretch=tk.YES, anchor='w'); tree.column('loop_type', width=150, stretch=tk.NO, anchor='center')
+            columns = ('loop_type', 'manual_group'); tree = ttk.Treeview(tree_frame, columns=columns, show='tree headings', selectmode='extended')
+            tree.heading('#0', text='Variable Name / Group'); tree.heading('loop_type', text='Loop Type'); tree.heading('manual_group', text='Manual Group')
+            tree.column('#0', width=330, stretch=tk.YES, anchor='w'); tree.column('loop_type', width=130, stretch=tk.NO, anchor='center'); tree.column('manual_group', width=180, stretch=tk.NO, anchor='w')
             vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=vsb.set); vsb.pack(side='right', fill='y'); tree.pack(side='left', fill='both', expand=True)
+            tree.tag_configure('manual', background='#E6F2FF')
 
             # Populate Treeview using prepared items
-            for display_text, iid, initial_value, is_group, _ in items_for_treeview:
-                tree.insert('', tk.END, iid=iid, text=display_text, values=(initial_value,))
+            for display_text, iid, initial_value, is_group, members in items_for_treeview:
+                mg = self.get_manual_group_of_var(members[0] if members else iid)
+                tree.insert('', tk.END, iid=iid, text=display_text,
+                            values=(initial_value, mg['name'] if mg else ''),
+                            tags=('manual',) if mg else ())
 
             # --- Event Handlers (Modified to handle groups) ---
             def on_tree_click(event):
@@ -895,6 +939,7 @@ class SpssToExcelConverter:
                 if region != "cell" or not item_iid or column_id != '#1': return
 
                 current_values = tree.item(item_iid, 'values'); current_type = current_values[0] if current_values else ""
+                current_mg_name = current_values[1] if len(current_values) > 1 else ""
                 if current_type == "": next_type = "SA"
                 elif current_type == "SA": next_type = "MA"
                 elif current_type == "MA": next_type = "Loop Text"
@@ -902,7 +947,7 @@ class SpssToExcelConverter:
                 elif current_type == "Loop Numeric": next_type = ""
                 else: next_type = "SA"
 
-                tree.item(item_iid, values=(next_type,)) # Update display
+                tree.item(item_iid, values=(next_type, current_mg_name)) # Update display
 
                 # Update underlying dictionary for ALL actual variables represented by this IID
                 actual_vars = iid_to_actual_vars.get(item_iid, [])
@@ -912,6 +957,10 @@ class SpssToExcelConverter:
                         self.variable_loop_types[actual_var] = next_type
                     elif actual_var in self.variable_loop_types:
                         del self.variable_loop_types[actual_var]
+                # ถ้าแถวนี้อยู่ใน Manual Group ให้ Type ของกลุ่มเปลี่ยนตามด้วย
+                mg = self.get_manual_group_of_var(actual_vars[0]) if actual_vars else None
+                if mg and next_type:
+                    mg['type'] = next_type
 
             tree.bind('<ButtonRelease-1>', on_tree_click)
 
@@ -924,7 +973,9 @@ class SpssToExcelConverter:
                 updated_var_count = 0
                 for item_iid in selected_iids:
                     try:
-                        tree.item(item_iid, values=(loop_type_to_set,)) # Update display
+                        existing_values = tree.item(item_iid, 'values')
+                        mg_name = existing_values[1] if len(existing_values) > 1 else ""
+                        tree.item(item_iid, values=(loop_type_to_set, mg_name)) # Update display
                         # Update underlying dictionary for ALL actual variables
                         actual_vars = iid_to_actual_vars.get(item_iid, [])
                         for actual_var in actual_vars:
@@ -933,8 +984,147 @@ class SpssToExcelConverter:
                             elif actual_var in self.variable_loop_types:
                                 del self.variable_loop_types[actual_var]
                             updated_var_count += 1 # Count actual vars updated
+                        mg = self.get_manual_group_of_var(actual_vars[0]) if actual_vars else None
+                        if mg and loop_type_to_set:
+                            mg['type'] = loop_type_to_set
                     except tk.TclError: print(f"Warning: Item {item_iid} not found. Skipping.", flush=True)
                 print(f"  Applied to {len(selected_iids)} rows, affecting {updated_var_count} actual variables.", flush=True)
+
+            # --- NEW 1.57: Manual Group handlers ---
+            def refresh_manual_column():
+                """อัปเดตคอลัมน์ Loop Type + Manual Group ของทุกแถวให้ตรงกับข้อมูลจริง"""
+                for _dt, row_iid, _iv, _ig, members in items_for_treeview:
+                    try:
+                        key_var = members[0] if members else row_iid
+                        cur_type = self.variable_loop_types.get(key_var, "")
+                        mg = self.get_manual_group_of_var(key_var)
+                        tree.item(row_iid, values=(cur_type, mg['name'] if mg else ''),
+                                  tags=('manual',) if mg else ())
+                    except tk.TclError:
+                        continue
+
+            def ask_loop_type_dialog(default_type, row_count):
+                """หน้าต่างเล็กให้ติ๊กเลือก Loop Type ของ Manual Group คืนค่า type ที่เลือก หรือ None ถ้ายกเลิก"""
+                dlg = tk.Toplevel(loop_window)
+                dlg.title("เลือก Loop Type ของ Manual Group")
+                dlg.resizable(False, False)
+                dlg.transient(loop_window)
+                dlg.grab_set()
+
+                tk.Label(dlg, text=f"รวม {row_count} รายการเป็น Loop เดียว", font=('TkDefaultFont', 10, 'bold')).pack(padx=20, pady=(15, 2))
+                tk.Label(dlg, text="เลือกประเภท Loop ที่ต้องการ:").pack(padx=20, pady=(0, 8))
+
+                choice = tk.StringVar(value=default_type if default_type else "SA")
+                opt_frame = tk.Frame(dlg); opt_frame.pack(padx=30, pady=(0, 10), anchor='w')
+                for lt, desc in (("SA", "Single Answer"), ("MA", "Multiple Answer"),
+                                 ("Loop Text", "ข้อความ"), ("Loop Numeric", "ตัวเลข")):
+                    tk.Radiobutton(opt_frame, text=f"{lt}  ({desc})", variable=choice, value=lt,
+                                   anchor='w', justify='left').pack(fill='x', anchor='w')
+
+                result = {'value': None}
+                def on_ok():
+                    result['value'] = choice.get(); dlg.destroy()
+                def on_cancel():
+                    result['value'] = None; dlg.destroy()
+
+                btn_row = tk.Frame(dlg); btn_row.pack(pady=(0, 15))
+                tk.Button(btn_row, text="ตกลง", command=on_ok, width=10, bg="#BEE3F8").pack(side=tk.LEFT, padx=5)
+                tk.Button(btn_row, text="ยกเลิก", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+
+                dlg.bind('<Return>', lambda e: on_ok())
+                dlg.bind('<Escape>', lambda e: on_cancel())
+                dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+
+                # จัดให้อยู่กลางหน้าต่างแม่
+                dlg.update_idletasks()
+                px = loop_window.winfo_rootx() + (loop_window.winfo_width() - dlg.winfo_width()) // 2
+                py = loop_window.winfo_rooty() + (loop_window.winfo_height() - dlg.winfo_height()) // 3
+                dlg.geometry(f"+{max(px, 0)}+{max(py, 0)}")
+                dlg.focus_force()   # ให้ปุ่ม Enter / Esc ใช้งานได้ทันที
+
+                loop_window.wait_window(dlg)
+                try: loop_window.grab_set()   # คืน grab ให้หน้าต่างแม่หลังปิด dialog
+                except tk.TclError: pass
+                return result['value']
+
+            def make_manual_group():
+                selected_iids = tree.selection()
+                if not selected_iids:
+                    messagebox.showwarning("ไม่มีรายการที่เลือก", "กรุณาเลือกตัวแปร/กลุ่ม ที่ต้องการรวมเป็น Loop เดียวก่อน", parent=loop_window); return
+
+                # เรียงแถวที่เลือกตามลำดับที่แสดง (= ลำดับในไฟล์ SPSS)
+                order_index = {row_iid: n for n, (_dt, row_iid, _iv, _ig, _m) in enumerate(items_for_treeview)}
+                ordered_iids = sorted(selected_iids, key=lambda x: order_index.get(x, 10**9))
+
+                subs = []          # ตัวแทนของแต่ละ Loop sub (1 แถว = 1 sub)
+                all_group_vars = []
+                for row_iid in ordered_iids:
+                    actual_vars = iid_to_actual_vars.get(row_iid, [])
+                    if not actual_vars: continue
+                    subs.append(actual_vars[0])
+                    all_group_vars.extend(actual_vars)
+
+                if len(subs) < 2:
+                    messagebox.showwarning("เลือกไม่พอ", "Manual Group ต้องเลือกอย่างน้อย 2 แถว", parent=loop_window); return
+
+                # --- ให้ผู้ใช้ติ๊กเลือก Loop Type ของกลุ่มนี้ ---
+                # ค่าเริ่มต้น: ใช้ Type ที่ตั้งไว้แล้วในแถวแรกที่มีค่า ถ้าไม่มีเลยใช้ SA
+                types_found = [self.variable_loop_types.get(v, "") for v in subs]
+                default_type = next((t for t in types_found if t), "SA")
+                group_type = ask_loop_type_dialog(default_type, len(subs))
+                if not group_type:
+                    print("  Manual Group cancelled by user (loop type dialog).", flush=True)
+                    return
+
+                # เช็คว่าซ้อนทับกับ Manual Group เดิมหรือไม่
+                overlapped = {mg['name'] for v in all_group_vars if (mg := self.get_manual_group_of_var(v))}
+                if overlapped:
+                    if not messagebox.askyesno("ซ้อนทับกลุ่มเดิม",
+                                               f"ตัวแปรที่เลือกอยู่ใน Manual Group เดิมอยู่แล้ว:\n{', '.join(sorted(overlapped))}\n\nต้องการลบกลุ่มเดิมแล้วสร้างใหม่หรือไม่?",
+                                               parent=loop_window):
+                        return
+                    self.manual_loop_groups = [g for g in self.manual_loop_groups if g['name'] not in overlapped]
+
+                # บังคับให้ทุกตัวในกลุ่มเป็น Type เดียวกันตามที่เลือก
+                for v in all_group_vars:
+                    self.variable_loop_types[v] = group_type
+
+                # ตั้งชื่อ Loop ID เริ่มต้นจาก base ของตัวแรก (แก้ไขได้ในหน้าต่างที่ 2)
+                default_name = get_base_name_heuristic(subs[0]) or subs[0]
+                existing_names = {g['name'] for g in self.manual_loop_groups}
+                final_name = default_name; n = 2
+                while final_name in existing_names:
+                    final_name = f"{default_name}_g{n}"; n += 1
+
+                self.manual_loop_groups.append({
+                    'name': final_name, 'type': group_type,
+                    'subs': subs, 'vars': all_group_vars
+                })
+                print(f"  Manual Group created: '{final_name}' type={group_type}, {len(subs)} subs, {len(all_group_vars)} vars", flush=True)
+                print(f"    subs = {subs}", flush=True)
+                refresh_manual_column()
+                messagebox.showinfo("สร้าง Manual Group สำเร็จ",
+                                    f"รวม {len(subs)} รายการเป็น Loop เดียวแล้ว\nLoop ID เริ่มต้น: {final_name}\nType: {group_type}\n\n(แก้ชื่อได้ที่ปุ่ม '2. กำหนดชื่อ Loop ID')", parent=loop_window)
+
+            def clear_manual_group():
+                selected_iids = tree.selection()
+                if not selected_iids:
+                    messagebox.showwarning("ไม่มีรายการที่เลือก", "กรุณาเลือกแถวที่อยู่ใน Manual Group ที่ต้องการยกเลิก", parent=loop_window); return
+                names_to_remove = set()
+                for row_iid in selected_iids:
+                    for v in iid_to_actual_vars.get(row_iid, []):
+                        mg = self.get_manual_group_of_var(v)
+                        if mg: names_to_remove.add(mg['name'])
+                if not names_to_remove:
+                    messagebox.showinfo("ไม่พบ Manual Group", "แถวที่เลือกไม่ได้อยู่ใน Manual Group", parent=loop_window); return
+                self.manual_loop_groups = [g for g in self.manual_loop_groups if g['name'] not in names_to_remove]
+                print(f"  Manual Groups removed: {sorted(names_to_remove)}", flush=True)
+                refresh_manual_column()
+                messagebox.showinfo("ยกเลิกแล้ว", f"ยกเลิก Manual Group: {', '.join(sorted(names_to_remove))}", parent=loop_window)
+
+            manual_frame = tk.Frame(loop_window); manual_frame.pack(pady=(5, 0))
+            btn_make_mg = tk.Button(manual_frame, text="รวมเป็น Loop เดียว (Manual Group)", command=make_manual_group, width=32, bg="#BEE3F8"); btn_make_mg.pack(side=tk.LEFT, padx=5)
+            btn_clear_mg = tk.Button(manual_frame, text="ยกเลิก Manual Group", command=clear_manual_group, width=22, bg="#FED7D7"); btn_clear_mg.pack(side=tk.LEFT, padx=5)
 
             # --- Buttons (Remain the same visually) ---
             multi_select_frame = tk.Frame(loop_window); multi_select_frame.pack(pady=5)
@@ -995,6 +1185,23 @@ class SpssToExcelConverter:
 
         identified_loops = {} # key: first_var_name, value: {'type': user_type, 'default_name': name, 'vars': list}
         temp_processed_indices = set()
+
+        # --- NEW 1.57: ใส่ Manual Group ก่อน แล้วจองตัวแปรไม่ให้ Heuristic แตะ ---
+        manual_first_vars = set()
+        manual_entries = self.build_manual_group_entries(var_name_to_index)
+        for first_var, group, ordered_subs, ordered_vars in manual_entries:
+            identified_loops[first_var] = {
+                'type': group['type'],
+                'default_name': group['name'],
+                'vars': ordered_vars,
+                'manual': True,
+                'subs': ordered_subs,
+            }
+            manual_first_vars.add(first_var)
+            for v in ordered_vars:
+                temp_processed_indices.add(var_name_to_index[v])
+            print(f"  Manual Group used: '{group['name']}' ({group['type']}) subs={len(ordered_subs)} vars={len(ordered_vars)}", flush=True)
+
         i = 0
         print("Identifying initial loop groups with updated heuristic...", flush=True)
         while i < len(all_vars):
@@ -1009,6 +1216,7 @@ class SpssToExcelConverter:
                 current_prefix = current_prefix_match.group(1) if current_prefix_match else None
                 j = i + 1
                 while j < len(all_vars):
+                    if j in temp_processed_indices: break # NEW 1.57: ห้ามกินตัวแปรของ Manual Group
                     next_var = all_vars[j]
                     next_type = self.variable_loop_types.get(next_var, "")
                     # *** ใช้ Heuristic ที่ปรับปรุงแล้ว ***
@@ -1055,11 +1263,13 @@ class SpssToExcelConverter:
         # Iterate through the loops *in their original SPSS order* to ensure representative is correct
         for first_var_sorted, loop_info_sorted in sorted_identified_loops:
             final_loop_id = self.user_defined_loop_names.get(first_var_sorted, loop_info_sorted['default_name'])
-            if final_loop_id not in processed_display_ids:
+            # NEW 1.57: Manual Group ต้องได้แถวของตัวเองเสมอ ไม่ยุบรวมกับกลุ่มอัตโนมัติ
+            if loop_info_sorted.get('manual') or final_loop_id not in processed_display_ids:
                 # Add the first occurrence of this final_loop_id as the representative
                 items_to_display.append((first_var_sorted, loop_info_sorted, final_loop_id))
                 processed_display_ids.add(final_loop_id)
-                print(f"  Adding display row: Rep='{first_var_sorted}', FinalID='{final_loop_id}', Type='{loop_info_sorted['type']}'", flush=True)
+                tag = " [MANUAL]" if loop_info_sorted.get('manual') else ""
+                print(f"  Adding display row: Rep='{first_var_sorted}', FinalID='{final_loop_id}', Type='{loop_info_sorted['type']}'{tag}", flush=True)
 
         print(f"Finished consolidating display. {len(items_to_display)} unique rows.", flush=True)
 
@@ -1126,6 +1336,8 @@ class SpssToExcelConverter:
 
         for first_var, loop_info, final_loop_id in items_to_display:
             loop_type = loop_info['type']
+            if loop_info.get('manual'):
+                loop_type = f"{loop_type} (Manual)"
             initial_name = final_loop_id # The default/user name for the whole group
             row_frame = ttk.Frame(scrollable_frame); row_frame.pack(fill='x', pady=2)
             ttk.Label(row_frame, text=first_var, width=25, anchor='w', wraplength=150).pack(side='left', padx=5)
@@ -1147,12 +1359,28 @@ class SpssToExcelConverter:
             final_user_names = {} # {original_first_var: final_name}
             processed_original_first_vars = set()
 
+            # --- NEW 1.57: Manual Group จับคู่ชื่อแบบตรงตัว (ไม่ต้องเดาจากชื่อ ID) ---
+            for mf_var in manual_first_vars:
+                if mf_var not in identified_loops: continue
+                new_name = temp_edited_names.get(mf_var, identified_loops[mf_var]['default_name'])
+                if new_name:
+                    final_user_names[mf_var] = new_name
+                    # sync ชื่อกลับเข้า self.manual_loop_groups เพื่อให้ตอน Run Itemdef ใช้ชื่อเดียวกัน
+                    for grp in self.manual_loop_groups:
+                        if mf_var in grp['vars']:
+                            if grp['name'] != new_name:
+                                print(f"  Manual Group renamed: '{grp['name']}' -> '{new_name}'", flush=True)
+                            grp['name'] = new_name
+                            break
+                processed_original_first_vars.add(mf_var)
+
             # Apply edited names back to *all* original variables belonging to the group
             for original_first_var, original_loop_info in identified_loops.items():
                  if original_first_var in processed_original_first_vars: continue
                  current_final_id = self.user_defined_loop_names.get(original_first_var, original_loop_info['default_name'])
                  representative_for_this_group = None
-                 for rep_var_disp, _, disp_final_id in items_to_display:
+                 for rep_var_disp, rep_info_disp, disp_final_id in items_to_display:
+                     if rep_info_disp.get('manual'): continue # NEW 1.57: อย่าไปหยิบแถว Manual มาเป็นตัวแทน
                      if disp_final_id == current_final_id:
                          representative_for_this_group = rep_var_disp; break
 
@@ -1162,6 +1390,7 @@ class SpssToExcelConverter:
 
                  # Find all other original vars that map to the same final_id and apply the name
                  for ov, oi in identified_loops.items():
+                      if ov in manual_first_vars: continue # NEW 1.57: Manual Group จัดการไปแล้วด้านบน
                       check_final_id = self.user_defined_loop_names.get(ov, oi['default_name'])
                       if check_final_id == current_final_id:
                           if final_name_to_set: final_user_names[ov] = final_name_to_set
@@ -1242,7 +1471,8 @@ class SpssToExcelConverter:
                  # This assumes the type is consistent across the group members in self.variable_loop_types
                  first_member_key = group_members[0]
                  current_loop_type = self.variable_loop_types.get(first_member_key, "") # Get current type
-                 data_to_save.append((display_text, current_loop_type))
+                 mg = self.get_manual_group_of_var(first_member_key)
+                 data_to_save.append((display_text, current_loop_type, mg['name'] if mg else ""))
                  processed_items_save.add(base_name)
                  # print(f"  Prepared Group: '{display_text}' -> '{current_loop_type}' (from {first_member_key})", flush=True)
 
@@ -1250,7 +1480,8 @@ class SpssToExcelConverter:
                  var_name = item_key
                  display_text = var_name
                  current_loop_type = self.variable_loop_types.get(var_name, "") # Get current type
-                 data_to_save.append((display_text, current_loop_type))
+                 mg = self.get_manual_group_of_var(var_name)
+                 data_to_save.append((display_text, current_loop_type, mg['name'] if mg else ""))
                  processed_items_save.add(var_name)
                  # print(f"  Prepared Single: '{display_text}' -> '{current_loop_type}'", flush=True)
 
@@ -1292,14 +1523,17 @@ class SpssToExcelConverter:
             # Write Header
             ws['A1'] = "Variable Name / Group"
             ws['B1'] = "Loop Type"
+            ws['C1'] = "Manual Group"   # NEW 1.57
             ws.column_dimensions['A'].width = 40 # Adjust width
             ws.column_dimensions['B'].width = 25 # Adjust width
+            ws.column_dimensions['C'].width = 25
 
             # Write Data
             row_num = 2
-            for display_name, loop_type in data_to_save:
+            for display_name, loop_type, manual_group_name in data_to_save:
                 ws.cell(row=row_num, column=1).value = display_name
                 ws.cell(row=row_num, column=2).value = loop_type # Write the current value
+                ws.cell(row=row_num, column=3).value = manual_group_name or None
                 row_num += 1
 
             # --- Add Data Validation (Dropdown) ---
@@ -1407,6 +1641,8 @@ class SpssToExcelConverter:
         skipped_count = 0
         processed_rows = 0
         valid_loop_types = {"SA", "MA", "Loop Text", "Loop Numeric", ""}
+        # NEW 1.57: { manual_group_name: [(loop_type, sub_representative_var, [members...]), ...] }
+        manual_rows = defaultdict(list)
 
         try:
             wb = openpyxl.load_workbook(load_path, read_only=True, data_only=True)
@@ -1430,12 +1666,14 @@ class SpssToExcelConverter:
 
                 excel_var_name = ws.cell(row=row_num, column=1).value
                 excel_loop_type = ws.cell(row=row_num, column=2).value
+                excel_manual_group = ws.cell(row=row_num, column=3).value   # NEW 1.57
 
                 if not isinstance(excel_var_name, str) or not excel_var_name.strip():
                     skipped_count += 1
                     continue
                 excel_var_name = excel_var_name.strip()
                 excel_loop_type = (excel_loop_type or "").strip()
+                excel_manual_group = str(excel_manual_group).strip() if excel_manual_group is not None else ""
 
                 if excel_loop_type not in valid_loop_types:
                     print(f"  Skip row {row_num}: invalid Loop Type '{excel_loop_type}' for '{excel_var_name}'", flush=True)
@@ -1459,6 +1697,8 @@ class SpssToExcelConverter:
                             loaded_settings_mapped[spss_var] = excel_loop_type
                         elif spss_var in loaded_settings_mapped:
                             del loaded_settings_mapped[spss_var]
+                    if excel_manual_group and excel_loop_type:
+                        manual_rows[excel_manual_group].append((excel_loop_type, members[0], list(members)))
                     continue
 
                 # Case B: treat as a single variable name
@@ -1467,6 +1707,8 @@ class SpssToExcelConverter:
                         loaded_settings_mapped[excel_var_name] = excel_loop_type
                     elif excel_var_name in loaded_settings_mapped:
                         del loaded_settings_mapped[excel_var_name]
+                    if excel_manual_group and excel_loop_type:
+                        manual_rows[excel_manual_group].append((excel_loop_type, excel_var_name, [excel_var_name]))
                 else:
                     # เพิ่มกรณี: ถ้า user ใส่ชื่อ base ตรง ๆ (เช่น "I_1_a4") และ type=MA
                     # จะลองขยายด้วย index เช่นกัน
@@ -1480,12 +1722,37 @@ class SpssToExcelConverter:
             self.variable_loop_types.clear()
             self.variable_loop_types.update(loaded_settings_mapped)
 
+            # --- NEW 1.57: สร้าง Manual Group กลับจากคอลัมน์ C ---
+            var_index_lookup = {name: n for n, name in enumerate(all_spss_vars_list)}
+            rebuilt_groups = []
+            for mg_name, rows in manual_rows.items():
+                if len(rows) < 2:
+                    print(f"  Warning: Manual Group '{mg_name}' มีแค่ {len(rows)} แถว (ต้องมี >= 2) ข้ามไป", flush=True)
+                    continue
+                rows_sorted = sorted(rows, key=lambda r: var_index_lookup.get(r[1], 10**9))
+                group_type = rows_sorted[0][0]
+                subs = [r[1] for r in rows_sorted]
+                group_vars = []
+                for _t, _sub, members in rows_sorted:
+                    group_vars.extend(members)
+                group_vars = sorted(set(group_vars), key=lambda v: var_index_lookup.get(v, 10**9))
+                # บังคับ Type เดียวกันทั้งกลุ่ม
+                for v in group_vars:
+                    self.variable_loop_types[v] = group_type
+                rebuilt_groups.append({'name': mg_name, 'type': group_type, 'subs': subs, 'vars': group_vars})
+                print(f"  Manual Group restored: '{mg_name}' ({group_type}) {len(subs)} subs / {len(group_vars)} vars", flush=True)
+            self.manual_loop_groups = rebuilt_groups
+            # Manual Group ที่โหลดมาให้ใช้ชื่อเดิมเป็น Loop ID ทันที
+            self.user_defined_loop_names = {
+                g['vars'][0]: g['name'] for g in rebuilt_groups if g['vars']
+            }
+
             loaded_count = len(self.variable_loop_types)
             print(f"Done. Set loop type for {loaded_count} variables. Skipped {skipped_count} rows of {processed_rows}.", flush=True)
             self.status_label.config(text=f"โหลดการตั้งค่า Loop สำเร็จ ({loaded_count} รายการ)", fg="green")
             messagebox.showinfo(
                 "สำเร็จ",
-                f"โหลดการตั้งค่า Loop สำเร็จ!\n- กำหนด Loop Type ให้ {loaded_count} ตัวแปร\n- ข้าม {skipped_count} แถว (ชื่อไม่พบ/Loop Type ไม่ถูกต้อง)\n\nคุณสามารถเปิด '1. กำหนดตัวแปร Loop' เพื่อตรวจสอบได้",
+                f"โหลดการตั้งค่า Loop สำเร็จ!\n- กำหนด Loop Type ให้ {loaded_count} ตัวแปร\n- Manual Group {len(rebuilt_groups)} กลุ่ม\n- ข้าม {skipped_count} แถว (ชื่อไม่พบ/Loop Type ไม่ถูกต้อง)\n\nคุณสามารถเปิด '1. กำหนดตัวแปร Loop' เพื่อตรวจสอบได้",
                 parent=self.root
             )
 
@@ -1667,12 +1934,34 @@ class SpssToExcelConverter:
             # --- 1.1: ระบุกลุ่ม Loop เบื้องต้นตามที่ผู้ใช้กำหนด ---
             print("Step 1.1: Identifying initial user-defined loop groups...", flush=True)
             initial_user_loop_groups={}; processed_indices=set(); i=0
+
+            # --- NEW 1.57: Manual Group มาก่อน และจองตัวแปรไม่ให้ Heuristic แตะ ---
+            manual_loops_prepared = {}   # {loop_id: consolidated-style dict}
+            manual_first_vars_conv = set()
+            for first_var, group, ordered_subs, ordered_vars in self.build_manual_group_entries(var_name_to_index):
+                g_type = group['type']
+                if any(re.search(r'_O\d+$', v) for v in ordered_vars):
+                    g_type = "MA"
+                manual_loops_prepared[group['name']] = {
+                    'type': g_type,
+                    'representative_vars': ordered_subs,
+                    'label_source_var': ordered_subs[0],
+                    'all_original_vars': ordered_vars,
+                    'first_representative_var': ordered_vars[0],
+                }
+                initial_user_loop_groups[first_var] = {'base_name': group['name'], 'type': g_type, 'vars': ordered_vars, 'manual': True}
+                manual_first_vars_conv.add(first_var)
+                for v in ordered_vars:
+                    processed_indices.add(var_name_to_index[v])
+                print(f"  Manual Group: '{group['name']}' type={g_type}, {len(ordered_subs)} sub-items, {len(ordered_vars)} vars", flush=True)
+
             while i < len(all_vars):
                 if i in processed_indices: i+=1; continue
                 current_var=all_vars[i]; current_type=self.variable_loop_types.get(current_var, "")
                 if current_type in ["SA", "MA", "Loop Text", "Loop Numeric"]:
                     group=[current_var]; base=get_base_name_heuristic(current_var); prefix_match=re.match(r'(I_\d+_)', current_var); prefix=prefix_match.group(1) if prefix_match else None; j=i+1
                     while j < len(all_vars):
+                        if j in processed_indices: break # NEW 1.57: ห้ามกินตัวแปรของ Manual Group
                         next_var=all_vars[j]; next_type=self.variable_loop_types.get(next_var, ""); next_base=get_base_name_heuristic(next_var); stop=(next_type != current_type) or (next_base != base)
                         if not stop and (prefix or re.match(r'I_\d+_(.+?)(_O\d+)?$', current_var)):
                             next_prefix_match=re.match(r'(I_\d+_)', next_var); next_prefix=next_prefix_match.group(1) if next_prefix_match else None
@@ -1693,6 +1982,7 @@ class SpssToExcelConverter:
             
             # Group initial loops by their final ID
             for first_var, info in initial_user_loop_groups.items():
+                if info.get('manual'): continue # NEW 1.57: Manual Group ไม่ต้องผ่าน logic นี้
                 final_id=self.user_defined_loop_names.get(first_var, info['base_name'])
                 if not final_id: continue
                 groups_by_id[final_id].append({'first_var': first_var, 'info': info})
@@ -1750,7 +2040,14 @@ class SpssToExcelConverter:
                     
                     for data in groups_with_same_id:
                         initial_loops_in_consolidation.add(data['first_var'])
-            print(f"Found {len(consolidated_loops)} consolidated loop groups.", flush=True)
+
+            # --- NEW 1.57: ใส่ Manual Group เข้าไปเป็น Loop สำเร็จรูป (ไม่ต้องพึ่ง Heuristic) ---
+            for mg_id, mg_data in manual_loops_prepared.items():
+                if mg_id in consolidated_loops:
+                    print(f"  Warning: Manual Group '{mg_id}' ชื่อซ้ำกับ Loop อัตโนมัติ -> ใช้ของ Manual Group แทน", flush=True)
+                consolidated_loops[mg_id] = mg_data
+            initial_loops_in_consolidation.update(manual_first_vars_conv)
+            print(f"Found {len(consolidated_loops)} consolidated loop groups ({len(manual_loops_prepared)} จาก Manual Group).", flush=True)
 
 
             # ================================================================= #

@@ -84,6 +84,20 @@ COL_IDX = {
 EXPECTED_COL_COUNT = max(COL_IDX.values()) + 1
 print(f"Expected minimum column count: {EXPECTED_COL_COUNT}")
 
+def strip_leading_code(label_text):
+    """
+    ตัดเลข Code ที่นำหน้า Label ออก ใช้ "เฉพาะการแสดงผลบนหน้าจอ" เท่านั้น
+    เช่น "1 - Don't like at all" -> "- Don't like at all",  "1\tมากที่สุด" -> "มากที่สุด"
+    *** ห้ามใช้กับ Label ที่จะเขียนลงไฟล์ Excel เพราะจะทำให้เลข Code หายไป ***
+    """
+    text = str(label_text or "").strip()
+    for sep in ('\t', ' '):
+        parts = text.split(sep, 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            return parts[1].strip()
+    return text
+
+
 # --- ค่าคงที่ตัวเลือก Making --- (เหมือนเดิม)
 NEW_MAKING_OPTIONS = ["TB", "T2B", "BB", "B2B"] # 5 scale
 NEW_MAKING_OPTIONS_7_10 = ["TB", "T2B", "T3B", "BB", "B2B", "B3B"] # 7/10 scale
@@ -403,17 +417,12 @@ class ExcelScaleExtractorApp(ctk.CTk):
                     if is_sub_label:
                         self.scales_data_store[current_main_id]['sub_labels'].append(label_val)
                     elif is_option:
+                        # FIX: เก็บ Label ตามต้นฉบับทั้งหมด ห้ามตัดเลข Code นำหน้าออก
+                        # (ของเดิมตัด "1 " ออกจาก "1 - Don't like at all" ทำให้เลขหายไปในไฟล์ผลลัพธ์)
+                        # ถ้าต้องการข้อความล้วนสำหรับแสดงผล ให้เรียก strip_leading_code() ตอนแสดงแทน
                         scale_text = label_val
-                        parts_space = label_val.split(' ', 1)
-                        parts_tab = label_val.split('\t', 1)
-                        if id_val.isdigit() and len(parts_space) == 2 and parts_space[0].isdigit() and parts_space[0] == id_val:
-                            scale_text = parts_space[1].strip()
-                        elif len(parts_tab) == 2 and parts_tab[0].isdigit():
-                           scale_text = parts_tab[1].strip()
-
-                        if scale_text:
-                            if scale_text is not None and str(scale_text).strip():
-                                self.scales_data_store[current_main_id]['scale_options'].append(str(scale_text).strip())
+                        if scale_text and str(scale_text).strip():
+                            self.scales_data_store[current_main_id]['scale_options'].append(str(scale_text).strip())
 
             except IndexError as ie:
                  row_errors.append(f"Row {idx + 1}: Data access error (IndexError).")
@@ -453,9 +462,10 @@ class ExcelScaleExtractorApp(ctk.CTk):
             original_num_scale_options = len(valid_scale_options)
 
             if valid_scale_options:
-                first_label = str(valid_scale_options[0]).replace('\t', ' ')
+                # แสดงผลบนตารางเท่านั้น -> ตัดเลข Code นำหน้าออกเพื่อไม่ให้ซ้ำกับ "1 = ..."
+                first_label = strip_leading_code(valid_scale_options[0]).replace('\t', ' ')
                 if len(valid_scale_options) >= 1:
-                    last_label = str(valid_scale_options[-1]).replace('\t', ' ')
+                    last_label = strip_leading_code(valid_scale_options[-1]).replace('\t', ' ')
 
             if original_num_scale_options in [5, 7, 10]:
                 displayed_count += 1
@@ -697,8 +707,15 @@ class ExcelScaleExtractorApp(ctk.CTk):
         main_making_row[COL_IDX['ItemType']] = making_type
         main_making_row[COL_IDX['Display']] = original_survey_row[COL_IDX['Display']] if len(original_survey_row) > COL_IDX['Display'] else "O"
         main_making_row[COL_IDX['ID']] = making_q_id
+
+        # --- ส่วนที่ปรับปรุง: คัดลอก Label จากคำถาม Survey ต้นฉบับ ---
+        # เพื่อให้แถวหลักของ "Making" มีโจทย์คำถามเดียวกันกับตัวแปรต้นฉบับ
+        if COL_IDX['Label'] < EXPECTED_COL_COUNT and len(original_survey_row) > COL_IDX['Label']:
+            main_making_row[COL_IDX['Label']] = original_survey_row[COL_IDX['Label']]
+        # --- สิ้นสุดส่วนที่ปรับปรุง ---
+
         if COL_IDX['Statistic'] < EXPECTED_COL_COUNT:
-             main_making_row[COL_IDX['Statistic']] = original_q_id
+             main_making_row[COL_IDX['Statistic']] = str(original_q_id).upper()
         if COL_IDX['Conditions'] < EXPECTED_COL_COUNT:
              main_making_row[COL_IDX['Conditions']] = ''
         if COL_IDX['BaseType'] < EXPECTED_COL_COUNT:

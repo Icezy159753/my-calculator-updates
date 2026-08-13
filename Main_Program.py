@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.77"
+CURRENT_VERSION = "1.1.78"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -635,7 +635,7 @@ PROGRAMS = [
         "name": "สร้าง Itemdef จากSPSS V3",
         "description": "โปรแกรมแปลง SPSS เป็น Excel",
         "type": "local_py_module",
-        "module_path": "Program_ItemdefSPSS_Log", # ชื่อไฟล์ .py (ไม่รวม .py)
+        "module_path": "Program_ItemdefSPSS_Qt", # ชื่อไฟล์ .py (ไม่รวม .py) - PyQt6 Edition
         "entry_point": "run_this_app",
         "icon": "Peth.ico",
         "category": "Lychee", # <--- เพิ่ม category
@@ -646,7 +646,7 @@ PROGRAMS = [
         "name": "ทำ TB/T2B จากไฟล์ Itemdef V3",
         "description": "โปรแกรมทำ TB/T2B จาก Itemdef",
         "type": "local_py_module",
-        "module_path": "Program_T2B_Itermdef", # ชื่อไฟล์ .py
+        "module_path": "Program_T2B_Itemdef_Qt", # ชื่อไฟล์ .py - PyQt6 Edition
         "entry_point": "run_this_app",
         "icon": "T2B.ico",
         "category": "Lychee", # <--- เพิ่ม category

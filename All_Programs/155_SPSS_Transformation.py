@@ -110,6 +110,7 @@ STACKING_MODES = (STACK_MODE, APPEND_MODE)
 
 NAME_TOKEN_RE = re.compile(r"\d+|\D+")
 SEPARATORS = "_.-#"
+ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 def _tokens(name: str) -> list[str]:
@@ -122,15 +123,24 @@ def _shape(tokens: Sequence[str]) -> tuple:
     return tuple(None if token.isdigit() else token for token in tokens)
 
 
-def _group_key(tokens: Sequence[str], block: int) -> str:
+def _group_key(tokens: Sequence[str], block: int, block_is_labelled_set: bool = False) -> str:
     """Name of the group a column belongs to once its block number is removed.
 
     A6_1#1 (block=the '1' after A6_) -> 'A6_1' — the question keeps its family
     name and its item number, because what is left after the block is only a
     number. I_1_a3_1 -> 'a3_1' — here the text after the block already names
     the question, so the constant lead-in is dropped.
+
+    `block_is_labelled_set` marks the one case where letters also have to go:
+    an array name whose set number is introduced by a label, A5_1_G1#1. There
+    the 'G' belongs to the block, so dropping it leaves 'A5_1_1'. Everywhere
+    else the letters name the question ('a' in I_1_a3) and must stay, or two
+    different questions would collapse into the same group.
     """
-    before = "".join(tokens[:block]).rstrip(SEPARATORS)
+    head = list(tokens[:block])
+    if block_is_labelled_set and block >= 1 and head:
+        head[block - 1] = head[block - 1].rstrip(ASCII_LETTERS)
+    before = "".join(head).rstrip(SEPARATORS)
     after = "".join(tokens[block + 1 :]).lstrip(SEPARATORS)
     if any(character.isalpha() for character in after):
         return after
@@ -142,9 +152,11 @@ def _group_key(tokens: Sequence[str], block: int) -> str:
 def _array_positions(shape: Sequence) -> tuple[int | None, int | None]:
     """For SPSS array names, where the set number and the item number sit.
 
-    A6_1#1 -> set '1' (attached with '_'), item '1' (after '#').
-    B2#1   -> no set number: the '2' belongs to the question name, so only the
-              item position is returned, which keeps B2 and B3 apart.
+    A6_1#1   -> set '1' (attached with '_'), item '1' (after '#').
+    A5_1_G1#1-> set '1' (attached with '_G'), item '1' (after '#'). The block
+                may be introduced by a labelled separator, not a bare one.
+    B2#1     -> no set number: the '2' belongs to the question name, so only the
+                item position is returned, which keeps B2 and B3 apart.
     """
     markers = [
         position
@@ -158,7 +170,10 @@ def _array_positions(shape: Sequence) -> tuple[int | None, int | None]:
     set_position = None
     if marker >= 1 and shape[marker - 1] is None:
         lead = shape[marker - 2] if marker >= 2 else ""
-        if lead and lead[-1] in SEPARATORS:
+        # A separator anywhere in the lead-in means the number that follows is a
+        # block, not part of the question name: '_' in A6_1#1, '_G' in A5_1_G1#1.
+        # A bare 'B' (B2#1) has none, so that '2' stays with the question.
+        if lead and any(character in SEPARATORS for character in lead):
             set_position = marker - 1
     return set_position, item
 
@@ -194,6 +209,7 @@ def _group_columns(
         shapes.setdefault(_shape(tokens_by_name[name]), []).append(name)
 
     block_by_shape: dict[tuple, int | None] = {}
+    set_by_shape: dict[tuple, int | None] = {}
     for shape, members in shapes.items():
         varying = [
             position
@@ -202,6 +218,7 @@ def _group_columns(
             and len({tokens_by_name[member][position] for member in members}) > 1
         ]
         set_position, item_position = _array_positions(shape)
+        set_by_shape[shape] = set_position
         if set_position is not None or item_position is not None:
             # SPSS array name: '#' says which number is the item.
             candidates = (
@@ -219,8 +236,16 @@ def _group_columns(
     order: list[str] = []
     for name in names:
         tokens = tokens_by_name[name]
-        block = block_by_shape[_shape(tokens)]
-        key = name if block is None else _group_key(tokens, block)
+        shape = _shape(tokens)
+        block = block_by_shape[shape]
+        # Only an array set number may carry a label ('_G' in A5_1_G1#1).
+        labelled_set = (
+            block is not None
+            and block == set_by_shape[shape]
+            and block >= 1
+            and tokens[block - 1][-1:].isalpha()
+        )
+        key = name if block is None else _group_key(tokens, block, labelled_set)
         if key not in grouped:
             grouped[key] = []
             order.append(key)
