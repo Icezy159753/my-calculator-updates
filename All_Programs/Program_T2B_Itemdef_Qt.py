@@ -54,6 +54,62 @@ DEFAULT_MAKING_OPTION_CATEGORY = "Valid"
 DIR_LOW_GOOD = "Scale น้อยดี(-)"
 DIR_HIGH_GOOD = "Scale มากดี(+)"
 
+# --- Just Right (JAR) ---
+# 2 แบบแรกใส่ค่า Weight อย่างเดียว ไม่สร้าง TB/T2B
+# 2 แบบหลังใส่ Weight แล้วสร้างตัวแปร Making ที่มีแค่ T2B กับ B2B
+DIR_JAR_CODE = "Just Right (ตาม Code)"
+DIR_JAR_CENTER = "Just Right (Weight-1)"
+DIR_JAR_CODE_T2B = "Just Right T2B (ตาม Code)"
+DIR_JAR_CENTER_T2B = "Just Right T2B (Weight-1)"
+
+# สีประจำแต่ละตัวเลือก ใช้ทั้งจุดสีในเมนูและสีตัวหนังสือในคอลัมน์ 'คลิกขวาเลือก Scale'
+DIRECTION_COLORS = {
+    DIR_LOW_GOOD: "#C53030",        # แดง
+    DIR_HIGH_GOOD: "#2F855A",       # เขียว
+    DIR_JAR_CODE: "#B7791F",        # เหลืองเข้ม
+    DIR_JAR_CENTER: "#C05621",      # ส้ม
+    DIR_JAR_CODE_T2B: "#6B46C1",    # ม่วง
+    DIR_JAR_CENTER_T2B: "#2B6CB0",  # น้ำเงิน
+}
+DEFAULT_TEXT_COLOR = "#2D3748"
+
+JAR_DIRECTIONS = (DIR_JAR_CODE, DIR_JAR_CENTER, DIR_JAR_CODE_T2B, DIR_JAR_CENTER_T2B)
+JAR_T2B_DIRECTIONS = (DIR_JAR_CODE_T2B, DIR_JAR_CENTER_T2B)          # สร้าง Making ด้วย
+JAR_CENTERED_DIRECTIONS = (DIR_JAR_CENTER, DIR_JAR_CENTER_T2B)        # Weight ติดลบ-กลาง-บวก
+WEIGHT_ONLY_DIRECTIONS = (DIR_JAR_CODE, DIR_JAR_CENTER)               # ไม่เข้าคิวทำ Making
+MAKING_DIRECTIONS = (DIR_LOW_GOOD, DIR_HIGH_GOOD) + JAR_T2B_DIRECTIONS
+
+
+def jar_making_options(num_labels):
+    """ชื่อตัวเลือกใหม่ของ Just Right T2B — ตามเลข Code ของ Scale นั้นจริงๆ
+
+    5 scale -> ['T2B=[4+5]', 'B2B=[1+2]']
+    7 scale -> ['T2B=[6+7]', 'B2B=[1+2]']
+    """
+    return [f"T2B=[{num_labels - 1}+{num_labels}]", "B2B=[1+2]"]
+
+
+def scale_weights(direction, num_options):
+    """ค่า Weight ของตัวเลือก Code 1..n ตาม Direction ที่เลือก (None = ไม่ต้องใส่)
+
+    Scale น้อยดี(-)          -> n..1
+    Scale มากดี(+)           -> 1..n
+    Just Right (ตาม Code)    -> 1..n
+    Just Right (Weight-1)    -> 7 scale: -3..3 / 5 scale: -2..2  (ต้องเป็นจำนวนคี่)
+    """
+    if not num_options:
+        return None
+    if direction == DIR_LOW_GOOD:
+        return list(range(num_options, 0, -1))
+    if direction in (DIR_HIGH_GOOD, DIR_JAR_CODE, DIR_JAR_CODE_T2B):
+        return list(range(1, num_options + 1))
+    if direction in JAR_CENTERED_DIRECTIONS:
+        if num_options % 2 == 0:
+            return None   # ไม่มีจุดกึ่งกลาง ใช้ Weight แบบติดลบไม่ได้
+        half = num_options // 2
+        return list(range(-half, half + 1))
+    return None
+
 
 def strip_leading_code(label_text):
     """
@@ -136,9 +192,18 @@ QTableWidget {
     background-color: #FFFFFF;
     border: none;
     gridline-color: #EDF2F7;
-    selection-background-color: #BFDFFF;
-    selection-color: #1A202C;
+    selection-background-color: #90CDF4;
 }
+QTableWidget#MakingTable { background-color: #F0F7FF; }
+/* ไฮไลต์ทั้งแถวให้เห็นชัด และค้างไว้แม้โฟกัสไปที่อื่น (:!active)
+   ไม่กำหนด color ตรงนี้ เพราะจะทับสีประจำตัวเลือกในคอลัมน์ Direction
+   สีตัวหนังสือตอนถูกเลือกคุมด้วย palette (HighlightedText) แทน */
+QTableWidget::item:selected,
+QTableWidget::item:selected:!active {
+    background-color: #90CDF4;
+}
+/* ไม่ใช้ item:hover เพราะจะไฮไลต์เฉพาะช่องที่เมาส์ชี้
+   การไฮไลต์ทั้งแถวทำใน RowHoverDelegate แทน */
 QHeaderView::section {
     background-color: #EDF2F7;
     color: #2D3748;
@@ -167,13 +232,27 @@ QProgressBar {
 QProgressBar::chunk { background-color: #3182CE; border-radius: 4px; }
 QMenu {
     background-color: #FFFFFF;
-    border: 1px solid #CBD5E0;
-    border-radius: 6px;
-    padding: 4px;
+    border: 1px solid #D7DEE8;
+    border-radius: 10px;
+    padding: 6px 4px;
 }
-QMenu::item { padding: 6px 24px 6px 16px; border-radius: 4px; }
-QMenu::item:selected { background-color: #BEE3F8; color: #1A365D; }
-QMenu::separator { height: 1px; background: #E2E8F0; margin: 4px 8px; }
+QMenu::item {
+    color: #2D3748;
+    padding: 9px 22px 9px 10px;
+    margin: 1px 5px;
+    border-radius: 7px;
+}
+QMenu::item:selected { background-color: #E8F2FE; color: #1A365D; }
+QMenu::item:disabled { color: #A0AEC0; }
+QMenu::icon { left: 10px; }
+QMenu::separator { height: 1px; background: #E7EDF4; margin: 6px 12px; }
+QLabel#MenuSection {
+    color: #8494A8;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 8px 14px 4px 14px;
+    background: transparent;
+}
 QScrollBar:vertical   { background: #EDF2F7; width: 12px; border-radius: 6px; }
 QScrollBar:horizontal { background: #EDF2F7; height: 12px; border-radius: 6px; }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
@@ -195,6 +274,65 @@ LOG_COLORS = {
     "SUCCESS": "#68D391",
     "INFO": "#E2E8F0",
 }
+
+
+# =========================================================================
+#  ตารางที่ไฮไลต์ "ทั้งแถว" เมื่อเอาเมาส์ชี้
+# =========================================================================
+class HoverRowTable(QtWidgets.QTableWidget):
+    """QTableWidget ที่จำไว้ว่าเมาส์อยู่แถวไหน เพื่อให้ delegate ระบายทั้งแถว"""
+
+    def __init__(self, rows, columns, parent=None):
+        super().__init__(rows, columns, parent)
+        self._hover_row = -1
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+    def hover_row(self) -> int:
+        return self._hover_row
+
+    def set_hover_row(self, row: int) -> None:
+        if row == self._hover_row:
+            return
+        previous, self._hover_row = self._hover_row, row
+        for target in (previous, row):
+            if 0 <= target < self.rowCount() and self.columnCount():
+                first = self.visualRect(self.model().index(target, 0))
+                last = self.visualRect(self.model().index(target, self.columnCount() - 1))
+                self.viewport().update(first.united(last))
+
+    def mouseMoveEvent(self, event):
+        self.set_hover_row(self.indexAt(event.pos()).row())
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.set_hover_row(-1)
+        super().leaveEvent(event)
+
+
+class RowHoverDelegate(QtWidgets.QStyledItemDelegate):
+    """ระบายพื้นหลังทั้งแถวที่เมาส์ชี้ และปิด hover รายช่องของ style เดิม"""
+
+    HOVER_COLOR = QtGui.QColor("#DCEEFB")
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        # ตัด State_MouseOver ทิ้ง ไม่งั้น style จะไปไฮไลต์เฉพาะช่องที่ชี้
+        option.state &= ~QtWidgets.QStyle.StateFlag.State_MouseOver
+        # ช่องที่กำหนดสีตัวหนังสือไว้เอง (คอลัมน์ Direction) ต้องคงสีไว้ตอนแถวถูกเลือกด้วย
+        # ไม่งั้น selection-color ใน QSS จะทับจนสีประจำตัวเลือกหายไป
+        foreground = index.data(Qt.ItemDataRole.ForegroundRole)
+        if foreground is not None:
+            brush = foreground if isinstance(foreground, QtGui.QBrush) else QtGui.QBrush(foreground)
+            option.palette.setBrush(QtGui.QPalette.ColorRole.HighlightedText, brush)
+
+    def paint(self, painter, option, index):
+        table = self.parent()
+        is_selected = bool(option.state & QtWidgets.QStyle.StateFlag.State_Selected)
+        if (not is_selected and isinstance(table, HoverRowTable)
+                and index.row() == table.hover_row()):
+            painter.fillRect(option.rect, self.HOVER_COLOR)
+        super().paint(painter, option, index)
 
 
 # =========================================================================
@@ -266,6 +404,7 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         self.making_tree = self._make_table(self.MAKING_HEADERS,
                                             widths=(100, 90, 110, 220, 220, 140),
                                             center_cols=(5,))
+        self.making_tree.setObjectName("MakingTable")
         self.tab_view.addTab(self.survey_tree, "ตัวแปร Original")
         self.tab_view.addTab(self.making_tree, "ตัวแปรที่ทำ Making")
         root.addWidget(self.tab_view, 1)
@@ -306,11 +445,18 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
 
     @staticmethod
     def _make_table(headers, widths, center_cols=()):
-        table = QtWidgets.QTableWidget(0, len(headers))
+        table = HoverRowTable(0, len(headers))
+        table.setItemDelegate(RowHoverDelegate(table))
         table.setHorizontalHeaderLabels(list(headers))
+        # สีตัวหนังสือของแถวที่ถูกเลือก — ตั้งผ่าน palette ไม่ใช่ QSS
+        # เพื่อให้ช่องที่กำหนดสีเองไว้ (คอลัมน์ Direction) เขียนทับได้
+        palette = table.palette()
+        palette.setColor(QtGui.QPalette.ColorRole.HighlightedText, QtGui.QColor("#10243B"))
+        table.setPalette(palette)
         table.verticalHeader().setVisible(False)
+        # เลือกทีละทั้งแถว และเลือกได้หลายแถว (ใช้ตอนไฮไลต์ข้อที่ Scale เหมือนกัน)
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(False)
         table.verticalHeader().setDefaultSectionSize(26)
@@ -420,6 +566,38 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         tree.setRowCount(0)
         self._row_map(tree).clear()
 
+    def _style_direction_cell(self, row_id):
+        """ย้อมสีตัวหนังสือในคอลัมน์ Direction ตามตัวเลือกที่ตั้งไว้"""
+        row = self._survey_rows.get(row_id)
+        if row is None:
+            return
+        item = self.survey_tree.item(row, self.SURVEY_COLUMNS.index("Direction"))
+        if item is None:
+            return
+        color = DIRECTION_COLORS.get(item.text().strip())
+        font = item.font()
+        font.setBold(bool(color))
+        item.setFont(font)
+        item.setForeground(QtGui.QBrush(QtGui.QColor(color or DEFAULT_TEXT_COLOR)))
+
+    def _highlight_rows(self, tree, qids):
+        """เลือก (ไฮไลต์) ทุกแถวที่ระบุ เพื่อให้เห็นว่าอะไรถูกเปลี่ยนไปบ้าง"""
+        row_map = self._row_map(tree)
+        rows = sorted({row_map[qid] for qid in qids if qid in row_map})
+        if not rows:
+            return
+        model = tree.model()
+        selection = QtCore.QItemSelection()
+        last_column = tree.columnCount() - 1
+        for row in rows:
+            selection.select(model.index(row, 0), model.index(row, last_column))
+        tree.selectionModel().select(
+            selection,
+            QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QtCore.QItemSelectionModel.SelectionFlag.Rows)
+        tree.scrollTo(model.index(rows[0], 0),
+                      QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
+
     # ------------------------------------------------------------------
     #  Logging  (พฤติกรรมเหมือนเดิม)
     # ------------------------------------------------------------------
@@ -462,11 +640,21 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         self.load_button.setEnabled(True)
         if self.file_path and self.excel_data_original_rows is not None:
             self.generate_button.setEnabled(True)
-            self.save_button.setEnabled(bool(self.making_data_generated))
+            self.save_button.setEnabled(bool(self.making_data_generated) or self._has_weight_assignments())
         else:
             self.generate_button.setEnabled(False)
             self.save_button.setEnabled(False)
         QtWidgets.QApplication.processEvents()
+
+    def _has_weight_assignments(self):
+        """มีข้อที่ตั้ง Just Right แบบใส่ Weight อย่างเดียวไว้หรือไม่ (Save ได้แม้ไม่มี Making)"""
+        return any(not data.get('is_making') and data.get('direction') in WEIGHT_ONLY_DIRECTIONS
+                   for data in self.scales_data_store.values())
+
+    def _refresh_save_button(self):
+        """เปิดปุ่ม Save ทันทีที่มีอะไรให้บันทึก (Making หรือ Weight อย่างเดียว)"""
+        if self.file_path and self.excel_data_original_rows is not None:
+            self.save_button.setEnabled(bool(self.making_data_generated) or self._has_weight_assignments())
 
     def show_error_popup(self, title, message):
         QtWidgets.QMessageBox.critical(self, title, message)
@@ -686,7 +874,8 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         self.tree_clear(target_tree)
         row_map = self._row_map(target_tree)
         center_cols = set(target_tree.property("center_cols") or [])
-        row_bg = QtGui.QBrush(QtGui.QColor("#FFFFFF" if target_tree is self.survey_tree else "#E6F2FF"))
+        # ไม่ระบายสีพื้นรายเซลล์ เพราะจะทับสีไฮไลต์ตอนเลือกแถว
+        # (สีพื้นของตาราง Making ตั้งไว้ที่ QSS ระดับ widget แทน)
 
         target_tree.setUpdatesEnabled(False)
         try:
@@ -729,9 +918,10 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
                     cell = QtWidgets.QTableWidgetItem(str(value))
                     if col in center_cols:
                         cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    cell.setBackground(row_bg)
                     target_tree.setItem(row, col, cell)
                 row_map[q_id] = row
+                if target_tree is self.survey_tree:
+                    self._style_direction_cell(q_id)
         finally:
             target_tree.setUpdatesEnabled(True)
 
@@ -756,10 +946,19 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         else:
             return [], f"Invalid Scale ({num_labels})"
 
+        # Just Right T2B: มีตัวเลือกใหม่แค่ 2 อัน คือหัว 2 ตัวกับท้าย 2 ตัวของ Scale
+        if direction in JAR_T2B_DIRECTIONS:
+            num_new_options = 2
+
         no_dir_placeholder = ["NO_DIRECTION"] * num_new_options
         generated_new_conditions = []
 
-        if direction == DIR_LOW_GOOD:
+        if direction in JAR_T2B_DIRECTIONS:
+            generated_new_conditions = [
+                f"{base_q_id}={num_labels - 1}|{base_q_id}={num_labels}",   # T2B=[n-1+n]
+                f"{base_q_id}=1|{base_q_id}=2",                             # B2B=[1+2]
+            ]
+        elif direction == DIR_LOW_GOOD:
             if num_labels == 5:
                 l1, l2, h1, h2 = 1, 2, 5, 4
                 generated_new_conditions = [
@@ -821,14 +1020,19 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
             return
 
         items_requiring_direction = []
+        weight_only_items = []
         q_ids_to_process = []
 
         for q_id in self.ordered_survey_qids:
             if q_id in self.scales_data_store:
                 data = self.scales_data_store[q_id]
                 if not data.get('is_making'):
-                    if not data.get('direction'):
+                    direction = data.get('direction')
+                    if not direction:
                         items_requiring_direction.append(q_id)
+                    elif direction in WEIGHT_ONLY_DIRECTIONS:
+                        # Just Right แบบไม่ทำ T2B: ใส่ค่า Weight ตอน Save อย่างเดียว
+                        weight_only_items.append(q_id)
                     else:
                         q_ids_to_process.append(q_id)
 
@@ -842,8 +1046,20 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
                 if self.tree_exists(self.survey_tree, qid):
                     self.tree_set(self.survey_tree, qid, "Condition Status", "ไม่ทำ Making")
 
+        if weight_only_items:
+            self.log_message(f"{len(weight_only_items)} ข้อเป็น Just Right แบบใส่ Weight อย่างเดียว "
+                             "(ไม่สร้าง TB/T2B) — ค่า Weight จะถูกเขียนตอนกด Save", level="INFO")
+            for qid in weight_only_items:
+                if self.tree_exists(self.survey_tree, qid):
+                    self.tree_set(self.survey_tree, qid, "Condition Status", "ใส่ Weight อย่างเดียว")
+
         if not q_ids_to_process:
-            self.log_message("No items ready for Making generation (check directions).", level="WARNING")
+            if weight_only_items:
+                self._end_processing(
+                    f"ตั้งค่า Weight ให้ {len(weight_only_items)} ข้อแล้ว กด 'Save Itemdef Making...' "
+                    "เพื่อเขียนลงไฟล์", level="SUCCESS")
+            else:
+                self.log_message("No items ready for Making generation (check directions).", level="WARNING")
             return
 
         self._start_processing(f"Generating Making data for {len(q_ids_to_process)} item(s)...")
@@ -890,9 +1106,12 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
                     elif 'SA' in original_type:
                         new_type = original_type.replace('SA', 'MA', 1)
 
-                    current_new_options_list = (NEW_MAKING_OPTIONS_7_10
-                                                if original_num_scale_options in [7, 10]
-                                                else NEW_MAKING_OPTIONS)
+                    if direction in JAR_T2B_DIRECTIONS:
+                        current_new_options_list = jar_making_options(original_num_scale_options)
+                    else:
+                        current_new_options_list = (NEW_MAKING_OPTIONS_7_10
+                                                    if original_num_scale_options in [7, 10]
+                                                    else NEW_MAKING_OPTIONS)
                     sub_labels = data.get('sub_labels', [])
                     new_labels = sub_labels + valid_original_scale_options + current_new_options_list
                     conditions_list, condition_status = self._generate_conditions(
@@ -915,7 +1134,9 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
                         'conditions': conditions_list,
                         'condition_status': condition_status,
                         'is_making': True,
-                        'original_q_id': q_id
+                        'original_q_id': q_id,
+                        # เก็บชื่อตัวเลือกใหม่ไว้ เพราะ Just Right T2B ใช้ไม่เหมือนแบบปกติ
+                        'new_options': list(current_new_options_list),
                     }
                     if making_q_id not in generated_ids_this_run:
                         generated_ids_this_run.add(making_q_id)
@@ -983,14 +1204,17 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         original_num_scale_options = len(scale_options)
         is_loop_making = 'Loop' in making_type
 
-        if original_num_scale_options in [7, 10]:
-            current_new_options_list = NEW_MAKING_OPTIONS_7_10
-        elif original_num_scale_options == 5:
-            current_new_options_list = NEW_MAKING_OPTIONS
-        else:
-            self.log_message(f"ERROR: Cannot generate Excel rows for {making_q_id}. "
-                             f"Invalid scale option count ({original_num_scale_options}).", level="ERROR")
-            return []
+        # Just Right T2B เก็บชื่อตัวเลือกใหม่ไว้ตอน generate (T2B=[6+7] / B2B=[1+2])
+        current_new_options_list = making_data.get('new_options')
+        if not current_new_options_list:
+            if original_num_scale_options in [7, 10]:
+                current_new_options_list = NEW_MAKING_OPTIONS_7_10
+            elif original_num_scale_options == 5:
+                current_new_options_list = NEW_MAKING_OPTIONS
+            else:
+                self.log_message(f"ERROR: Cannot generate Excel rows for {making_q_id}. "
+                                 f"Invalid scale option count ({original_num_scale_options}).", level="ERROR")
+                return []
         num_new_options = len(current_new_options_list)
 
         expected_conditions_count = original_num_scale_options + num_new_options
@@ -1076,9 +1300,10 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
     #  Save As New File
     # ------------------------------------------------------------------
     def save_as_new_file(self):
-        if not self.making_data_generated:
+        if not self.making_data_generated and not self._has_weight_assignments():
             self.log_message("Cannot Save: No 'Making' data generated.", level="WARNING")
-            self.show_error_popup("Cannot Save", "No 'Making' data has been generated yet.")
+            self.show_error_popup("Cannot Save",
+                                  "ยังไม่มีข้อมูลให้บันทึก\nกรุณากด 'สร้าง T2B Making' ก่อน")
             return
         if not self.file_path:
             self.log_message("Cannot Save: Original file path missing.", level="ERROR")
@@ -1181,21 +1406,29 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
             TARGET_WEIGHT_COL_IDX = COL_IDX['CategoryWeight']
             weights_applied_count = 0
 
-            for original_q_id in original_qids_processed_for_making:
+            # ทุกข้อที่ตั้ง Direction ไว้ต้องได้ Weight ไม่ใช่เฉพาะข้อที่สร้าง Making
+            # (Just Right แบบไม่ทำ T2B ใส่ Weight อย่างเดียว)
+            qids_needing_weight = [qid for qid, data in self.scales_data_store.items()
+                                   if not data.get('is_making') and data.get('direction')]
+
+            for original_q_id in qids_needing_weight:
                 survey_data = self.scales_data_store.get(original_q_id)
                 if not survey_data:
                     continue
                 direction = survey_data.get('direction', '')
                 scale_options_for_weight = survey_data.get('scale_options', [])
                 num_options = len(scale_options_for_weight)
+                weights = scale_weights(direction, num_options)
 
-                if num_options > 0 and direction in [DIR_LOW_GOOD, DIR_HIGH_GOOD] \
-                        and original_q_id in self.survey_main_row_indices:
+                if weights is None and direction in JAR_CENTERED_DIRECTIONS:
+                    data_prep_errors.append(
+                        f"{original_q_id}: Weight แบบติดลบต้องเป็น Scale จำนวนคี่ "
+                        f"(ข้อนี้มี {num_options} ตัวเลือก) ข้ามการใส่ Weight")
+
+                if weights and original_q_id in self.survey_main_row_indices:
                     num_sub_labels = len(survey_data.get('sub_labels', []))
                     main_row_idx = self.survey_main_row_indices[original_q_id]
                     first_option_row_idx = main_row_idx + 1 + num_sub_labels
-                    weights = (list(range(num_options, 0, -1)) if direction == DIR_LOW_GOOD
-                               else list(range(1, num_options + 1)))
                     applied_flag = False
 
                     for i in range(num_options):
@@ -1368,41 +1601,184 @@ class ExcelScaleExtractorApp(QtWidgets.QMainWindow):
         row_id = qid_item.text()
 
         self.survey_tree.selectRow(row)
+        current = (self.scales_data_store.get(row_id) or {}).get('direction', '')
+
         menu = QtWidgets.QMenu(self)
-        act_low = menu.addAction(DIR_LOW_GOOD)
-        act_high = menu.addAction(DIR_HIGH_GOOD)
+        menu.setToolTipsVisible(True)
+        actions = {}
+
+        def add_group(title, entries):
+            self._add_menu_section(menu, title)
+            for direction, tip in entries:
+                color = DIRECTION_COLORS.get(direction, DEFAULT_TEXT_COLOR)
+                icon = self._check_icon(color) if direction == current else self._dot_icon(color)
+                action = menu.addAction(icon, direction)
+                action.setToolTip(tip)
+                if direction == current:
+                    font = action.font()
+                    font.setBold(True)
+                    action.setFont(font)
+                actions[action] = direction
+
+        add_group("ทิศทาง Scale", (
+            (DIR_LOW_GOOD, "ค่า Weight เรียงจากมากไปน้อย + สร้าง TB/T2B/BB/B2B"),
+            (DIR_HIGH_GOOD, "ค่า Weight เรียงจากน้อยไปมาก + สร้าง TB/T2B/BB/B2B"),
+        ))
         menu.addSeparator()
-        act_clear = menu.addAction("Clear Direction")
+        add_group("Just Right · Weight เท่านั้น", (
+            (DIR_JAR_CODE, "ใส่ Weight ตามเลข Code (1..n) ไม่สร้าง TB/T2B"),
+            (DIR_JAR_CENTER, "ใส่ Weight แบบติดลบ 7 scale = -3..3 / 5 scale = -2..2 ไม่สร้าง TB/T2B"),
+        ))
+        menu.addSeparator()
+        add_group("Just Right · เพิ่ม T2B / B2B", (
+            (DIR_JAR_CODE_T2B, "ใส่ Weight ตามเลข Code + สร้างเฉพาะ T2B กับ B2B"),
+            (DIR_JAR_CENTER_T2B, "ใส่ Weight แบบติดลบ + สร้างเฉพาะ T2B กับ B2B"),
+        ))
+
+        menu.addSeparator()
+        act_clear = menu.addAction(self._cross_icon("#A0AEC0"), "ล้างค่า (Clear Direction)")
+        act_clear.setToolTip("ยกเลิก Direction ของข้อนี้และข้อที่ Scale เหมือนกัน")
+        actions[act_clear] = ""
+
         chosen = menu.exec(self.survey_tree.viewport().mapToGlobal(pos))
-        if chosen is act_low:
-            self._set_direction(row_id, DIR_LOW_GOOD)
-        elif chosen is act_high:
-            self._set_direction(row_id, DIR_HIGH_GOOD)
-        elif chosen is act_clear:
-            self._set_direction(row_id, "")
+        if chosen in actions:
+            self._set_direction(row_id, actions[chosen])
 
-    def _set_direction(self, row_id, new_direction):
+    # ----- ชิ้นส่วนตกแต่งเมนู -----
+    @staticmethod
+    def _add_menu_section(menu, title):
+        """หัวข้อกลุ่มในเมนู (ใช้ QLabel เพื่อคุมสไตล์ได้เต็มที่)"""
+        label = QtWidgets.QLabel(title)
+        label.setObjectName("MenuSection")
+        holder = QtWidgets.QWidgetAction(menu)
+        holder.setDefaultWidget(label)
+        holder.setEnabled(False)
+        menu.addAction(holder)
+
+    @staticmethod
+    def _icon_canvas():
+        pixmap = QtGui.QPixmap(18, 18)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        return pixmap, painter
+
+    @classmethod
+    def _dot_icon(cls, color):
+        pixmap, painter = cls._icon_canvas()
+        shade = QtGui.QColor(color)
+        painter.setBrush(QtGui.QBrush(shade))
+        painter.setPen(QtGui.QPen(shade.darker(118), 1))
+        painter.drawEllipse(5, 5, 8, 8)
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    @classmethod
+    def _check_icon(cls, color):
+        pixmap, painter = cls._icon_canvas()
+        pen = QtGui.QPen(QtGui.QColor(color), 2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPolyline(QtGui.QPolygon([QtCore.QPoint(4, 9),
+                                             QtCore.QPoint(7, 13),
+                                             QtCore.QPoint(14, 5)]))
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    @classmethod
+    def _cross_icon(cls, color):
+        pixmap, painter = cls._icon_canvas()
+        pen = QtGui.QPen(QtGui.QColor(color), 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(5, 5, 13, 13)
+        painter.drawLine(13, 5, 5, 13)
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    @staticmethod
+    def _scale_signature(data):
+        """ลายเซ็นของ Scale: ชุด Label ของตัวเลือกทั้งหมด เรียงตามลำดับเดิม
+
+        ข้อที่ตัวเลือกเหมือนกันทุกบรรทัด (เช่น a6_1, a6_1_g2 … a6_1_g6 ที่เป็น
+        '1 - Not agree at all' … '7 - Agree very much') จะได้ลายเซ็นเดียวกัน
+        """
+        options = data.get('scale_options', []) if data else []
+        return tuple(str(option).strip() for option in options)
+
+    def _same_scale_qids(self, row_id):
+        """ข้ออื่นในตาราง Original ที่มี Label และ Scale ชุดเดียวกับ row_id"""
+        source = self.scales_data_store.get(row_id)
+        signature = self._scale_signature(source)
+        if not signature:
+            return []
+        twins = []
+        for qid, data in self.scales_data_store.items():
+            if qid == row_id or data.get('is_making'):
+                continue
+            if not self.tree_exists(self.survey_tree, qid):
+                continue
+            if self._scale_signature(data) == signature:
+                twins.append(qid)
+        # เรียงตามลำดับที่แสดงในตาราง เพื่อให้ log อ่านง่าย
+        order = self._survey_rows
+        return sorted(twins, key=lambda q: order.get(q, 10 ** 9))
+
+    def _apply_direction(self, row_id, new_direction):
+        """ตั้ง Direction ให้ข้อเดียว (ไม่กระจายต่อ) คืน True ถ้าตั้งสำเร็จ"""
         if not self.tree_exists(self.survey_tree, row_id):
-            return
-        self.tree_set(self.survey_tree, row_id, "Direction", new_direction)
-        if row_id in self.scales_data_store and not self.scales_data_store[row_id].get('is_making'):
-            self.scales_data_store[row_id]['direction'] = new_direction
-            self.log_message(f"Set Direction for {row_id} to "
-                             f"'{new_direction if new_direction else 'None'}'", level="INFO")
-            current_status = self.tree_get(self.survey_tree, row_id, "Condition Status")
-            new_status = ""
-            if not new_direction and current_status != "Making Generated":
-                new_status = "ไม่ทำ Making"
-            elif new_direction and current_status == "ไม่ทำ Making":
-                new_status = ""
-            elif new_direction and current_status != "Making Generated":
-                new_status = current_status
-
-            if new_status != current_status and current_status != "Making Generated":
-                self.tree_set(self.survey_tree, row_id, "Condition Status", new_status)
-        else:
+            return False
+        data = self.scales_data_store.get(row_id)
+        if data is None or data.get('is_making'):
             self.log_message(f"Could not set direction for {row_id} "
                              "(not found in store or is making item).", level="WARNING")
+            return False
+
+        # Weight แบบติดลบต้องมีจุดกึ่งกลาง จึงใช้ได้เฉพาะ Scale จำนวนคี่ (5, 7)
+        num_options = len(data.get('scale_options', []))
+        if new_direction in JAR_CENTERED_DIRECTIONS and num_options % 2 == 0:
+            self.log_message(f"{row_id}: ใช้ '{new_direction}' ไม่ได้ เพราะมี {num_options} ตัวเลือก "
+                             "(Weight แบบติดลบต้องเป็น Scale จำนวนคี่ เช่น 5 หรือ 7)", level="WARNING")
+            return False
+
+        self.tree_set(self.survey_tree, row_id, "Direction", new_direction)
+        self._style_direction_cell(row_id)
+        data['direction'] = new_direction
+
+        current_status = self.tree_get(self.survey_tree, row_id, "Condition Status")
+        new_status = ""
+        if not new_direction and current_status != "Making Generated":
+            new_status = "ไม่ทำ Making"
+        elif new_direction and current_status == "ไม่ทำ Making":
+            new_status = ""
+        elif new_direction and current_status != "Making Generated":
+            new_status = current_status
+
+        if new_status != current_status and current_status != "Making Generated":
+            self.tree_set(self.survey_tree, row_id, "Condition Status", new_status)
+        return True
+
+    def _set_direction(self, row_id, new_direction, propagate=True):
+        """ตั้ง Direction ให้ข้อที่เลือก แล้วกระจายไปยังข้อที่ Scale เหมือนกันทั้งหมด"""
+        if not self._apply_direction(row_id, new_direction):
+            return
+        self.log_message(f"Set Direction for {row_id} to "
+                         f"'{new_direction if new_direction else 'None'}'", level="INFO")
+        self._refresh_save_button()
+        if not propagate:
+            return
+
+        twins = self._same_scale_qids(row_id)
+        applied = [qid for qid in twins if self._apply_direction(qid, new_direction)]
+        if applied:
+            preview = ", ".join(applied[:8])
+            if len(applied) > 8:
+                preview += f", … (+{len(applied) - 8})"
+            self.log_message(
+                f"ตั้ง Direction ให้อีก {len(applied)} ข้อที่ Label/Scale เหมือนกันอัตโนมัติ: {preview}",
+                level="SUCCESS")
+            self._highlight_rows(self.survey_tree, [row_id] + applied)
 
 
 # =========================================================================

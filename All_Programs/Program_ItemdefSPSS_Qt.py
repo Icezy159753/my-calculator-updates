@@ -34,6 +34,35 @@ def resource_path(relative_name):
 
 LOOP_TYPES = ("SA", "MA", "Loop Text", "Loop Numeric")
 
+# Template Itemdef ที่มากับโปรแกรม (อยู่โฟลเดอร์เดียวกับไฟล์ .py / ถูก bundle เข้า .exe)
+BUNDLED_TEMPLATE_NAME = "template.xlsx"
+
+
+def find_bundled_template():
+    """หาไฟล์ Template ที่มากับโปรแกรม คืน path หรือ None ถ้าไม่เจอ
+
+    ต้องไล่หาหลายที่ เพราะตอนรันเป็น .exe ตัว PyInstaller วางโฟลเดอร์ All_Programs
+    ไว้ใต้ _MEIPASS อีกชั้น (_MEIPASS/All_Programs/template.xlsx) ไม่ใช่ _MEIPASS ตรงๆ
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    meipass = getattr(sys, '_MEIPASS', None)
+    candidates = [
+        os.path.join(here, BUNDLED_TEMPLATE_NAME),                       # ข้างไฟล์ .py
+    ]
+    if meipass:
+        candidates += [
+            os.path.join(meipass, "All_Programs", BUNDLED_TEMPLATE_NAME),  # .exe: ในโฟลเดอร์ย่อย
+            os.path.join(meipass, BUNDLED_TEMPLATE_NAME),                  # .exe: รากของ bundle
+        ]
+    candidates += [
+        os.path.join(os.getcwd(), "All_Programs", BUNDLED_TEMPLATE_NAME),
+        os.path.join(os.getcwd(), BUNDLED_TEMPLATE_NAME),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return os.path.normpath(path)
+    return None
+
 
 def get_base_name_heuristic(var_name):
     """
@@ -810,7 +839,30 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
         sys.stdout = self.redirector
         self._print_banner()
 
+        self._autoload_bundled_template()
         self.check_fields()
+
+    # ------------------------------------------------------------------
+    #  Template ในตัวโปรแกรม
+    # ------------------------------------------------------------------
+    def _autoload_bundled_template(self):
+        """เลือกไฟล์ Excel Template ที่มากับโปรแกรมให้อัตโนมัติ ผู้ใช้ไม่ต้องกดเลือกเอง"""
+        template_path = find_bundled_template()
+        if not template_path:
+            print(f"ไม่พบ '{BUNDLED_TEMPLATE_NAME}' ที่มากับโปรแกรม "
+                  "กรุณาเลือกไฟล์ Template เองด้วยปุ่ม 'Open Excel'", flush=True)
+            self.entry_template.setPlaceholderText("ยังไม่ได้เลือกไฟล์ — กด 'Open Excel'")
+            return
+
+        self.excel_template_path = template_path
+        self.entry_template.setText(self.excel_template_path)
+        self.entry_template.setToolTip(
+            f"Template ที่มากับโปรแกรม\n{self.excel_template_path}\n\n"
+            "ถ้าต้องการใช้ไฟล์อื่น กดปุ่ม 'เปลี่ยน Template'")
+        self.btn_template.setText("เปลี่ยน Template")
+        self.lbl_template.setText("ไฟล์ Excel Template :")
+        self.lbl_template.setStyleSheet("color:#2F855A; font-weight:700;")
+        print(f"ใช้ Excel Template ในตัวโปรแกรมอัตโนมัติ: {self.excel_template_path}", flush=True)
 
     # ------------------------------------------------------------------
     #  UI
@@ -828,11 +880,11 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
 
-        self.entry_spss = self._add_file_row(
+        _, self.entry_spss, self.btn_spss = self._add_file_row(
             grid, 0, "เลือกไฟล์ SPSS (.sav) :", "Open SPSS", "green", self.browse_spss_file)
-        self.entry_template = self._add_file_row(
+        self.lbl_template, self.entry_template, self.btn_template = self._add_file_row(
             grid, 1, "เลือกไฟล์ Excel Template :", "Open Excel", "green", self.browse_excel_template)
-        self.entry_output = self._add_file_row(
+        _, self.entry_output, self.btn_output = self._add_file_row(
             grid, 2, "บันทึกเป็น Excel Itemdef :", "เลือกตำแหน่ง Save", "blue", self.browse_excel_output)
         grid.setColumnStretch(1, 1)
         root_layout.addWidget(files_box)
@@ -893,7 +945,7 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
         grid.addWidget(label, row, 0)
         grid.addWidget(entry, row, 1)
         grid.addWidget(button, row, 2)
-        return entry
+        return label, entry, button
 
     @staticmethod
     def _make_button(text, accent, slot):
@@ -1021,10 +1073,19 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
 
     def browse_excel_template(self):
         filepath, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "เลือกไฟล์ Excel Template (.xlsx)", "", "Excel files (*.xlsx *.xls);;All files (*.*)")
+            self, "เลือกไฟล์ Excel Template (.xlsx)", self.excel_template_path or "",
+            "Excel files (*.xlsx *.xls);;All files (*.*)")
         if filepath:
             self.excel_template_path = os.path.normpath(filepath)
             self.entry_template.setText(self.excel_template_path)
+            bundled = find_bundled_template()
+            if bundled and os.path.normcase(self.excel_template_path) == os.path.normcase(bundled):
+                self.lbl_template.setStyleSheet("color:#2F855A; font-weight:700;")
+                print("กลับมาใช้ Template ในตัวโปรแกรม", flush=True)
+            else:
+                self.lbl_template.setStyleSheet("color:#B7791F; font-weight:700;")
+                print(f"เปลี่ยนไปใช้ Template จากภายนอก: {self.excel_template_path}", flush=True)
+            self.entry_template.setToolTip(self.excel_template_path)
             self.check_fields()
 
     def browse_excel_output(self):
