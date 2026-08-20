@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView,
     QGroupBox, QInputDialog, QTextEdit,
     QDialog, QDialogButtonBox, QSplitter, QTabWidget,
-    QSpacerItem, QSizePolicy, QRadioButton, QButtonGroup
+    QSpacerItem, QSizePolicy, QRadioButton, QButtonGroup, QComboBox, QFrame
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QGuiApplication, QFont, QPalette, QColor
@@ -32,7 +32,7 @@ class MergeDataDialog(QDialog):
         self.setWindowTitle("สร้าง Correlation จากการรวมข้อมูล (Merge and Correlate)")
         self.all_variables = all_variables
         self.current_global_filter_desc = current_global_filter_desc
-        self.setMinimumSize(850, 600) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
+        self.setMinimumSize(900, 600); self.resize(1000, 780) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint) # เพิ่มปุ่ม maximize/minimize
 
         # ตั้งค่า UI สไตล์สำหรับ Dialog
@@ -48,7 +48,6 @@ class MergeDataDialog(QDialog):
 
         # GroupBox สำหรับ Filter เฉพาะ
         filter_group = QGroupBox("Filter สำหรับการ Merge นี้เท่านั้น")
-        filter_group.setStyleSheet("QGroupBox::title { color: #555555; }") # Override title color
         filter_layout = QVBoxLayout(filter_group)
         self.filter_query_edit = QLineEdit()
         self.filter_query_edit.setPlaceholderText("เช่น status == 1 (ถ้าเว้นว่าง ไม่ใช้ Filter)")
@@ -61,7 +60,6 @@ class MergeDataDialog(QDialog):
 
         # กลุ่มตัวแปรทั้งหมด
         source_group = QGroupBox("ตัวแปรทั้งหมด (Available Variables)")
-        source_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         source_layout = QVBoxLayout(source_group)
         self.source_list = QListWidget()
         self.source_list.addItems(self.all_variables)
@@ -85,7 +83,6 @@ class MergeDataDialog(QDialog):
         groups_layout = QVBoxLayout()
 
         group1_box = QGroupBox("Group 1 Variables")
-        group1_box.setStyleSheet("QGroupBox::title { color: #555555; }")
         group1_layout = QVBoxLayout(group1_box)
         self.name1_edit = QLineEdit()
         self.name1_edit.setPlaceholderText("ตั้งชื่อคอลัมน์ใหม่สำหรับ Group 1 (เช่น Brand_A)")
@@ -99,7 +96,6 @@ class MergeDataDialog(QDialog):
         groups_layout.addWidget(group1_box)
 
         group2_box = QGroupBox("Group 2 Variables")
-        group2_box.setStyleSheet("QGroupBox::title { color: #555555; }")
         group2_layout = QVBoxLayout(group2_box)
         self.name2_edit = QLineEdit()
         self.name2_edit.setPlaceholderText("ตั้งชื่อคอลัมน์ใหม่สำหรับ Group 2 (เช่น Brand_B)")
@@ -152,7 +148,7 @@ class MergeDataDialog(QDialog):
                 background-color: #c82333;
             }
             QDialogButtonBox QPushButton {
-                min-width: 80px; /* Make OK/Cancel buttons wider */
+                min-width: 100px; /* Make OK/Cancel buttons wider */
             }
         """)
 
@@ -187,7 +183,7 @@ class StackVariablesDialog(QDialog):
     def __init__(self, spss_variables, meta, current_filter_desc, parent=None):
         super().__init__(parent)
         self.setWindowTitle("สร้างตัวแปรจากการรวมข้อมูล (Stacking)")
-        self.setMinimumSize(700, 550) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
+        self.setMinimumSize(900, 600); self.resize(1000, 780) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
         self.meta = meta
 
@@ -205,7 +201,6 @@ class StackVariablesDialog(QDialog):
 
         # กลุ่มตัวแปรทั้งหมด
         source_group = QGroupBox("ตัวแปรทั้งหมดจาก SPSS")
-        source_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         source_v_layout = QVBoxLayout(source_group)
         self.source_list = QListWidget()
         self.source_list.addItems(spss_variables)
@@ -216,10 +211,14 @@ class StackVariablesDialog(QDialog):
         # ปุ่มย้าย
         button_layout = QVBoxLayout()
         button_layout.addStretch()
-        self.add_button = QPushButton(">>")
+        self.add_button = QPushButton("เพิ่ม  >>")
         self.add_button.setObjectName("dialogAddButton")
-        self.remove_button = QPushButton("<<")
+        self.add_button.setFixedWidth(125)
+        self.add_button.setToolTip("ย้ายตัวแปรที่เลือกไปทางขวา (หรือดับเบิลคลิกที่ตัวแปร)")
+        self.remove_button = QPushButton("<<  นำออก")
         self.remove_button.setObjectName("dialogRemoveButton")
+        self.remove_button.setFixedWidth(125)
+        self.remove_button.setToolTip("ย้ายตัวแปรที่เลือกกลับไปทางซ้าย (หรือดับเบิลคลิกที่ตัวแปร)")
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.remove_button)
         button_layout.addStretch()
@@ -227,7 +226,6 @@ class StackVariablesDialog(QDialog):
 
         # กลุ่มตัวแปรที่จะ Stack
         stack_group = QGroupBox("ตัวแปรที่จะนำไป Stack")
-        stack_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         stack_v_layout = QVBoxLayout(stack_group)
         self.stack_list = QListWidget()
         self.stack_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -237,7 +235,6 @@ class StackVariablesDialog(QDialog):
 
         # กลุ่มการตั้งชื่อและโจทย์
         naming_group = QGroupBox("ตั้งชื่อและโจทย์")
-        naming_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         naming_layout = QVBoxLayout(naming_group)
 
         name_layout = QHBoxLayout()
@@ -263,6 +260,8 @@ class StackVariablesDialog(QDialog):
         # เชื่อมสัญญาณ
         self.add_button.clicked.connect(lambda: self.move_items(self.source_list, self.stack_list))
         self.remove_button.clicked.connect(lambda: self.move_items(self.stack_list, self.source_list))
+        self.source_list.itemDoubleClicked.connect(lambda _: self.move_items(self.source_list, self.stack_list))
+        self.stack_list.itemDoubleClicked.connect(lambda _: self.move_items(self.stack_list, self.source_list))
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
@@ -283,7 +282,7 @@ class StackVariablesDialog(QDialog):
                 background-color: #c82333;
             }
             QDialogButtonBox QPushButton {
-                min-width: 80px;
+                min-width: 100px;
             }
         """)
 
@@ -331,7 +330,7 @@ class PatternStackDialog(QDialog):
     def __init__(self, spss_variables, meta, parent=None):
         super().__init__(parent)
         self.setWindowTitle("สร้างตัวแปรแบบกลุ่มตามแพทเทิร์น (Pattern Stack)")
-        self.setMinimumSize(900, 760) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
+        self.setMinimumSize(900, 600); self.resize(1000, 780) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
         self.meta = meta
         self.final_grouping = {}
@@ -351,7 +350,6 @@ class PatternStackDialog(QDialog):
 
         # กลุ่มตัวแปรทั้งหมด
         source_group = QGroupBox("ตัวแปรทั้งหมดจาก SPSS")
-        source_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         source_v_layout = QVBoxLayout(source_group)
         self.source_list = QListWidget()
         self.source_list.addItems(spss_variables)
@@ -363,10 +361,14 @@ class PatternStackDialog(QDialog):
         # ปุ่มย้าย
         button_layout = QVBoxLayout()
         button_layout.addStretch()
-        self.add_button = QPushButton(">>")
+        self.add_button = QPushButton("เพิ่ม  >>")
         self.add_button.setObjectName("dialogAddButton")
-        self.remove_button = QPushButton("<<")
+        self.add_button.setFixedWidth(125)
+        self.add_button.setToolTip("ย้ายตัวแปรที่เลือกไปทางขวา (หรือดับเบิลคลิกที่ตัวแปร)")
+        self.remove_button = QPushButton("<<  นำออก")
         self.remove_button.setObjectName("dialogRemoveButton")
+        self.remove_button.setFixedWidth(125)
+        self.remove_button.setToolTip("ย้ายตัวแปรที่เลือกกลับไปทางซ้าย (หรือดับเบิลคลิกที่ตัวแปร)")
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.remove_button)
         button_layout.addStretch()
@@ -374,7 +376,6 @@ class PatternStackDialog(QDialog):
 
         # กลุ่มตัวแปรที่เลือกเพื่อจัดกลุ่ม
         stack_group = QGroupBox("ตัวแปรที่เลือกเพื่อจัดกลุ่ม")
-        stack_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         stack_v_layout = QVBoxLayout(stack_group)
         self.selected_list = QListWidget()
         self.selected_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -385,7 +386,6 @@ class PatternStackDialog(QDialog):
 
         # กลุ่มการตั้งค่าแพทเทิร์นและแสดงตัวอย่าง
         pattern_group = QGroupBox("2. ตั้งค่าแพทเทิร์นและแสดงตัวอย่าง")
-        pattern_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         pattern_layout = QVBoxLayout(pattern_group)
 
         base_name_layout = QHBoxLayout()
@@ -453,6 +453,8 @@ class PatternStackDialog(QDialog):
         # เชื่อมสัญญาณ
         self.add_button.clicked.connect(lambda: self.move_items(self.source_list, self.selected_list))
         self.remove_button.clicked.connect(lambda: self.move_items(self.selected_list, self.source_list))
+        self.source_list.itemDoubleClicked.connect(lambda _: self.move_items(self.source_list, self.selected_list))
+        self.selected_list.itemDoubleClicked.connect(lambda _: self.move_items(self.selected_list, self.source_list))
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
@@ -473,7 +475,7 @@ class PatternStackDialog(QDialog):
                 background-color: #c82333;
             }
             QDialogButtonBox QPushButton {
-                min-width: 80px;
+                min-width: 100px;
             }
         """)
 
@@ -616,12 +618,178 @@ class PatternStackDialog(QDialog):
         return {"groups": self.final_grouping, "base_name": self.base_name}
 
 # --- หน้าต่างสำหรับ "ตั้งค่า" ตัวแปรเพื่อเพิ่มลงคิว ---
+
+# --- หน้าต่างสำหรับสร้างตัวแปร Recode Justright ---
+RECODE_JR_MAPS = {
+    5: {1: 1, 5: 1, 2: 2, 4: 2, 3: 3},
+    7: {1: 1, 7: 1, 2: 2, 6: 2, 3: 3, 5: 3, 4: 4},
+}
+
+def detect_justright_scale(series):
+    """ตรวจจับว่าเป็น 5 หรือ 7 Scale จากค่าสูงสุดของข้อมูล"""
+    try:
+        max_val = pd.to_numeric(series, errors='coerce').max()
+        if pd.isna(max_val):
+            return 5
+        return 7 if max_val > 5 else 5
+    except Exception:
+        return 5
+
+def recode_justright_series(series, scale):
+    """Recode ค่าตาม Justright: 5 Scale -> 1,5=1 / 2,4=2 / 3=3 ; 7 Scale -> 1,7=1 / 2,6=2 / 3,5=3 / 4=4"""
+    numeric = pd.to_numeric(series, errors='coerce')
+    return numeric.map(RECODE_JR_MAPS.get(int(scale), RECODE_JR_MAPS[5]))
+
+class RecodeJustrightDialog(QDialog):
+    def __init__(self, spss_variables, meta, df, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("สร้างตัวแปร Recode Justright")
+        self.setMinimumSize(900, 600); self.resize(1000, 780)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
+        self.meta = meta
+        self.df = df
+        self.setStyleSheet(parent.styleSheet())
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(10)
+
+        main_layout.addWidget(QLabel("<b><span style='font-size:12pt; color:#007bff;'>เลือกตัวแปรที่จะสร้างเป็นตัวแปรใหม่แบบ Recode Justright</span></b>"))
+        hint = QLabel(
+            "<table cellspacing='0' cellpadding='2'>"
+            "<tr><td><b>5 Scale</b></td><td>&nbsp;&nbsp;1,5 → 1 &nbsp;|&nbsp; 2,4 → 2 &nbsp;|&nbsp; 3 → 3</td></tr>"
+            "<tr><td><b>7 Scale</b></td><td>&nbsp;&nbsp;1,7 → 1 &nbsp;|&nbsp; 2,6 → 2 &nbsp;|&nbsp; 3,5 → 3 &nbsp;|&nbsp; 4 → 4</td></tr>"
+            "</table>"
+        )
+        hint.setTextFormat(Qt.TextFormat.RichText)
+        hint.setStyleSheet("background-color: #ffffff; border: 1px solid #d3d3d3; border-radius: 8px; padding: 8px 12px; color: #2c3e50;")
+        main_layout.addWidget(hint)
+        note = QLabel("ตัวแปรใหม่จะถูกสร้างแยกจากตัวแปรเดิม (ไม่ต่อ Data) และคำนวณตอน Export — ค่าที่อยู่นอกช่วง Scale จะกลายเป็นค่าว่าง")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #6c757d;")
+        main_layout.addWidget(note)
+
+        selection_layout = QHBoxLayout()
+        source_group = QGroupBox("ตัวแปรทั้งหมดจาก SPSS")
+        source_v_layout = QVBoxLayout(source_group)
+        self.source_list = QListWidget()
+        self.source_list.addItems(spss_variables)
+        self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        source_v_layout.addWidget(self.source_list)
+        selection_layout.addWidget(source_group)
+
+        button_layout = QVBoxLayout()
+        button_layout.addStretch()
+        self.add_button = QPushButton("เพิ่ม  >>")
+        self.add_button.setObjectName("dialogAddButton")
+        self.add_button.setFixedWidth(125)
+        self.add_button.setToolTip("ย้ายตัวแปรที่เลือกไปทางขวา (หรือดับเบิลคลิกที่ตัวแปร)")
+        self.remove_button = QPushButton("<<  นำออก")
+        self.remove_button.setObjectName("dialogRemoveButton")
+        self.remove_button.setFixedWidth(125)
+        self.remove_button.setToolTip("ย้ายตัวแปรที่เลือกกลับไปทางซ้าย (หรือดับเบิลคลิกที่ตัวแปร)")
+        button_layout.addWidget(self.add_button)
+        button_layout.addWidget(self.remove_button)
+        button_layout.addStretch()
+        selection_layout.addLayout(button_layout)
+
+        self.target_group = QGroupBox("ตัวแปรที่จะ Recode Justright")
+        target_group = self.target_group
+        target_v_layout = QVBoxLayout(target_group)
+        self.target_list = QListWidget()
+        self.target_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        target_v_layout.addWidget(self.target_list)
+        selection_layout.addWidget(target_group)
+        main_layout.addLayout(selection_layout)
+
+        option_group = QGroupBox("ตั้งค่าการสร้างตัวแปรใหม่")
+        option_layout = QVBoxLayout(option_group)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel("<b>ต่อท้ายชื่อตัวแปรใหม่:</b>"))
+        self.suffix_edit = QLineEdit("_JR")
+        self.suffix_edit.setPlaceholderText("เช่น _JR")
+        self.suffix_edit.setMaximumWidth(160)
+        row.addWidget(self.suffix_edit)
+        row.addSpacing(20)
+        row.addWidget(QLabel("<b>Scale:</b>"))
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(["5 Scale", "7 Scale"])
+        self.scale_combo.setMinimumWidth(220)
+        row.addWidget(self.scale_combo)
+        row.addStretch()
+        option_layout.addLayout(row)
+
+        self.example_label = QLabel()
+        self.example_label.setStyleSheet("color: #6c757d; font-style: italic;")
+        option_layout.addWidget(self.example_label)
+        self.suffix_edit.textChanged.connect(self._update_example)
+        self.scale_combo.currentIndexChanged.connect(self._update_example)
+        self._update_example()
+        main_layout.addWidget(option_group)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        main_layout.addWidget(self.button_box)
+
+        self.add_button.clicked.connect(lambda: self.move_items(self.source_list, self.target_list))
+        self.remove_button.clicked.connect(lambda: self.move_items(self.target_list, self.source_list))
+        self.source_list.itemDoubleClicked.connect(lambda _: self.move_items(self.source_list, self.target_list))
+        self.target_list.itemDoubleClicked.connect(lambda _: self.move_items(self.target_list, self.source_list))
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("สร้างตัวแปร")
+        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("ยกเลิก")
+        self._update_target_title()
+
+        self.setStyleSheet(self.styleSheet() + """
+            QPushButton#dialogAddButton { background-color: #28a745; color: white; }
+            QPushButton#dialogAddButton:hover { background-color: #218838; }
+            QPushButton#dialogRemoveButton { background-color: #dc3545; color: white; }
+            QPushButton#dialogRemoveButton:hover { background-color: #c82333; }
+            QDialogButtonBox QPushButton { min-width: 100px; }
+        """)
+
+    def move_items(self, from_list, to_list):
+        for item in from_list.selectedItems():
+            to_list.addItem(from_list.takeItem(from_list.row(item)))
+        self._update_target_title()
+
+    def _update_example(self):
+        suffix = self.suffix_edit.text().strip() or "_JR"
+        scale = 7 if self.scale_combo.currentIndex() == 1 else 5
+        self.example_label.setText(f"ตัวอย่าง: Q1  →  Q1{suffix}   (Label: <Label เดิม> (Justright {scale} Scale))")
+
+    def _update_target_title(self):
+        n = self.target_list.count()
+        self.target_group.setTitle(f"ตัวแปรที่จะ Recode Justright ({n} ตัว)" if n else "ตัวแปรที่จะ Recode Justright")
+
+    def accept(self):
+        if self.target_list.count() < 1:
+            QMessageBox.warning(self, "ข้อมูลไม่ครบถ้วน", "กรุณาเลือกตัวแปรที่จะ Recode อย่างน้อย 1 ตัว")
+            return
+        if not self.suffix_edit.text().strip():
+            QMessageBox.warning(self, "ข้อมูลไม่ครบถ้วน", "กรุณาระบุคำต่อท้ายชื่อตัวแปรใหม่")
+            return
+        super().accept()
+
+    def get_data(self):
+        """ส่งคืนรายการ (ตัวแปรเดิม, ตัวแปรใหม่, scale)"""
+        suffix = self.suffix_edit.text().strip()
+        idx = self.scale_combo.currentIndex()
+        items = []
+        for i in range(self.target_list.count()):
+            src = self.target_list.item(i).text()
+            scale = 7 if idx == 1 else 5
+            items.append({"source": src, "new_name": f"{src}{suffix}", "scale": scale})
+        return items
+
 class SetQueueVarsDialog(QDialog):
     def __init__(self, all_vars, pre_selected_vars, parent=None):
         super().__init__(parent)
         self.all_vars = all_vars # เก็บไว้สำหรับเรียงลำดับ
         self.setWindowTitle("ตั้งค่าตัวแปรสำหรับเพิ่มลงคิว")
-        self.setMinimumSize(700, 550) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
+        self.setMinimumSize(900, 600); self.resize(1000, 780) # เพิ่มขนาดเริ่มต้น (ของ Dialog นี้)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
 
         # ตั้งค่า UI สไตล์สำหรับ Dialog
@@ -637,7 +805,6 @@ class SetQueueVarsDialog(QDialog):
 
         # ตัวแปรที่ใช้งานได้ทั้งหมด
         available_group = QGroupBox("Available Variables")
-        available_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         available_v_layout = QVBoxLayout(available_group)
         self.available_list = QListWidget()
         self.available_list.addItems(all_vars) # ใส่ all_vars ทั้งหมดใน available_list ตั้งแต่แรก
@@ -648,10 +815,14 @@ class SetQueueVarsDialog(QDialog):
         # ปุ่มย้าย
         button_layout = QVBoxLayout()
         button_layout.addStretch()
-        self.add_button = QPushButton(">>")
+        self.add_button = QPushButton("เพิ่ม  >>")
         self.add_button.setObjectName("dialogAddButton")
-        self.remove_button = QPushButton("<<")
+        self.add_button.setFixedWidth(125)
+        self.add_button.setToolTip("ย้ายตัวแปรที่เลือกไปทางขวา (หรือดับเบิลคลิกที่ตัวแปร)")
+        self.remove_button = QPushButton("<<  นำออก")
         self.remove_button.setObjectName("dialogRemoveButton")
+        self.remove_button.setFixedWidth(125)
+        self.remove_button.setToolTip("ย้ายตัวแปรที่เลือกกลับไปทางซ้าย (หรือดับเบิลคลิกที่ตัวแปร)")
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.remove_button)
         button_layout.addStretch()
@@ -659,7 +830,6 @@ class SetQueueVarsDialog(QDialog):
 
         # ตัวแปรที่เลือกแล้ว
         selected_group = QGroupBox("Selected Variables")
-        selected_group.setStyleSheet("QGroupBox::title { color: #555555; }")
         selected_v_layout = QVBoxLayout(selected_group)
         self.selected_list = QListWidget()
         self.selected_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -682,6 +852,8 @@ class SetQueueVarsDialog(QDialog):
         # เชื่อมสัญญาณ
         self.add_button.clicked.connect(lambda: self.move_items(self.available_list, self.selected_list, sort_destination=False))
         self.remove_button.clicked.connect(lambda: self.move_items(self.selected_list, self.available_list, sort_destination=True))
+        self.available_list.itemDoubleClicked.connect(lambda _: self.move_items(self.available_list, self.selected_list, sort_destination=False))
+        self.selected_list.itemDoubleClicked.connect(lambda _: self.move_items(self.selected_list, self.available_list, sort_destination=True))
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
@@ -702,7 +874,7 @@ class SetQueueVarsDialog(QDialog):
                 background-color: #c82333;
             }
             QDialogButtonBox QPushButton {
-                min-width: 80px;
+                min-width: 100px;
             }
         """)
 
@@ -743,9 +915,71 @@ class SPSSCorrelationApp(QMainWindow):
 
         # ตั้งค่า StyleSheet ทั่วทั้งแอปพลิเคชัน
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #e8ebf0; /* พื้นหลังสีเทาอ่อน */
+            QMainWindow, QDialog {
+                background-color: #eef1f5; /* พื้นหลังสีเทาอ่อน (ใช้กับ Dialog ด้วย) */
             }
+            QFrame#app_header {
+                background-color: #1f3b5b;
+                border-radius: 12px;
+            }
+            QLabel#app_title { color: #ffffff; font-size: 15pt; font-weight: bold; }
+            QLabel#app_subtitle { color: #b9c9dc; font-size: 9pt; }
+            QLabel#file_chip {
+                background-color: rgba(255,255,255,0.12);
+                color: #ffffff; border-radius: 12px; padding: 5px 12px; font-size: 9pt;
+            }
+            QLabel#file_chip[loaded="true"] {
+                background-color: #28a745; color: #ffffff;
+            }
+            QLabel#section_hint { color: #6c757d; font-size: 9pt; }
+            QLabel#field_label { color: #495057; font-weight: bold; font-size: 9pt; margin-top: 2px; }
+            QLabel#queue_empty_hint { color: #9aa3ad; font-style: italic; }
+            QListWidget#queue_list::item {
+                padding: 0px; margin: 3px 2px; border-radius: 10px;
+                border: 1px solid #e3e8ee; background-color: #ffffff;
+            }
+            QListWidget#queue_list::item:hover { border-color: #b7c2cf; background-color: #fbfcfe; }
+            QListWidget#queue_list::item:selected {
+                border: 2px solid #6f42c1; background-color: #f6f1fd;
+            }
+            QWidget#queue_card { background: transparent; }
+            QLabel#queue_badge {
+                background-color: #1f3b5b; color: #ffffff; border-radius: 15px;
+                font-weight: bold; font-size: 10pt;
+            }
+            QLabel#queue_title { font-size: 10.5pt; font-weight: bold; color: #1f2d3d; }
+            QLabel#queue_subtitle { color: #6c757d; font-size: 9pt; }
+            QLabel#queue_chip {
+                border-radius: 9px; padding: 2px 9px; font-size: 8.5pt; font-weight: 600;
+            }
+            QLabel#queue_chip[kind="vars"] { background-color: #e7f1ff; color: #0b3d91; }
+            QLabel#queue_chip[kind="virtual"] { background-color: #e9faf5; color: #0f8a6a; }
+            QLabel#queue_chip[kind="filter"] { background-color: #fff4e5; color: #b35c00; }
+            QToolTip {
+                background-color: #2c3e50;
+                color: #ffffff;
+                border: none;
+                padding: 6px 8px;
+                font-size: 9pt;
+            }
+            QComboBox {
+                border: 1px solid #ced4da;
+                border-radius: 5px;
+                padding: 6px 10px;
+                background-color: #ffffff;
+                min-height: 24px;
+            }
+            QComboBox:hover { border-color: #007bff; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                border: 1px solid #ced4da;
+                selection-background-color: #e7f1ff;
+                selection-color: #000000;
+                padding: 4px;
+            }
+            QRadioButton { spacing: 6px; }
+            QRadioButton::indicator { width: 16px; height: 16px; }
             QWidget {
                 font-family: 'Tahoma';
                 font-size: 9.5pt;
@@ -753,33 +987,50 @@ class SPSSCorrelationApp(QMainWindow):
             }
             QGroupBox {
                 background-color: #ffffff; /* พื้นหลังสีขาวสำหรับ Group Box */
-                border: 1px solid #d3d3d3; /* เส้นขอบสีเทาอ่อน */
-                border-radius: 10px; /* มุมโค้ง */
-                margin-top: 1.5em; /* เว้นที่ว่างสำหรับ Title */
-                padding: 15px; /* Padding ภายใน */
+                border: 1px solid #dde3ea; /* เส้นขอบสีเทาอ่อน */
+                border-radius: 12px; /* มุมโค้ง */
+                margin-top: 1.4em; /* เว้นที่ว่างสำหรับ Title */
+                padding: 16px; /* Padding ภายใน */
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 8px;
-                margin-left: 10px;
-                color: #2c3e50; /* สีน้ำเงินเข้มสำหรับ Title */
-                font-size: 11pt;
+                padding: 3px 12px;
+                margin-left: 12px;
+                color: #ffffff;
+                background-color: #1f3b5b; /* ป้ายหัวข้อสีน้ำเงินเข้ม */
+                border-radius: 9px;
+                font-size: 10pt;
                 font-weight: bold;
             }
             QPushButton {
                 background-color: #007bff; /* สีน้ำเงินสำหรับปุ่มหลัก */
                 color: white;
                 border: none;
-                border-radius: 6px;
-                padding: 6px 10px; /* ลดขนาด padding */
-                font-size: 9pt; /* ลดขนาด font ในปุ่มเล็กน้อย */
-                font-weight: 500;
-                min-height: 25px; /* ลดความสูงปุ่มที่สม่ำเสมอ */
-                transition: background-color 0.2s ease; /* Animation hover */
+                border-radius: 8px;
+                padding: 7px 12px;
+                font-size: 9pt;
+                font-weight: 600;
+                min-height: 28px;
             }
             QPushButton:hover {
                 background-color: #0056b3; /* สีน้ำเงินเข้มขึ้นเมื่อ hover */
+            }
+            QPushButton:pressed { padding-top: 8px; padding-bottom: 6px; }
+            /* ปุ่มรอง: พื้นขาว เส้นขอบ */
+            QPushButton[secondary="true"] {
+                background-color: #ffffff;
+                color: #344767;
+                border: 1px solid #cfd6df;
+                font-weight: 500;
+            }
+            QPushButton[secondary="true"]:hover {
+                background-color: #f4f7fb;
+                border-color: #1f3b5b;
+                color: #1f3b5b;
+            }
+            QPushButton[secondary="true"]:disabled {
+                background-color: #f6f7f9; color: #b8c0ca; border-color: #e3e7ec;
             }
 
             /* สไตล์เฉพาะสำหรับปุ่มต่างๆ */
@@ -791,19 +1042,33 @@ class SPSSCorrelationApp(QMainWindow):
             }
             QPushButton#set_queue_vars_button {
                 background-color: #17a2b8; /* สีฟ้า-เขียวสำหรับเลือกตัวแปร */
+                min-height: 34px;
+                font-size: 9.5pt;
             }
             QPushButton#set_queue_vars_button:hover {
                 background-color: #138496;
             }
-            QPushButton#stack_vars_button, QPushButton#pattern_stack_button {
-                background-color: #6c757d; /* สีเทาสำหรับปุ่ม Stack */
+            QPushButton#stack_vars_button {
+                background-color: #5c7cfa; /* น้ำเงินอินดิโก้: ต่อ Data ปกติ */
             }
-            QPushButton#stack_vars_button:hover, QPushButton#pattern_stack_button:hover {
-                background-color: #5a6268;
+            QPushButton#stack_vars_button:hover { background-color: #4c6ef5; }
+            QPushButton#pattern_stack_button {
+                background-color: #fd7e14; /* ส้ม: ต่อ Data แบบกลุ่ม */
+            }
+            QPushButton#pattern_stack_button:hover { background-color: #e8700d; }
+            QPushButton#recode_jr_button {
+                background-color: #20c997; /* เขียวมิ้นต์: Recode Justright */
+            }
+            QPushButton#recode_jr_button:hover { background-color: #1aa179; }
+            QPushButton:disabled {
+                background-color: #c8ced6;
+                color: #f4f6f8;
             }
             QPushButton#add_to_queue_button {
                 background-color: #ffc107; /* สีส้มสำหรับเพิ่มลงคิว */
                 color: #333333; /* ตัวอักษรสีดำ */
+                min-height: 36px;
+                font-size: 10pt;
             }
             QPushButton#add_to_queue_button:hover {
                 background-color: #e0a800;
@@ -820,37 +1085,29 @@ class SPSSCorrelationApp(QMainWindow):
             QPushButton#clear_filter_button:hover {
                 background-color: #c82333;
             }
-            QPushButton#save_template_button {
-                background-color: #6f42c1; /* สีม่วงสำหรับบันทึก Template */
-            }
-            QPushButton#save_template_button:hover {
-                background-color: #5d34a4;
-            }
-            QPushButton#load_template_button {
-                background-color: #6610f2; /* สีม่วงเข้มขึ้นสำหรับโหลด Template */
-            }
-            QPushButton#load_template_button:hover {
-                background-color: #510dc7;
-            }
             QPushButton#execute_template_button {
-                background-color: #00bcd4; /* สี Teal สำหรับรันและ Export */
+                background-color: #6f42c1; /* สีม่วง: ปุ่มหลักของโปรแกรม */
                 font-weight: bold;
-                font-size: 9.5pt; /* ปรับ font size ให้เล็กลงเล็กน้อย */
+                font-size: 10.5pt;
+                min-height: 44px;
             }
             QPushButton#execute_template_button:hover {
-                background-color: #00acc1;
+                background-color: #5d34a4;
             }
             QPushButton#remove_from_queue_button {
-                background-color: #ff4d4d; /* สีแดงอ่อนสำหรับลบรายการในคิว */
+                background-color: #ffffff; color: #c0392b; border: 1px solid #e6a8a1;
             }
             QPushButton#remove_from_queue_button:hover {
-                background-color: #e60000;
+                background-color: #fdf0ee;
+            }
+            QPushButton#remove_from_queue_button:disabled, QPushButton#clear_queue_button:disabled {
+                background-color: #f6f7f9; color: #b8c0ca; border-color: #e3e7ec;
             }
             QPushButton#clear_queue_button {
-                background-color: #c0392b; /* สีแดงเข้มสำหรับล้างคิวทั้งหมด */
+                background-color: #ffffff; color: #c0392b; border: 1px solid #e6a8a1;
             }
             QPushButton#clear_queue_button:hover {
-                background-color: #a02c20;
+                background-color: #fdf0ee;
             }
 
             QLabel {
@@ -862,28 +1119,46 @@ class SPSSCorrelationApp(QMainWindow):
                 color: #555555;
             }
             QLabel#status_label {
-                color: #28a745; /* สีเขียวสำหรับ Status */
-                font-weight: bold;
+                color: #1e7e34; /* สีเขียวสำหรับ Status */
+                font-weight: 600;
                 font-size: 9.5pt;
-                padding: 8px;
-                border-top: 1px solid #e0e0e0;
-                border-radius: 0 0 8px 8px;
-                background-color: #f7f7f7;
+                padding: 10px 14px;
+                border: 1px solid #cde9d4;
+                border-radius: 10px;
+                background-color: #edf8f0;
             }
             QLineEdit, QTextEdit, QListWidget {
-                border: 1px solid #ced4da; /* สีเทาอมฟ้าอ่อน */
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 9pt;
+                border: 1px solid #d5dbe3; /* สีเทาอมฟ้าอ่อน */
+                border-radius: 8px;
+                padding: 8px 10px;
+                font-size: 9.5pt;
+                background-color: #fbfcfd;
+            }
+            QLineEdit:hover, QListWidget:hover { border-color: #b7c2cf; }
+            QLineEdit:focus, QTextEdit:focus, QListWidget:focus {
+                border: 1px solid #1f3b5b;
                 background-color: #ffffff;
             }
+            QListWidget { padding: 4px; }
             QListWidget::item {
-                padding: 6px 8px; /* เพิ่ม padding ของแต่ละ item ใน list */
+                padding: 5px 8px; /* เพิ่ม padding ของแต่ละ item ใน list */
+                border-radius: 4px;
+            }
+            QListWidget::item:hover {
+                background-color: #f1f3f5;
             }
             QListWidget::item:selected {
-                background-color: #e9ecef; /* สีเทาอ่อนสำหรับ item ที่เลือก */
-                color: #000000;
+                background-color: #e7f1ff; /* สีฟ้าอ่อนสำหรับ item ที่เลือก */
+                color: #0b3d91;
             }
+            QScrollBar:vertical {
+                background: transparent; width: 10px; margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c5cbd3; border-radius: 5px; min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover { background: #9aa3ad; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
             QSplitter::handle {
                 background-color: #ced4da; /* สีเทาอ่อนสำหรับ handle ของ splitter */
                 border-radius: 4px;
@@ -899,16 +1174,18 @@ class SPSSCorrelationApp(QMainWindow):
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(15)
+        outer_layout = QVBoxLayout(central_widget)
+        outer_layout.setContentsMargins(15, 15, 15, 15)
+        outer_layout.setSpacing(14)
+
+        outer_layout.addWidget(self._create_app_header())
 
         # ใช้ QSplitter เพื่อให้ปรับขนาดแต่ละ Panel ได้
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._create_left_panel())
         splitter.addWidget(self._create_right_panel())
-        
-        main_layout.addWidget(splitter)
+        splitter.setChildrenCollapsible(False)
+        outer_layout.addWidget(splitter, 1)
 
         self.update_ui_state()
         self._center_on_screen() # ถูกเรียกใช้ที่นี่เป็นอันดับสุดท้าย เพื่อกำหนดขนาดและจัดกลาง
@@ -918,6 +1195,37 @@ class SPSSCorrelationApp(QMainWindow):
         # ค่า self.width() และ self.height() จะเป็นค่าหลังจากที่ _center_on_screen() ตั้งค่าให้แล้ว
         splitter.setSizes([int(self.width() * 0.6), int(self.width() * 0.4)]) # กำหนดขนาดเริ่มต้น (ประมาณ 60:40)
 
+
+    def _create_app_header(self):
+        """แถบหัวโปรแกรมด้านบน: ชื่อโปรแกรม + สถานะไฟล์"""
+        header = QFrame()
+        header.setObjectName("app_header")
+        h = QHBoxLayout(header)
+        h.setContentsMargins(20, 14, 20, 14)
+        h.setSpacing(12)
+
+        text_box = QVBoxLayout()
+        text_box.setSpacing(2)
+        title = QLabel("Correlation จาก SPSS Data")
+        title.setObjectName("app_title")
+        subtitle = QLabel("โหลดไฟล์ .sav  →  ตั้งค่าการรัน  →  เพิ่มลงคิว  →  Export เป็น Excel")
+        subtitle.setObjectName("app_subtitle")
+        text_box.addWidget(title)
+        text_box.addWidget(subtitle)
+        h.addLayout(text_box, 1)
+
+        self.file_chip = QLabel("ยังไม่ได้โหลดไฟล์")
+        self.file_chip.setObjectName("file_chip")
+        self.file_chip.setProperty("loaded", "false")
+        h.addWidget(self.file_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        return header
+
+    def _set_file_chip(self, text, loaded):
+        """อัปเดตป้ายสถานะไฟล์บนแถบหัวโปรแกรม"""
+        self.file_chip.setText(text)
+        self.file_chip.setProperty("loaded", "true" if loaded else "false")
+        self.file_chip.style().unpolish(self.file_chip)
+        self.file_chip.style().polish(self.file_chip)
 
     def _create_left_panel(self):
         """สร้าง Panel ด้านซ้าย: โหลดไฟล์, ตั้งค่ารัน"""
@@ -941,23 +1249,23 @@ class SPSSCorrelationApp(QMainWindow):
         queue_layout = QVBoxLayout(queue_widget)
         queue_layout.setSpacing(15)
 
-        queue_layout.addWidget(self._create_template_queue_tab())
-        queue_layout.addStretch()
+        queue_layout.addWidget(self._create_template_queue_tab(), 1)
 
         return queue_widget
 
     def _create_file_loading_section(self):
         """ส่วนสำหรับโหลดไฟล์ SPSS"""
-        group_box = QGroupBox("1. โหลดไฟล์ SPSS")
+        group_box = QGroupBox("1  โหลดไฟล์ SPSS")
         layout = QVBoxLayout(group_box)
         layout.setSpacing(10)
 
         file_layout = QHBoxLayout()
-        self.load_button = QPushButton("เลือกไฟล์ SPSS (.sav)")
+        self.load_button = QPushButton("📂  เลือกไฟล์ SPSS (.sav)")
         self.load_button.setObjectName("load_button")
+        self.load_button.setMinimumHeight(34)
         self.load_button.clicked.connect(self.load_spss_file)
 
-        self.file_label = QLabel("ยังไม่ได้โหลดไฟล์")
+        self.file_label = QLabel("ยังไม่ได้โหลดไฟล์ — รองรับไฟล์ .sav จาก SPSS")
         self.file_label.setObjectName("file_label")
         self.file_label.setWordWrap(True) # ให้ข้อความขึ้นบรรทัดใหม่ได้
 
@@ -969,48 +1277,65 @@ class SPSSCorrelationApp(QMainWindow):
 
     def _create_run_setup_section(self):
         """ส่วนสำหรับตั้งค่าการรันเดี่ยวหรือเพิ่มลงคิว"""
-        setup_group_box = QGroupBox("2. ตั้งค่าการรัน (สำหรับเพิ่มลงคิว)")
+        setup_group_box = QGroupBox("2  ตั้งค่าการรัน")
         setup_layout = QVBoxLayout(setup_group_box)
         setup_layout.setSpacing(8)
 
-        setup_layout.addWidget(QLabel("ชื่อ Sheet ที่จะ Export:"))
+        def field_label(text):
+            lbl = QLabel(text)
+            lbl.setObjectName("field_label")
+            return lbl
+
+        setup_layout.addWidget(field_label("ชื่อ Sheet ที่จะ Export"))
         self.single_sheet_name_edit = QLineEdit()
         self.single_sheet_name_edit.setPlaceholderText("เช่น Analysis_Q1_vs_Q2")
         setup_layout.addWidget(self.single_sheet_name_edit)
 
-        setup_layout.addWidget(QLabel("ข้อความหัวข้อใน Excel (Cell A1):"))
+        setup_layout.addWidget(field_label("ข้อความหัวข้อใน Excel (Cell A1)"))
         self.single_header_a1_edit = QLineEdit()
         self.single_header_a1_edit.setPlaceholderText("ถ้าว่างจะใช้ชื่อ Sheet เป็นหัวข้อ")
         setup_layout.addWidget(self.single_header_a1_edit)
 
-        setup_layout.addWidget(QLabel("Filter เฉพาะสำหรับ Run นี้เท่านั้น:"))
+        setup_layout.addWidget(field_label("Filter เฉพาะสำหรับ Run นี้"))
         self.single_filter_edit = QLineEdit()
         self.single_filter_edit.setPlaceholderText("เช่น gender == 1 (ถ้าว่างไม่ใช้ Filter)")
         setup_layout.addWidget(self.single_filter_edit)
 
-        setup_layout.addWidget(QLabel("ตัวแปรสำหรับ Correlation:"))
+        setup_layout.addSpacing(6)
+        setup_layout.addWidget(field_label("ตัวแปรสำหรับ Correlation"))
         self.set_queue_vars_button = QPushButton("คลิกเพื่อเลือกตัวแปรที่จะรัน Correlation")
         self.set_queue_vars_button.setObjectName("set_queue_vars_button")
         self.set_queue_vars_button.clicked.connect(self.open_set_queue_vars_dialog)
         setup_layout.addWidget(self.set_queue_vars_button)
 
         # ปุ่มสร้างตัวแปร Stack
+        setup_layout.addSpacing(6)
+        tools_label = QLabel("เครื่องมือสร้างตัวแปรใหม่ — ใช้ก่อนเลือกตัวแปร")
+        tools_label.setObjectName("section_hint")
+        setup_layout.addWidget(tools_label)
         button_layout = QHBoxLayout()
-        self.stack_vars_button = QPushButton("สร้างตัวแปร ต่อ Data ปกติ")
+        self.stack_vars_button = QPushButton("ต่อ Data ปกติ")
         self.stack_vars_button.setObjectName("stack_vars_button")
         self.stack_vars_button.setToolTip("เปิดหน้าต่างเพื่อเลือกตัวแปรมา Stack เป็นตัวแปรใหม่ 1 ตัว")
         self.stack_vars_button.clicked.connect(self.open_stack_variables_dialog)
         
-        self.pattern_stack_button = QPushButton("สร้างตัวแปรต่อ Data แบบกลุ่ม")
+        self.pattern_stack_button = QPushButton("ต่อ Data แบบกลุ่ม")
         self.pattern_stack_button.setObjectName("pattern_stack_button")
         self.pattern_stack_button.setToolTip("สร้างตัวแปรใหม่หลายตัวโดยจัดกลุ่มจากแพทเทิร์นในชื่อตัวแปร")
         self.pattern_stack_button.clicked.connect(self.open_pattern_stack_dialog)
         
+        self.recode_jr_button = QPushButton("Recode Justright")
+        self.recode_jr_button.setObjectName("recode_jr_button")
+        self.recode_jr_button.setToolTip("สร้างตัวแปรใหม่จากตัวแปรเดิมโดย Recode แบบ Justright (5 Scale: 1,5=1 / 2,4=2 / 3=3 | 7 Scale: 1,7=1 / 2,6=2 / 3,5=3 / 4=4)")
+        self.recode_jr_button.clicked.connect(self.open_recode_justright_dialog)
+
         button_layout.addWidget(self.stack_vars_button)
         button_layout.addWidget(self.pattern_stack_button)
+        button_layout.addWidget(self.recode_jr_button)
         setup_layout.addLayout(button_layout)
 
-        self.add_to_queue_button = QPushButton("เพิ่มรายการนี้ลงในคิวการประมวลผล")
+        setup_layout.addSpacing(8)
+        self.add_to_queue_button = QPushButton("➕  เพิ่มรายการนี้ลงในคิวการประมวลผล")
         self.add_to_queue_button.setObjectName("add_to_queue_button")
         self.add_to_queue_button.clicked.connect(self.add_current_setup_to_template_queue)
         setup_layout.addWidget(self.add_to_queue_button)
@@ -1056,35 +1381,53 @@ class SPSSCorrelationApp(QMainWindow):
 
     def _create_template_queue_tab(self):
         """ส่วนสำหรับจัดการคิวและ Template"""
-        group_box = QGroupBox("4. จัดการคิวและ Template")
+        group_box = QGroupBox("3  คิวการประมวลผล & Template")
         layout = QVBoxLayout(group_box)
         layout.setSpacing(10)
 
         # ปุ่มจัดการคิว
         template_action_layout = QVBoxLayout()
-        self.save_template_button = QPushButton("บันทึกการตั้งค่าเป็น Template")
+        self.save_template_button = QPushButton("💾  บันทึกคิวเป็น Template")
         self.save_template_button.setObjectName("save_template_button")
+        self.save_template_button.setProperty("secondary", "true")
         self.save_template_button.clicked.connect(self.save_setups_as_template)
 
-        self.load_template_button = QPushButton("โหลด Template ที่บันทึกไว้")
+        self.load_template_button = QPushButton("📄  โหลด Template")
         self.load_template_button.setObjectName("load_template_button")
+        self.load_template_button.setProperty("secondary", "true")
         self.load_template_button.clicked.connect(self.load_setups_from_template)
 
-        self.execute_template_button = QPushButton("รันทุกรายการในคิวและ Export ทั้งหมด")
+        self.execute_template_button = QPushButton("▶  รันทุกรายการในคิวและ Export Excel")
         self.execute_template_button.setObjectName("execute_template_button")
         self.execute_template_button.clicked.connect(self.execute_all_queued_setups)
 
-        template_action_layout.addWidget(self.save_template_button)
-        template_action_layout.addWidget(self.load_template_button)
-        template_action_layout.addWidget(self.execute_template_button)
+        template_row = QHBoxLayout()
+        template_row.addWidget(self.save_template_button)
+        template_row.addWidget(self.load_template_button)
+        template_action_layout.addLayout(template_row)
         layout.addLayout(template_action_layout)
 
         # รายการในคิว
-        layout.addWidget(QLabel("รายการในคิวการประมวลผล (ดับเบิลคลิกเพื่อแก้ไข):"))
+        queue_header = QHBoxLayout()
+        queue_title = QLabel("รายการในคิวการประมวลผล")
+        queue_title.setObjectName("field_label")
+        self.queue_count_label = QLabel("0 รายการ")
+        self.queue_count_label.setObjectName("section_hint")
+        queue_header.addWidget(queue_title)
+        queue_header.addStretch()
+        queue_header.addWidget(self.queue_count_label)
+        layout.addLayout(queue_header)
+        hint = QLabel("ดับเบิลคลิกรายการเพื่อดึงกลับมาแก้ไข")
+        hint.setObjectName("section_hint")
+        layout.addWidget(hint)
         self.template_queue_list_widget = QListWidget()
+        self.template_queue_list_widget.setObjectName("queue_list")
+        self.template_queue_list_widget.setSpacing(2)
+        self.template_queue_list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.template_queue_list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.template_queue_list_widget.itemDoubleClicked.connect(self.load_queued_item_to_setup_ui)
         self.template_queue_list_widget.itemSelectionChanged.connect(self.update_ui_state) # อัปเดตสถานะปุ่มเมื่อเลือกรายการ
-        layout.addWidget(self.template_queue_list_widget)
+        layout.addWidget(self.template_queue_list_widget, 1)
 
         # ปุ่มจัดการรายการในคิว
         queue_buttons_layout = QHBoxLayout()
@@ -1099,7 +1442,10 @@ class SPSSCorrelationApp(QMainWindow):
         queue_buttons_layout.addWidget(self.remove_from_queue_button)
         queue_buttons_layout.addWidget(self.clear_queue_button)
         layout.addLayout(queue_buttons_layout)
-        
+
+        layout.addSpacing(6)
+        layout.addWidget(self.execute_template_button)
+
         return group_box
 
     def _center_on_screen(self):
@@ -1109,7 +1455,7 @@ class SPSSCorrelationApp(QMainWindow):
 
             # กำหนดขนาดเริ่มต้นของหน้าต่าง
             target_width = min(1000, screen.width() - 80)  # ความกว้างเริ่มต้น
-            target_height = min(820, screen.height() - 80) # ความสูงเริ่มต้น
+            target_height = min(900, screen.height() - 80) # ความสูงเริ่มต้น
             self.resize(target_width, target_height) # กำหนดขนาดเริ่มต้น
 
             # จัดตำแหน่งหน้าต่างให้อยู่กึ่งกลาง โดยใช้ขนาดที่เพิ่งตั้งค่าไป
@@ -1126,7 +1472,7 @@ class SPSSCorrelationApp(QMainWindow):
         # ส่วนตั้งค่าการรัน
         for widget in [self.single_sheet_name_edit, self.single_header_a1_edit, self.single_filter_edit,
                         self.set_queue_vars_button, self.add_to_queue_button,
-                        self.stack_vars_button, self.pattern_stack_button]:
+                        self.stack_vars_button, self.pattern_stack_button, self.recode_jr_button]:
             widget.setEnabled(file_loaded)
 
         # จัดการคิวและ Template
@@ -1149,8 +1495,10 @@ class SPSSCorrelationApp(QMainWindow):
                     formats_as_category=False, # ไม่แปลงตัวแปรเป็น category type
                     user_missing=True # จัดการ User-defined missing values
                 )
-                self.file_label.setText(f"ไฟล์ที่โหลด: {file_name.split('/')[-1]}")
-                self.file_label.setStyleSheet("color: #28a745; font-weight: normal; font-size: 9.5pt;")
+                short_name = file_name.split('/')[-1]
+                self.file_label.setText(f"ไฟล์ที่โหลด: {short_name}   •  {len(self.df):,} แถว  •  {len(self.df.columns):,} ตัวแปร")
+                self.file_label.setStyleSheet("color: #1e7e34; font-weight: 600; font-size: 9.5pt; font-style: normal;")
+                self._set_file_chip(f"●  {short_name}", True)
                 
                 self.reset_setup_form_for_next_run()
                 self.active_filter_query = ""
@@ -1164,8 +1512,9 @@ class SPSSCorrelationApp(QMainWindow):
                 QMessageBox.critical(self, "เกิดข้อผิดพลาด", f"ไม่สามารถโหลดไฟล์ SPSS ได้: {e}\nโปรดตรวจสอบว่าไฟล์ไม่เสียหายและเป็นรูปแบบ .sav ที่ถูกต้อง")
                 self.df = None
                 self.meta = None
-                self.file_label.setText("ยังไม่ได้โหลดไฟล์")
+                self.file_label.setText("ยังไม่ได้โหลดไฟล์ — รองรับไฟล์ .sav จาก SPSS")
                 self.file_label.setStyleSheet("font-style: italic; color: gray; font-size: 9.5pt;")
+                self._set_file_chip("ยังไม่ได้โหลดไฟล์", False)
             finally:
                 self.update_ui_state()
 
@@ -1290,6 +1639,46 @@ class SPSSCorrelationApp(QMainWindow):
         else:
             QMessageBox.warning(self, "ไม่สำเร็จ", "ไม่สามารถสร้างตัวแปรเสมือนใหม่ได้ (อาจมีชื่อซ้ำทั้งหมดหรือตัวแปรต้นฉบับไม่ถูกต้อง)")
 
+    def open_recode_justright_dialog(self):
+        """เปิด Dialog สำหรับสร้างตัวแปร Recode Justright"""
+        if self.df is None:
+            QMessageBox.warning(self, "ไม่มีข้อมูล", "กรุณาโหลดไฟล์ SPSS ก่อน")
+            return
+        dialog = RecodeJustrightDialog(self.df.columns.tolist(), self.meta, self.df, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._create_recode_justright_variables(dialog.get_data())
+
+    def _create_recode_justright_variables(self, items):
+        """สร้าง 'สูตร' ตัวแปรเสมือนแบบ Recode Justright (คำนวณจริงตอน Export)"""
+        all_available_vars = set(self.df.columns.tolist() + list(self.virtual_variables.keys()))
+        created, skipped = [], []
+        for it in items:
+            src, new_name, scale = it["source"], it["new_name"], int(it["scale"])
+            if new_name in all_available_vars:
+                skipped.append(f"{new_name} (ชื่อซ้ำ)")
+                continue
+            if src not in self.df.columns:
+                skipped.append(f"{new_name} (ไม่พบ {src})")
+                continue
+            base_label = self.meta.column_names_to_labels.get(src, src) if self.meta and self.meta.column_names_to_labels else src
+            self.virtual_variables[new_name] = {
+                "label": f"{base_label} (Justright {scale} Scale)",
+                "source_vars": [src],
+                "type": "recode_justright",
+                "scale": scale,
+            }
+            all_available_vars.add(new_name)
+            created.append(f"{src} -> {new_name} ({scale} Scale)")
+        msg = ""
+        if created:
+            msg += f"สร้างตัวแปร Recode Justright สำเร็จ {len(created)} ตัวแปร:\n" + "\n".join(created)
+        if skipped:
+            msg += ("\n\n" if msg else "") + f"ข้าม {len(skipped)} รายการ:\n" + "\n".join(skipped)
+        if created:
+            QMessageBox.information(self, "สำเร็จ", msg)
+        else:
+            QMessageBox.warning(self, "ไม่สำเร็จ", msg or "ไม่มีตัวแปรที่สร้างได้")
+
     def open_set_queue_vars_dialog(self):
         """เปิด Dialog สำหรับเลือกตัวแปรที่จะรัน Correlation"""
         if self.df is None:
@@ -1357,12 +1746,75 @@ class SPSSCorrelationApp(QMainWindow):
         self.update_ui_state()
         self.reset_setup_form_for_next_run() # เคลียร์ฟอร์มหลังเพิ่มลงคิว
 
+    def _make_queue_item_widget(self, index, setup):
+        """สร้างการ์ดแสดงรายละเอียด 1 รายการในคิว"""
+        card = QWidget()
+        card.setObjectName("queue_card")
+        h = QHBoxLayout(card)
+        h.setContentsMargins(10, 8, 10, 8)
+        h.setSpacing(12)
+
+        badge = QLabel(str(index))
+        badge.setObjectName("queue_badge")
+        badge.setFixedSize(30, 30)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+
+        body = QVBoxLayout()
+        body.setSpacing(4)
+        title = QLabel(setup.get('sheet_name', ''))
+        title.setObjectName("queue_title")
+        body.addWidget(title)
+
+        header_a1 = setup.get('header_a1', '')
+        if header_a1 and header_a1 != setup.get('sheet_name', ''):
+            sub = QLabel(header_a1)
+            sub.setObjectName("queue_subtitle")
+            sub.setWordWrap(True)
+            body.addWidget(sub)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        var_chip = QLabel(f"{len(setup.get('variables_list', []))} ตัวแปร")
+        var_chip.setObjectName("queue_chip")
+        var_chip.setProperty("kind", "vars")
+        chips.addWidget(var_chip)
+        n_virtual = sum(1 for v in setup.get('variables_list', []) if v in self.virtual_variables)
+        if n_virtual:
+            v_chip = QLabel(f"ตัวแปรสร้างใหม่ {n_virtual}")
+            v_chip.setObjectName("queue_chip")
+            v_chip.setProperty("kind", "virtual")
+            chips.addWidget(v_chip)
+        if setup.get('filter_query'):
+            fq = setup['filter_query']
+            f_chip = QLabel(f"Filter: {fq if len(fq) <= 40 else fq[:37] + '...'}")
+            f_chip.setToolTip(fq)
+            f_chip.setObjectName("queue_chip")
+            f_chip.setProperty("kind", "filter")
+            chips.addWidget(f_chip)
+        chips.addStretch()
+        body.addLayout(chips)
+        h.addLayout(body, 1)
+        return card
+
     def update_template_queue_list_widget(self):
-        """อัปเดตรายการใน QListWidget ที่แสดงคิว"""
+        """อัปเดตรายการใน QListWidget ที่แสดงคิว (แสดงเป็นการ์ด)"""
         self.template_queue_list_widget.clear()
         for i, setup in enumerate(self.template_setups_for_queue):
-            filter_info = f" | Filter: {setup['filter_query']}" if setup['filter_query'] else ""
-            self.template_queue_list_widget.addItem(f"{i+1}. Sheet: {setup['sheet_name']} ({len(setup['variables_list'])} ตัวแปร){filter_info}")
+            item = QListWidgetItem()
+            widget = self._make_queue_item_widget(i + 1, setup)
+            hint = widget.sizeHint()
+            hint.setWidth(0)  # ให้กว้างตาม List ไม่ดัน scrollbar แนวนอน
+            item.setSizeHint(hint)
+            self.template_queue_list_widget.addItem(item)
+            self.template_queue_list_widget.setItemWidget(item, widget)
+        if not self.template_setups_for_queue:
+            placeholder = QListWidgetItem("ยังไม่มีรายการในคิว — ตั้งค่าด้านซ้ายแล้วกด \"เพิ่มรายการนี้ลงในคิว\" หรือโหลด Template")
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            placeholder.setForeground(QColor("#9aa3ad"))
+            self.template_queue_list_widget.addItem(placeholder)
+        if hasattr(self, "queue_count_label"):
+            self.queue_count_label.setText(f"{len(self.template_setups_for_queue)} รายการ")
 
     def remove_selected_from_template_queue(self):
         """ลบรายการที่เลือกออกจากคิว"""
@@ -1440,12 +1892,21 @@ class SPSSCorrelationApp(QMainWindow):
 
         # เตรียมข้อมูลสำหรับ sheet "StackingInstructions" (เฉพาะตัวแปรเสมือนที่ถูกใช้ในคิว)
         stacking_instructions = []
+        recode_jr_rows = [] # สำหรับ sheet "Recode Justright"
         saved_virtual_vars = set() # เก็บชื่อตัวแปรเสมือนที่ถูกบันทึกไปแล้ว เพื่อป้องกันการซ้ำ
-        
+
         for setup in self.template_setups_for_queue:
             for var_name in setup.get('variables_list', []):
                 if var_name in self.virtual_variables and var_name not in saved_virtual_vars:
                     recipe = self.virtual_variables[var_name]
+                    if recipe.get('type') == 'recode_justright':
+                        recode_jr_rows.append({
+                            'ข้อเดิม': (recipe.get('source_vars') or [''])[0],
+                            'ข้อใหม่': var_name,
+                            'Recode Scale': recipe.get('scale', 5),
+                        })
+                        saved_virtual_vars.add(var_name)
+                        continue
                     stacking_instructions.append({
                         'NewVariableName': var_name,
                         'Label': recipe.get('label', ''),
@@ -1454,6 +1915,7 @@ class SPSSCorrelationApp(QMainWindow):
                     })
                     saved_virtual_vars.add(var_name)
         df_stacks = pd.DataFrame(stacking_instructions)
+        df_recode_jr = pd.DataFrame(recode_jr_rows)
 
         file_name, _ = QFileDialog.getSaveFileName(self, "บันทึก Template", "", "Excel Files (*.xlsx)")
         if file_name:
@@ -1462,6 +1924,8 @@ class SPSSCorrelationApp(QMainWindow):
                     df_runs.to_excel(writer, index=False, sheet_name="RunSetups")
                     if not df_stacks.empty:
                         df_stacks.to_excel(writer, index=False, sheet_name="StackingInstructions")
+                    if not df_recode_jr.empty:
+                        df_recode_jr.to_excel(writer, index=False, sheet_name="Recode Justright")
                 QMessageBox.information(self, "บันทึกสำเร็จ", f"บันทึก Template ไปยัง {file_name} เรียบร้อยแล้ว")
             except Exception as e:
                 QMessageBox.critical(self, "เกิดข้อผิดพลาด", f"ไม่สามารถบันทึก Template ได้: {e}\nโปรดตรวจสอบว่าไฟล์ไม่ได้ถูกเปิดอยู่หรือมีสิทธิ์ในการเขียน")
@@ -1507,6 +1971,38 @@ class SPSSCorrelationApp(QMainWindow):
                 
                 if loaded_virtual_vars_count > 0:
                     QMessageBox.information(self, "สร้างตัวแปรต่อData", f"สร้างตัวแปร ต่อData จาก Template จำนวน {loaded_virtual_vars_count} ตัวแปรเรียบร้อยแล้ว")
+
+                # 1.5 โหลด Recode Justright (ถ้ามี)
+                loaded_recode_jr_count = 0
+                if 'Recode Justright' in all_sheets:
+                    df_rjr = all_sheets['Recode Justright']
+                    for _, row in df_rjr.iterrows():
+                        src = str(row.get('ข้อเดิม', '')).strip()
+                        new_name = str(row.get('ข้อใหม่', '')).strip()
+                        try:
+                            scale = int(float(row.get('Recode Scale', 5)))
+                        except Exception:
+                            scale = 5
+                        if scale not in (5, 7):
+                            scale = 5
+                        if not src or not new_name or src == 'nan' or new_name == 'nan':
+                            continue
+                        if new_name in self.virtual_variables or new_name in self.df.columns:
+                            print(f"Info: ตัวแปร '{new_name}' มีอยู่แล้ว จึงไม่ได้โหลดซ้ำจาก Template")
+                            continue
+                        if src not in self.df.columns:
+                            print(f"Warning: ข้าม Recode Justright '{new_name}' เนื่องจากไม่พบตัวแปรเดิม '{src}'")
+                            continue
+                        base_label = self.meta.column_names_to_labels.get(src, src) if self.meta and self.meta.column_names_to_labels else src
+                        self.virtual_variables[new_name] = {
+                            "label": f"{base_label} (Justright {scale} Scale)",
+                            "source_vars": [src],
+                            "type": "recode_justright",
+                            "scale": scale,
+                        }
+                        loaded_recode_jr_count += 1
+                if loaded_recode_jr_count > 0:
+                    QMessageBox.information(self, "สร้างตัวแปร Recode Justright", f"สร้างตัวแปร Recode Justright จาก Template จำนวน {loaded_recode_jr_count} ตัวแปรเรียบร้อยแล้ว")
 
 
                 # 2. โหลด Run Setups
@@ -1670,9 +2166,13 @@ class SPSSCorrelationApp(QMainWindow):
                                 break # หยุดการประมวลผลตัวแปรใน run นี้
                             
                             try:
-                                # Stack columns จาก DataFrame ที่ถูก filter แล้ว
-                                stacked_series = pd.concat([df_for_run[col] for col in source_vars], ignore_index=True)
-                                data_for_corr[var_name] = stacked_series
+                                if recipe.get('type') == 'recode_justright':
+                                    # Recode Justright จาก DataFrame ที่ถูก filter แล้ว (ไม่ต่อ Data)
+                                    data_for_corr[var_name] = recode_justright_series(df_for_run[source_vars[0]], recipe.get('scale', 5)).reset_index(drop=True)
+                                else:
+                                    # Stack columns จาก DataFrame ที่ถูก filter แล้ว
+                                    stacked_series = pd.concat([df_for_run[col] for col in source_vars], ignore_index=True)
+                                    data_for_corr[var_name] = stacked_series
                             except Exception as e_stack:
                                 # --- จุดที่แก้ไข: เปลี่ยน "empowers" เป็น "ตัวแปร" และ new_name เป็น var_name ---
                                 print(f"ข้ามตัวแปร '{var_name}' ในชีท '{sheet_name}' เนื่องจากสร้าง stacked variable ไม่สำเร็จ: {e_stack}")
