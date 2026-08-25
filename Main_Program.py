@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.81"
+CURRENT_VERSION = "1.1.82"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -710,12 +710,11 @@ PROGRAMS = [
     },
     {
         "id": "โปรแกรม เก็บ Norm",
-        "name": "เก็บ Norm V1",
+        "name": "KEY Norm New2026",
         "description": "โปรแกรมช่วย เก็บ Norm",
-        "type": "local_py_module",
-        "module_path": "Norm_2025", # <--- ปรับชื่อ module_path
-        "entry_point": "run_this_app",
-        "icon": "Norm.ico",
+        "type": "web_url",
+        "url": "https://keynorm.vercel.app", # <--- เปิดหน้าเว็บแทนโปรแกรม Norm_2025
+        "icon": "Newnorm2026.svg",
         "category": "Key Norm", # <--- เพิ่ม category
         "enabled": True
     },
@@ -2152,6 +2151,20 @@ class AppLauncher(QtWidgets.QMainWindow):
                 show_message(self, "Process Error", f"ไม่สามารถเริ่มโปรเซสสำหรับ '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
                 print(f"LAUNCHER_ERROR: Process creation failed for '{program_name}': {e}")
                 return
+
+        elif program_type == "web_url":
+            url = program_info.get("url")
+            if not url:
+                show_message(self, "Config Error", f"ไม่พบ 'url' สำหรับ '{program_name}'", QtWidgets.QMessageBox.Icon.Critical)
+                return
+            try:
+                import webbrowser
+                print(f"LAUNCHER_INFO: Opening URL for '{program_name}': {url}")
+                webbrowser.open_new_tab(url)
+            except Exception as e:
+                show_message(self, "เกิดข้อผิดพลาด", f"ไม่สามารถเปิดลิงก์ '{program_name}' ได้:\n{e}", QtWidgets.QMessageBox.Icon.Critical)
+                print(f"LAUNCHER_ERROR: Could not open URL for '{program_name}': {e}")
+            return
 
         elif program_type == "external_exe":
             command = program_info.get("command")
