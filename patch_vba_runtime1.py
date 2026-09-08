@@ -1,0 +1,17 @@
+from pathlib import Path
+
+p = Path("tmp_bs_xlsm_build/BrandSenseVBA.bas")
+s = p.read_text(encoding="utf-8")
+s = s.replace('Private Const LOW_MODEL_N As Long = 30', 'Private Const LOW_MODEL_N As Long = 30\nPrivate mStage As String')
+s = s.replace('UpdateStatus "กำลังอ่าน Rawdata และ Setting ภายใน Excel...", RGB(255, 242, 204)', 'mStage = "Read Rawdata / Setting"\n    UpdateStatus "กำลังอ่าน Rawdata และ Setting ภายใน Excel...", RGB(255, 242, 204)')
+s = s.replace('UpdateStatus "กำลังแปลง Wide เป็น Long Format...", RGB(221, 235, 247)', 'mStage = "Build Long / QC"\n    UpdateStatus "กำลังแปลง Wide เป็น Long Format...", RGB(221, 235, 247)')
+s = s.replace('UpdateStatus "กำลังคำนวณ Factor / Regression / Summary...", RGB(226, 239, 218)', 'mStage = "Write outputs"\n    UpdateStatus "กำลังคำนวณ Factor / Regression / Summary...", RGB(226, 239, 218)')
+s = s.replace('UpdateStatus "ผิดพลาด: " & Err.Description, RGB(255, 199, 206)', 'UpdateStatus "ผิดพลาดที่ " & mStage & ": " & Err.Description, RGB(255, 199, 206)')
+s = s.replace('attrTotal = CountMapped(mapS) + CountMapped(mapP): pTotal = CountMapped(mapP)', 'attrTotal = sN + pN: pTotal = pN')
+s = s.replace('    For g = 1 To groupNames.Count\n        outRow = outRow + 1', '    For g = 1 To groupNames.Count\n        mStage = "Summary group " & g & "/" & groupNames.Count & " - " & CStr(groupNames(g))\n        outRow = outRow + 1')
+s = s.replace('    Set resp = CreateObject("Scripting.Dictionary")', '    mStage = "Group scan - " & filterName\n    Set resp = CreateObject("Scripting.Dictionary")', 1)
+s = s.replace('    On Error Resume Next\n    If regN >= 4 Then', '    mStage = "Factor/Regression - " & filterName\n    On Error Resume Next\n    If regN >= 4 Then', 1)
+s = s.replace('    sMeans = CategoryMeans', '    mStage = "Category means - " & filterName\n    sMeans = CategoryMeans', 1)
+s = s.replace('    WriteCorrelationRow ws, outRow, col, lng.EVal', '    mStage = "Correlations - " & filterName\n    WriteCorrelationRow ws, outRow, col, lng.EVal', 1)
+s = s.replace('    WriteAgreeRow ws, outRow, col, st.AgreeS', '    mStage = "Agree/T2B - " & filterName\n    WriteAgreeRow ws, outRow, col, st.AgreeS', 1)
+p.write_text(s, encoding="utf-8")

@@ -20,6 +20,7 @@ import json
 import inspect
 import traceback
 from scipy.linalg import inv, eigh
+from scipy.optimize import linear_sum_assignment
 from sklearn.preprocessing import StandardScaler
 import time
 
@@ -530,6 +531,7 @@ class SpssProcessorApp(QMainWindow):
         self.id_vars = []
         self.last_excel_filepath = None
         self.original_filepath = None
+        self.current_settings_filepath = None
         self.agree_json_filepath_override = None
         self.save_all_sheets_var = _BoolVar(value=True)
         self.t2b_choice_var = _Var(value="5+4")
@@ -561,9 +563,27 @@ class SpssProcessorApp(QMainWindow):
         self._sample_size_approx = False
         self._respondent_key = _UNSET
 
+        # --- Long-format QC review state ---
+        self._qc_original_a_df = None
+        self._qc_full_transformed_df = None
+        self.qc_candidates_df = pd.DataFrame()
+        self.qc_excluded_df = pd.DataFrame()
+        self._qc_use_model_safeguards = False
+        self._model_warning_groups = []
+
         # --- Worker thread state ---
         self._worker = None
         self._ui = {}
+
+        # --- Multi-Setting batch queue state ---
+        self._settings_batch_active = False
+        self._settings_batch_files = []
+        self._settings_batch_index = 0
+        self._settings_batch_current = None
+        self._settings_batch_results = []
+        self._settings_batch_last_output = None
+        self._settings_batch_qc_policy = None
+        self._settings_batch_model_safeguards = None
 
         # --- GUI Setup ---
         self.setup_gui()
@@ -914,7 +934,15 @@ class SpssProcessorApp(QMainWindow):
     # -----------------------------------------------------------------
     def update_status(self, text, bootstyle="info"):
         """อัปเดตข้อความสถานะ (เรียกจาก thread ไหนก็ได้)"""
-        self.sig_status.emit(str(text), str(bootstyle))
+        text = str(text)
+        if getattr(self, '_settings_batch_active', False):
+            total = len(self._settings_batch_files)
+            current = min(self._settings_batch_index + 1, total)
+            filename = os.path.basename(
+                self._settings_batch_current or '')
+            text = (
+                f"[คิว {current}/{total}] {filename} — {text}")
+        self.sig_status.emit(text, str(bootstyle))
 
     def _apply_status_ui(self, text, bootstyle):
         color_map = {
@@ -996,6 +1024,10 @@ class SpssProcessorApp(QMainWindow):
 
     def _unlock_ui(self):
         """คืนสถานะปุ่มตามที่จำไว้"""
+        # Batch keeps every control locked between worker stages/jobs.
+        # Controls are restored once the whole queue is finished.
+        if getattr(self, '_settings_batch_active', False):
+            return
         for name, was_enabled in getattr(
                 self, '_btn_state', {}).items():
             getattr(self, name).setEnabled(was_enabled)
@@ -1331,6 +1363,7 @@ class SpssProcessorApp(QMainWindow):
         self.id_vars = []
         self.last_excel_filepath = None
         self.original_filepath = None
+        self.current_settings_filepath = None
         self.agree_json_filepath_override = None
         self.t2b_choice_var.set("5+4")
         self.index1_labels = {}
@@ -1360,6 +1393,12 @@ class SpssProcessorApp(QMainWindow):
         self._weak_model_groups = []
         self._sample_size_approx = False
         self._respondent_key = _UNSET
+        self._qc_original_a_df = None
+        self._qc_full_transformed_df = None
+        self.qc_candidates_df = pd.DataFrame()
+        self.qc_excluded_df = pd.DataFrame()
+        self._qc_use_model_safeguards = False
+        self._model_warning_groups = []
         self._ui = {}
         self.log_text = None
 
@@ -1385,21 +1424,256 @@ class SpssProcessorApp(QMainWindow):
     # ===================================================================
     # WORKFLOWS
     # ===================================================================
+    def _ask_settings_run_mode(self):
+        """ถามว่าจะรัน Setting หนึ่งไฟล์หรือหลายไฟล์ต่อคิว"""
+        dlg, vl = self._build_notice_dialog(
+            'question',
+            "เลือกรูปแบบการรัน Setting",
+            "ทีละ Job: เลือก Setting 1 ไฟล์และรันตามปกติ\n"
+            "หลาย Job: เลือก Setting หลายไฟล์ แล้วระบบจะรันเรียงตามคิว"
+        )
+
+        choice = {'value': None}
+        bar = QHBoxLayout()
+        bar.setSpacing(10)
+
+        btn_single = QPushButton("  ทีละ Job  ")
+        btn_single.setStyleSheet(_BTN_STYLES["outline"])
+        btn_single.setMinimumHeight(42)
+        btn_single.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_single.clicked.connect(
+            lambda: (choice.update(value='single'), dlg.accept()))
+        bar.addWidget(btn_single, 1)
+
+        btn_batch = QPushButton("  หลาย Job  ")
+        btn_batch.setStyleSheet(_BTN_STYLES["danger"])
+        btn_batch.setMinimumHeight(42)
+        btn_batch.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_batch.clicked.connect(
+            lambda: (choice.update(value='batch'), dlg.accept()))
+        bar.addWidget(btn_batch, 1)
+        vl.addLayout(bar)
+
+        btn_cancel = QPushButton("ยกเลิก")
+        btn_cancel.setStyleSheet(_BTN_STYLES["outline"])
+        btn_cancel.setMinimumHeight(32)
+        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_cancel.clicked.connect(dlg.reject)
+        vl.addWidget(btn_cancel)
+
+        dlg.adjustSize()
+        self._center_toplevel(dlg)
+        dlg.exec()
+        return choice['value']
+
+    def _clear_settings_batch_state(self):
+        """ล้าง state คิวโดยไม่แตะ state งานวิเคราะห์ปัจจุบัน"""
+        self._settings_batch_active = False
+        self._settings_batch_files = []
+        self._settings_batch_index = 0
+        self._settings_batch_current = None
+        self._settings_batch_results = []
+        self._settings_batch_last_output = None
+        self._settings_batch_qc_policy = None
+        self._settings_batch_model_safeguards = None
+
+    def _begin_settings_batch(self, settings_files):
+        """เริ่มคิว Setting หลายไฟล์ตามลำดับที่ file dialog ส่งกลับ"""
+        files = [os.path.normpath(p) for p in settings_files if p]
+        if not files:
+            self.update_status("ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
+            return
+
+        self.reset_state()
+        self._settings_batch_active = True
+        self._settings_batch_files = files
+        self._settings_batch_index = 0
+        self._settings_batch_current = files[0]
+        self._settings_batch_results = []
+        self._settings_batch_last_output = None
+        self._settings_batch_qc_policy = None
+        self._settings_batch_model_safeguards = None
+        self._lock_ui()
+        self.update_status(
+            f"เตรียมเริ่มคิวทั้งหมด {len(files)} Job", "info")
+        QTimer.singleShot(50, self._start_next_settings_batch_job)
+
+    def _start_next_settings_batch_job(self):
+        """โหลด Setting/SAV ของ Job ปัจจุบัน แล้วเริ่ม workflow เดิม"""
+        if not self._settings_batch_active:
+            return
+        if self._settings_batch_index >= len(self._settings_batch_files):
+            self._finish_settings_batch()
+            return
+
+        settings_path = self._settings_batch_files[
+            self._settings_batch_index]
+        self._settings_batch_current = settings_path
+        self.reset_state()
+
+        number = self._settings_batch_index + 1
+        total = len(self._settings_batch_files)
+        filename = os.path.basename(settings_path)
+        self.show_log_panel(
+            f"คิว {number}/{total} — {filename}")
+        self.log_message("=" * 58)
+        self.log_message(
+            f"เริ่ม Job {number}/{total}: {settings_path}")
+        self.log_message("=" * 58)
+
+        try:
+            spss_path = self._load_settings_file(
+                settings_path, require_pathfile=True)
+            self.log_message(
+                f"✓ โหลด Setting สำเร็จ → {spss_path}")
+            self.load_spss_file(
+                filepath=spss_path, raise_on_error=True)
+            self.log_message(
+                f"✓ โหลด SPSS สำเร็จ ({len(self.df):,} แถว)")
+        except Exception as e:
+            self._settings_batch_fail_current(
+                "โหลด Setting/SPSS", str(e))
+            return
+
+        self.run_processing_with_loaded_settings()
+
+    def _settings_batch_fail_current(self, stage, message):
+        """บันทึก Job ที่พัง แล้วเดินคิวต่อโดยไม่หยุดทั้งชุด"""
+        settings_path = self._settings_batch_current or ''
+        self.stop_progress()
+        self.log_message("")
+        self.log_message(
+            f"✗ Job ล้มเหลวในขั้น {stage}: {message}")
+        self._settings_batch_results.append({
+            'setting': settings_path,
+            'ok': False,
+            'stage': stage,
+            'message': str(message),
+            'output': None,
+        })
+        self._advance_settings_batch()
+
+    def _on_settings_batch_transform_failed(self, message, _tb_text):
+        self._settings_batch_fail_current(
+            "Compute C / แปลงข้อมูล", message)
+
+    def _on_settings_batch_analysis_failed(self, message, _tb_text):
+        self._settings_batch_fail_current(
+            "วิเคราะห์ / ส่งออก Excel", message)
+
+    def _complete_settings_batch_job(
+            self, final_output, final_message, notices=None):
+        """เก็บผล Job สำเร็จและเดินไป Setting ถัดไป"""
+        settings_path = self._settings_batch_current or ''
+        self._settings_batch_last_output = final_output
+        self._settings_batch_results.append({
+            'setting': settings_path,
+            'ok': True,
+            'stage': 'complete',
+            'message': final_message,
+            'output': self.last_excel_filepath,
+            'notices': list(notices or []),
+        })
+        self.log_message("")
+        self.log_message(
+            f"✓ Job เสร็จสมบูรณ์ → {self.last_excel_filepath}")
+        self._advance_settings_batch()
+
+    def _advance_settings_batch(self):
+        self._settings_batch_index += 1
+        QTimer.singleShot(150, self._start_next_settings_batch_job)
+
+    def _restore_controls_after_settings_batch(self):
+        """เปิด controls กลับเมื่อทั้งคิวจบ"""
+        self.btn_start_process.setEnabled(True)
+        self.btn_load_settings_process.setEnabled(True)
+        self.btn_reanalyze.setEnabled(True)
+
+        has_data = self.transformed_df is not None
+        self.btn_analyze_export.setEnabled(has_data)
+        self.btn_define_labels.setEnabled(has_data)
+        self.btn_save_settings.setEnabled(
+            has_data and bool(
+                self.c_vars_to_compute
+                or any(self.vars_to_transform.values())))
+        self.filter_entry.setEnabled(has_data)
+
+    def _finish_settings_batch(self):
+        """สรุปผลทั้งคิวครั้งเดียว โดยไม่เด้ง dialog ระหว่าง Job"""
+        results = list(self._settings_batch_results)
+        last_output = self._settings_batch_last_output
+        total = len(self._settings_batch_files)
+        successes = [r for r in results if r.get('ok')]
+        failures = [r for r in results if not r.get('ok')]
+
+        self._settings_batch_active = False
+        self._settings_batch_current = None
+        self.stop_progress()
+        self._restore_controls_after_settings_batch()
+
+        if last_output is not None:
+            self.display_analysis_tabs(last_output)
+
+        lines = []
+        for idx, result in enumerate(results, 1):
+            name = os.path.basename(result.get('setting', ''))
+            if result.get('ok'):
+                output = result.get('output') or ''
+                lines.append(
+                    f"{idx}. ✓ {name}\n   {output}")
+            else:
+                lines.append(
+                    f"{idx}. ✗ {name} [{result.get('stage', '')}]\n"
+                    f"   {result.get('message', '')}")
+
+        detail = (
+            f"รันครบ {total} Job\n"
+            f"สำเร็จ {len(successes)} | ไม่สำเร็จ {len(failures)}"
+        )
+        if lines:
+            detail += "\n\n" + "\n".join(lines)
+
+        if failures:
+            self.update_status(
+                f"คิวเสร็จ: สำเร็จ {len(successes)}/{total} Job",
+                "warning")
+            self._msg_warn(
+                "รันคิว Setting เสร็จแล้ว", detail)
+        else:
+            self.update_status(
+                f"คิวเสร็จสมบูรณ์ {len(successes)}/{total} Job",
+                "success")
+            self._msg_success(
+                "รันคิว Setting เสร็จสมบูรณ์", detail)
+
     def start_full_process(self):
         """Workflow 1: เริ่มต้นกระบวนการแบบเลือกตัวแปรเองทั้งหมด"""
+        self._clear_settings_batch_state()
         self.reset_state()
         if not self.load_spss_file():
             return
         self.open_c_variable_selector()
 
     def start_process_with_settings(self):
-        """เริ่มต้นกระบวนการโดยโหลดการตั้งค่าและไฟล์ SPSS อัตโนมัติ"""
-        self.reset_state()
-        if not self._prompt_before_settings():
-            self.update_status("ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
+        """โหลด Setting แบบหนึ่ง Job หรือหลาย Job ต่อคิว"""
+        self._clear_settings_batch_state()
+        mode = self._ask_settings_run_mode()
+        if mode is None:
+            self.update_status("ยกเลิกการเลือกโหมด Setting", "warning")
             return
 
         self.update_status("กำลังรอเลือกไฟล์การตั้งค่า...")
+        if mode == 'batch':
+            settings_files, _ = QFileDialog.getOpenFileNames(
+                self, "เลือกไฟล์การตั้งค่าหลาย Job", "",
+                "Excel Settings File (*.xlsx)")
+            if not settings_files:
+                self.update_status(
+                    "ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
+                return
+            self._begin_settings_batch(settings_files)
+            return
+
         settings_filepath, _ = QFileDialog.getOpenFileName(
             self, "เลือกไฟล์การตั้งค่า", "",
             "Excel Settings File (*.xlsx)")
@@ -1407,6 +1681,7 @@ class SpssProcessorApp(QMainWindow):
             self.update_status("ยกเลิกการเลือกไฟล์ตั้งค่า", "warning")
             return
 
+        self.reset_state()
         try:
             spss_filepath_from_settings = self._load_settings_file(
                 settings_filepath,
@@ -1416,9 +1691,10 @@ class SpssProcessorApp(QMainWindow):
             self.reset_state()
             return
 
-        self.update_status(f"โหลดตั้งค่าสำเร็จ. กำลังโหลดไฟล์ SPSS...", "info")
-
-        if not self.load_spss_file(filepath=spss_filepath_from_settings):
+        self.update_status(
+            "โหลดตั้งค่าสำเร็จ. กำลังโหลดไฟล์ SPSS...", "info")
+        if not self.load_spss_file(
+                filepath=spss_filepath_from_settings):
             self.reset_state()
             return
 
@@ -1428,6 +1704,7 @@ class SpssProcessorApp(QMainWindow):
         """
         Workflow 3: โหลดไฟล์ที่ผ่านการประมวลผลแล้ว (Compute C) เพื่อวิเคราะห์ซ้ำ
         """
+        self._clear_settings_batch_state()
         mode = self._ask_reanalyze_mode()
         if mode is None:
             self.update_status("ยกเลิกการวิเคราะห์ซ้ำ", "warning")
@@ -2181,8 +2458,12 @@ class SpssProcessorApp(QMainWindow):
             "success")
         return True
 
-    def load_spss_file(self, filepath=None):
-        """โหลดไฟล์ SPSS ดั้งเดิม โดยรับ Path หรือเปิด Dialog"""
+    def load_spss_file(self, filepath=None, raise_on_error=False):
+        """โหลดไฟล์ SPSS ดั้งเดิม โดยรับ Path หรือเปิด Dialog
+
+        raise_on_error=True is used by a batch queue so one failed job can
+        be recorded and the next Setting can continue without a modal dialog.
+        """
         if filepath is None:
             self.update_status("กำลังรอเลือกไฟล์ SPSS...")
             filepath, _ = QFileDialog.getOpenFileName(
@@ -2194,6 +2475,9 @@ class SpssProcessorApp(QMainWindow):
 
         if not os.path.exists(filepath):
             self.update_status("ไฟล์ SPSS ไม่พบ", "danger")
+            if raise_on_error:
+                raise FileNotFoundError(
+                    f"ไม่พบไฟล์ SPSS ที่ระบุ: {filepath}")
             self._msg_error("ไม่พบไฟล์ที่ระบุ", filepath)
             return False
 
@@ -2213,8 +2497,11 @@ class SpssProcessorApp(QMainWindow):
             return True
         except Exception as e:
             self.update_status("โหลดไฟล์ผิดพลาด", "danger")
-            self._msg_error("โหลดไฟล์ไม่สำเร็จ", str(e))
             self.stop_progress()
+            if raise_on_error:
+                raise RuntimeError(
+                    f"โหลดไฟล์ SPSS ไม่สำเร็จ: {e}") from e
+            self._msg_error("โหลดไฟล์ไม่สำเร็จ", str(e))
             self.reset_state()
             return False
 
@@ -2307,6 +2594,7 @@ class SpssProcessorApp(QMainWindow):
             return vals
 
         self.update_status("กำลังโหลดการตั้งค่า...")
+        self.current_settings_filepath = os.path.abspath(settings_filepath)
         xls = pd.ExcelFile(settings_filepath)
 
         if 'Settings' not in xls.sheet_names:
@@ -3153,7 +3441,20 @@ class SpssProcessorApp(QMainWindow):
 
     def run_processing_with_loaded_settings(self):
         self._snapshot_ui_inputs()
-        self.show_log_panel("กำลังประมวลผลข้อมูล (จากไฟล์ตั้งค่า)...")
+        if self._settings_batch_active:
+            number = self._settings_batch_index + 1
+            total = len(self._settings_batch_files)
+            filename = os.path.basename(
+                self._settings_batch_current or '')
+            title = (
+                f"คิว {number}/{total} — ประมวลผล {filename}")
+        else:
+            title = "กำลังประมวลผลข้อมูล (จากไฟล์ตั้งค่า)..."
+        self.show_log_panel(title)
+        if self._settings_batch_active:
+            self.log_message(
+                f"กำลังรันคิว {number}/{total}: {filename}")
+            self.log_message("")
         self.start_progress()
 
         def _done(_result):
@@ -3162,18 +3463,23 @@ class SpssProcessorApp(QMainWindow):
             self.update_status(
                 "ประมวลผลข้อมูลสำเร็จ. เริ่มการวิเคราะห์และส่งออกอัตโนมัติ...",
                 "info")
-            self.btn_analyze_export.setEnabled(True)
-            self.btn_define_labels.setEnabled(True)
-            self.btn_save_settings.setEnabled(True)
-            self.filter_entry.setEnabled(True)
+            if not self._settings_batch_active:
+                self.btn_analyze_export.setEnabled(True)
+                self.btn_define_labels.setEnabled(True)
+                self.btn_save_settings.setEnabled(True)
+                self.filter_entry.setEnabled(True)
             QTimer.singleShot(
                 100,
                 lambda: self.run_analysis_and_export(automated=True))
 
+        on_error = (
+            self._on_settings_batch_transform_failed
+            if self._settings_batch_active
+            else self._on_transform_failed)
         self._run_in_thread(
             lambda: self._transform_pipeline(with_compute_c=True),
             _done,
-            self._on_transform_failed)
+            on_error)
 
     # ===================================================================
     # PROCESSING LOGIC (Back-end)
@@ -3243,6 +3549,11 @@ class SpssProcessorApp(QMainWindow):
 
     def _recode_a_variables_logic(self):
         a_vars_to_process = self.vars_to_transform.get('A', [])
+        original_a_cols = [
+            c for c in a_vars_to_process if c in self.df.columns]
+        self._qc_original_a_df = (
+            self.df[original_a_cols].copy()
+            if original_a_cols else None)
         self.za_cols = []
         if not a_vars_to_process:
             return True
@@ -3382,6 +3693,9 @@ class SpssProcessorApp(QMainWindow):
 
             self.transformed_df = self.transformed_df[[c for c in final_ordered_cols if c in self.transformed_df.columns]]
             self._respondent_key = _UNSET   # ข้อมูลเปลี่ยน ต้องตรวจใหม่
+            self._qc_full_transformed_df = self.transformed_df.copy()
+            self.qc_candidates_df = pd.DataFrame()
+            self.qc_excluded_df = pd.DataFrame()
             self._build_compute_sav_metadata(maps)
             return True
         except RuntimeError:
@@ -3983,6 +4297,662 @@ class SpssProcessorApp(QMainWindow):
         self._center_toplevel(dlg)
         dlg.exec()
 
+    def _qc_identifier_column(self):
+        """เลือกคอลัมน์รหัสผู้ตอบสำหรับจับคู่ Wide -> Long Format"""
+        if self.df is None:
+            return None
+        for col in ['SBJNUM', 'KEY', 'RESPID', 'ResponseID', 'ID']:
+            if col in self.df.columns \
+                    and self.df[col].notna().all() \
+                    and not self.df[col].duplicated().any():
+                return col
+        for col in self.id_vars:
+            if col in self.df.columns \
+                    and self.df[col].notna().all() \
+                    and not self.df[col].duplicated().any():
+                return col
+        return None
+
+    def _build_long_qc_candidates(self):
+        """สร้างรายการ QC จาก Wide Rawdata แต่ระบุเป้าหมายเป็น ID+Index1"""
+        columns = [
+            'SBJNUM', 'KEY', 'Index1', 'Index1_Label',
+            'QC_Level', 'QC_Reason', 'A_Original',
+            'Attribute_Count', 'Attribute_Total',
+            'P_Count', 'P_Total', 'Default_Selected',
+            '_QC_ID_COLUMN', '_QC_ID_VALUE', '_QC_RAW_ROW']
+        empty = pd.DataFrame(columns=columns)
+        if self.df is None or self.df.empty \
+                or self._qc_original_a_df is None:
+            return empty
+
+        id_col = self._qc_identifier_column()
+        if not id_col:
+            self.log_message(
+                'QC: ไม่พบรหัสผู้ตอบที่ไม่ซ้ำ จึงไม่สามารถจับคู่กับ Long Format')
+            return empty
+
+        a_map = {}
+        for var in self.vars_to_transform.get('A', []):
+            match = re.search(r'#(\d+)$', str(var).strip())
+            if match and var in self.df.columns:
+                a_map[int(match.group(1))] = var
+
+        attr_map = {}
+        p_map = {}
+        for kind in ['S', 'P']:
+            for raw_var in self.vars_to_transform.get(kind, []):
+                var = str(raw_var).strip()
+                match = re.search(r'#(\d+)\$(\d+)$', var)
+                if not match or var not in self.df.columns:
+                    continue
+                index_code = int(match.group(2))
+                attr_map.setdefault(index_code, []).append(var)
+                if kind == 'P':
+                    p_map.setdefault(index_code, []).append(var)
+
+        records = []
+        for index_code, a_var in sorted(a_map.items()):
+            attr_vars = list(dict.fromkeys(attr_map.get(index_code, [])))
+            p_vars = list(dict.fromkeys(p_map.get(index_code, [])))
+            if not attr_vars or not p_vars \
+                    or a_var not in self._qc_original_a_df.columns:
+                continue
+
+            a_values = pd.to_numeric(
+                self._qc_original_a_df[a_var], errors='coerce')
+            attr_count = self.df[attr_vars].apply(
+                pd.to_numeric, errors='coerce').fillna(0).gt(0).sum(axis=1)
+            p_count = self.df[p_vars].apply(
+                pd.to_numeric, errors='coerce').fillna(0).gt(0).sum(axis=1)
+            attr_total = len(attr_vars)
+            p_total = len(p_vars)
+            p_threshold = max(1, int(np.ceil(p_total * 0.85)))
+            attr_threshold = max(1, int(np.ceil(attr_total * 0.90)))
+            low_awareness_attr_threshold = max(
+                1, int(np.ceil(attr_total * 0.85)))
+
+            # Q1=1 with any attribute is contradictory. Q1=2 is only
+            # Hard when endorsement is extreme; smaller counts stay valid.
+            hard_low_awareness = (
+                (a_values.eq(1) & attr_count.gt(0)) |
+                (a_values.eq(2) & attr_count.ge(
+                    low_awareness_attr_threshold)))
+            hard_loyal_no_attribute = (
+                a_values.between(6, 8) & attr_count.eq(0))
+            review_broad = (
+                a_values.le(3) & p_count.ge(p_threshold))
+            review_overendorse = (
+                a_values.eq(3) & attr_count.ge(attr_threshold))
+            any_candidate = (
+                hard_low_awareness | hard_loyal_no_attribute |
+                review_broad | review_overendorse)
+
+            for raw_row in self.df.index[any_candidate]:
+                reasons = []
+                is_hard = False
+                if bool(hard_low_awareness.loc[raw_row]):
+                    is_hard = True
+                    reasons.append(
+                        f'Q1=1 แต่เลือก Attribute หรือ Q1=2 แต่เลือกสูงผิดปกติ '
+                        f'({int(attr_count.loc[raw_row])}/{attr_total})')
+                if bool(hard_loyal_no_attribute.loc[raw_row]):
+                    is_hard = True
+                    reasons.append(
+                        'Q1=6–8 แต่ไม่เลือก Attribute เลย')
+                if bool(review_broad.loc[raw_row]):
+                    reasons.append(
+                        f'Q1≤3 แต่เลือก P สูง ({int(p_count.loc[raw_row])}/{p_total})')
+                if bool(review_overendorse.loc[raw_row]):
+                    reasons.append(
+                        f'Q1=3 แต่เลือก Attribute เกือบทั้งหมด '
+                        f'({int(attr_count.loc[raw_row])}/{attr_total})')
+
+                records.append({
+                    'SBJNUM': self.df.at[raw_row, 'SBJNUM']
+                        if 'SBJNUM' in self.df.columns else np.nan,
+                    'KEY': self.df.at[raw_row, 'KEY']
+                        if 'KEY' in self.df.columns else np.nan,
+                    'Index1': int(index_code),
+                    'Index1_Label': str(
+                        self.index1_labels.get(index_code, '')),
+                    'QC_Level': 'Hard QC' if is_hard else 'Review',
+                    'QC_Reason': ' | '.join(reasons),
+                    'A_Original': a_values.loc[raw_row],
+                    'Attribute_Count': int(attr_count.loc[raw_row]),
+                    'Attribute_Total': attr_total,
+                    'P_Count': int(p_count.loc[raw_row]),
+                    'P_Total': p_total,
+                    'Default_Selected': bool(is_hard),
+                    '_QC_ID_COLUMN': id_col,
+                    '_QC_ID_VALUE': self.df.at[raw_row, id_col],
+                    '_QC_RAW_ROW': raw_row,
+                })
+
+        if not records:
+            return empty
+        result = pd.DataFrame(records)
+        result['_level_order'] = result['QC_Level'].map(
+            {'Hard QC': 0, 'Review': 1}).fillna(2)
+        result['_id_sort'] = result[id_col].astype(str) \
+            if id_col in result.columns else \
+            result['_QC_ID_VALUE'].astype(str)
+        result = result.sort_values(
+            ['_level_order', 'Index1', '_id_sort']) \
+            .drop(columns=['_level_order', '_id_sort']) \
+            .reset_index(drop=True)
+        return result
+
+    def _restore_qc_full_long_data(self):
+        """คืน Long Format เต็มก่อนใช้ policy QC รอบใหม่"""
+        if self._qc_full_transformed_df is None:
+            if self.transformed_df is None:
+                return
+            self._qc_full_transformed_df = self.transformed_df.copy()
+        self.transformed_df = self._qc_full_transformed_df.copy()
+        self._respondent_key = _UNSET
+        self.qc_excluded_df = pd.DataFrame()
+
+    def _apply_qc_candidate_rows(self, selected_rows):
+        """ตัดเฉพาะคู่ respondent+Index1 ที่เลือกออกจาก Long Format"""
+        self._restore_qc_full_long_data()
+        if self.transformed_df is None or not selected_rows:
+            return 0
+
+        selected = self.qc_candidates_df.iloc[
+            sorted(set(int(i) for i in selected_rows))].copy()
+        remove_mask = pd.Series(
+            False, index=self.transformed_df.index)
+        removed_by_candidate = []
+        for _, row in selected.iterrows():
+            id_col = row['_QC_ID_COLUMN']
+            if id_col not in self.transformed_df.columns \
+                    or 'Index1' not in self.transformed_df.columns:
+                removed_by_candidate.append(0)
+                continue
+            row_mask = (
+                self.transformed_df[id_col].eq(row['_QC_ID_VALUE']) &
+                pd.to_numeric(
+                    self.transformed_df['Index1'], errors='coerce')
+                .eq(int(row['Index1'])))
+            removed_by_candidate.append(int(row_mask.sum()))
+            remove_mask |= row_mask
+
+        selected['Rows_Removed'] = removed_by_candidate
+        selected['QC_Action'] = 'Excluded from Long Format'
+        selected['Setting_File'] = os.path.basename(
+            self.current_settings_filepath or
+            self._settings_batch_current or '')
+        export_cols = [
+            'Setting_File', 'SBJNUM', 'KEY', 'Index1', 'Index1_Label',
+            'QC_Level', 'QC_Reason', 'A_Original',
+            'Attribute_Count', 'Attribute_Total', 'P_Count', 'P_Total',
+            'Rows_Removed', 'QC_Action']
+        self.qc_excluded_df = selected[
+            [c for c in export_cols if c in selected.columns]
+        ].reset_index(drop=True)
+        removed = int(remove_mask.sum())
+        self.transformed_df = self.transformed_df.loc[
+            ~remove_mask].reset_index(drop=True)
+        self._respondent_key = _UNSET
+        self.log_message(
+            f'QC: ตัด Long Format {removed} แถว '
+            f'จาก {len(selected)} คู่ SBJNUM+Index1')
+        return removed
+
+    def _build_analysis_groups(self, primary_filter, cross_filter,
+                               dataframe=None):
+        """Build the exact group frames used by Factor/Regression."""
+        df_for_analysis = (
+            self.transformed_df if dataframe is None else dataframe)
+        groups = OrderedDict()
+        if df_for_analysis is None:
+            return groups
+
+        all_cols = list(df_for_analysis.columns)
+        if primary_filter and primary_filter not in all_cols:
+            primary_filter = ""
+        if cross_filter and cross_filter not in all_cols:
+            cross_filter = ""
+        if primary_filter and primary_filter == cross_filter:
+            raise RuntimeError(
+                "Filter หลัก และ Filter ไขว้ ต้องเป็นคนละคอลัมน์")
+
+        groups['Overall'] = df_for_analysis
+        primary_values = []
+        if primary_filter:
+            primary_values = sorted(
+                df_for_analysis[primary_filter].dropna().unique())
+            for p_val in primary_values:
+                name = self._format_filter_val(primary_filter, p_val)
+                groups[name] = df_for_analysis[
+                    df_for_analysis[primary_filter] == p_val]
+
+        if cross_filter:
+            cross_values = sorted(
+                df_for_analysis[cross_filter].dropna().unique())
+            for c_val in cross_values:
+                cross_name = self._format_filter_val(
+                    cross_filter, c_val)
+                if cross_name not in groups:
+                    groups[cross_name] = df_for_analysis[
+                        df_for_analysis[cross_filter] == c_val]
+
+                if primary_filter:
+                    for p_val in primary_values:
+                        nested_name = (
+                            f"{self._format_filter_val(primary_filter, p_val)}"
+                            f"+{self._format_filter_val(cross_filter, c_val)}")
+                        groups[nested_name] = df_for_analysis[
+                            (df_for_analysis[primary_filter] == p_val) &
+                            (df_for_analysis[cross_filter] == c_val)]
+
+        return groups
+
+    @staticmethod
+    def _factor_mapping_details(abs_loadings, resolve_collisions=False):
+        """Return factor mapping plus duplicate-primary-factor details.
+
+        Legacy mode preserves the original dict-comprehension overwrite.
+        Safeguard mode uses a one-to-one maximum-loading assignment, but only
+        when a collision is actually present.
+        """
+        primary_factor_map = abs_loadings.idxmax(axis=1)
+        collision_factors = OrderedDict()
+        for factor_name in abs_loadings.columns:
+            variables = [
+                var for var, factor in primary_factor_map.items()
+                if factor == factor_name]
+            if len(variables) > 1:
+                collision_factors[factor_name] = variables
+
+        variable_to_factor = primary_factor_map.to_dict()
+        # Deliberately preserve the former behavior in normal mode.
+        factor_to_variable = {
+            factor: variable
+            for variable, factor in primary_factor_map.items()}
+
+        if resolve_collisions and collision_factors:
+            loading_matrix = abs_loadings.to_numpy(dtype=float)
+            if np.isfinite(loading_matrix).all():
+                row_idx, col_idx = linear_sum_assignment(
+                    -loading_matrix)
+                variable_to_factor = {
+                    abs_loadings.index[row]: abs_loadings.columns[col]
+                    for row, col in zip(row_idx, col_idx)}
+                factor_to_variable = {
+                    factor: variable
+                    for variable, factor
+                    in variable_to_factor.items()}
+
+        return factor_to_variable, variable_to_factor, collision_factors
+
+    @staticmethod
+    def _rotated_factor_loadings(df_factor):
+        """Fit the same Equamax model used by the production analysis."""
+        fa_rotated = FactorAnalyzer(
+            n_factors=4,
+            rotation='equamax',
+            method='principal',
+            rotation_kwargs={
+                'kappa': 0.5, 'max_iter': 250})
+        fa_rotated.fit(df_factor)
+        original_loadings = fa_rotated.loadings_
+        ss_loadings = np.sum(original_loadings ** 2, axis=0)
+        spss_col_order = np.argsort(ss_loadings)[::-1]
+        rotated = original_loadings[:, spss_col_order]
+        return pd.DataFrame(
+            rotated,
+            index=df_factor.columns,
+            columns=[f'Factor{i + 1}' for i in range(4)])
+
+    def _preview_model_warnings(self, cross_filters):
+        """Preview Low-N and mapping collisions before the user confirms QC."""
+        columns = [
+            'Filter', 'Reg_N', 'Model_Warning', 'Confirmed_Action']
+        if self.transformed_df is None or self.transformed_df.empty:
+            return pd.DataFrame(columns=columns)
+
+        factor_vars = ['N_S', 'N_P', 'N_C', 'N_E']
+        regression_cols = factor_vars + ['ZA']
+        if not all(
+                col in self.transformed_df.columns
+                for col in regression_cols):
+            return pd.DataFrame(columns=columns)
+
+        records = []
+        seen = set()
+        for cross_filter in (cross_filters or ['']):
+            groups = self._build_analysis_groups(
+                'Index1', cross_filter, self.transformed_df)
+            for name, df_group in groups.items():
+                if name in seen or df_group.empty:
+                    continue
+                seen.add(name)
+
+                regression_n = int(len(
+                    df_group[regression_cols].dropna()))
+                reasons = []
+                actions = []
+                if regression_n < self._MODEL_LOW_N:
+                    reasons.append(
+                        f'Low N: Reg={regression_n} < '
+                        f'{self._MODEL_LOW_N}')
+                    actions.append('แสดงคำเตือนใน Log หลังรัน')
+
+                collisions = OrderedDict()
+                factor_data = df_group[factor_vars].dropna()
+                if len(factor_data) >= len(factor_vars):
+                    try:
+                        loadings = self._rotated_factor_loadings(
+                            factor_data)
+                        _, _, collisions =                             self._factor_mapping_details(
+                                loadings.abs(),
+                                resolve_collisions=False)
+                    except Exception:
+                        # The production analysis remains the source of truth.
+                        collisions = OrderedDict()
+
+                if collisions:
+                    collision_text = '; '.join(
+                        f"{factor}: {'/'.join(variables)}"
+                        for factor, variables in collisions.items())
+                    reasons.append(
+                        f'Factor mapping ชนกัน ({collision_text})')
+                    actions.append(
+                        'จับคู่ N_S/N_P/N_C/N_E แบบไม่ซ้ำ')
+
+                if reasons:
+                    records.append({
+                        'Filter': name,
+                        'Reg_N': regression_n,
+                        'Model_Warning': ' | '.join(reasons),
+                        'Confirmed_Action': ' + '.join(actions),
+                    })
+
+        return pd.DataFrame(records, columns=columns)
+
+    def _show_long_qc_dialog(self, candidates, model_warnings):
+        """Show case-exclusion and model-risk review in one confirmation."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle('ตรวจคุณภาพคำตอบและโมเดลก่อนวิเคราะห์')
+        dlg.setModal(True)
+        dlg.resize(1180, 740)
+        dlg.setMinimumSize(960, 600)
+        dlg.setStyleSheet(_DLG_QSS)
+        vl = QVBoxLayout(dlg)
+        vl.setContentsMargins(22, 18, 22, 18)
+        vl.setSpacing(10)
+
+        hard_n = int((candidates['QC_Level'] == 'Hard QC').sum())
+        review_n = int((candidates['QC_Level'] == 'Review').sum())
+        warning_n = len(model_warnings)
+        collision_n = int(model_warnings['Model_Warning'].astype(
+            str).str.contains('Factor mapping').sum())             if not model_warnings.empty else 0
+        low_n = int(model_warnings['Model_Warning'].astype(
+            str).str.contains('Low N').sum())             if not model_warnings.empty else 0
+
+        heading = QLabel('🔎 ตรวจคุณภาพ Long Format และความเสี่ยงของโมเดล')
+        heading.setStyleSheet(
+            'color:#C62828; font-size:18px; font-weight:700;')
+        vl.addWidget(heading)
+        detail = QLabel(
+            f'เคสคัดกรอง {len(candidates)} คู่ SBJNUM + Index1 '
+            f'(Hard QC {hard_n} | Review {review_n})\n'
+            f'กลุ่มโมเดลที่ต้องเตือน {warning_n} กลุ่ม '
+            f'(Low N {low_n} | Factor collision {collision_n})\n'
+            'กด “ยืนยันตัด/ปรับ Mapping” เพื่อ 1) ตัดเฉพาะรายการที่เลือก '
+            '2) แก้ Factor ที่ชนกันให้ N_S/N_P/N_C/N_E ไม่ซ้ำ '
+            '3) แจ้งกลุ่มเสี่ยงใน Log หลังรัน (ไม่เพิ่มคอลัมน์ใน Output)\n'
+            'กด “รันปกติ” เพื่อใช้ข้อมูลและวิธี Mapping เดิมทุกประการ '
+            'Rawdata ต้นฉบับจะไม่ถูกแก้ไข')
+        detail.setWordWrap(True)
+        detail.setStyleSheet('color:#555; font-size:12px;')
+        vl.addWidget(detail)
+
+        tabs = QTabWidget()
+
+        case_page = QWidget()
+        case_layout = QVBoxLayout(case_page)
+        case_layout.setContentsMargins(6, 8, 6, 6)
+        table = QTableWidget(len(candidates), 8)
+        table.setHorizontalHeaderLabels([
+            'ตัด', 'ระดับ', 'SBJNUM', 'Index1', 'A เดิม',
+            'Attribute', 'P', 'เหตุผล'])
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        for row_idx, row in candidates.iterrows():
+            check_item = QTableWidgetItem('')
+            check_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled |
+                Qt.ItemFlag.ItemIsUserCheckable |
+                Qt.ItemFlag.ItemIsSelectable)
+            check_item.setCheckState(
+                Qt.CheckState.Checked if row['Default_Selected']
+                else Qt.CheckState.Unchecked)
+            table.setItem(row_idx, 0, check_item)
+            values = [
+                row['QC_Level'], row.get('SBJNUM', ''),
+                int(row['Index1']), row['A_Original'],
+                f"{int(row['Attribute_Count'])}/{int(row['Attribute_Total'])}",
+                f"{int(row['P_Count'])}/{int(row['P_Total'])}",
+                row['QC_Reason']]
+            for col_idx, value in enumerate(values, 1):
+                item = QTableWidgetItem(str(value))
+                if row['QC_Level'] == 'Hard QC':
+                    item.setBackground(QColor('#FFEBEE'))
+                else:
+                    item.setBackground(QColor('#FFF8E1'))
+                table.setItem(row_idx, col_idx, item)
+        header = table.horizontalHeader()
+        for col in range(7):
+            header.setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        case_layout.addWidget(table)
+        tabs.addTab(case_page, f'เคสคัดกรอง ({len(candidates)})')
+
+        warning_page = QWidget()
+        warning_layout = QVBoxLayout(warning_page)
+        warning_layout.setContentsMargins(6, 8, 6, 6)
+        warning_note = QLabel(
+            'รายการนี้ประเมินจาก Long Format ก่อนตัดเคส '
+            f'โดยใช้เกณฑ์ Low N เมื่อ Reg < {self._MODEL_LOW_N} '
+            'และตรวจ Factor ที่ตัวแปรเลือก Factor หลักซ้ำกัน')
+        warning_note.setWordWrap(True)
+        warning_note.setStyleSheet('color:#6D4C41; font-size:11px;')
+        warning_layout.addWidget(warning_note)
+
+        warning_table = QTableWidget(len(model_warnings), 4)
+        warning_table.setHorizontalHeaderLabels([
+            'กลุ่ม', 'Reg N', 'คำเตือน', 'เมื่อกดยืนยัน'])
+        warning_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        warning_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        warning_table.setAlternatingRowColors(True)
+        warning_table.verticalHeader().setVisible(False)
+        for row_idx, row in model_warnings.iterrows():
+            values = [
+                row['Filter'], int(row['Reg_N']),
+                row['Model_Warning'], row['Confirmed_Action']]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if 'Factor mapping' in str(row['Model_Warning']):
+                    item.setBackground(QColor('#FFEBEE'))
+                else:
+                    item.setBackground(QColor('#FFF8E1'))
+                warning_table.setItem(row_idx, col_idx, item)
+        warning_header = warning_table.horizontalHeader()
+        warning_header.setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        warning_header.setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        warning_header.setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        warning_header.setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch)
+        warning_layout.addWidget(warning_table)
+        tabs.addTab(warning_page, f'คำเตือนโมเดล ({warning_n})')
+        vl.addWidget(tabs, 1)
+
+        select_bar = QHBoxLayout()
+        btn_hard = QPushButton('เลือกเฉพาะ Hard QC')
+        btn_all = QPushButton('เลือกเคสทั้งหมด')
+        btn_clear = QPushButton('ล้างการเลือกเคส')
+        for btn in [btn_hard, btn_all, btn_clear]:
+            btn.setStyleSheet(_BTN_STYLES['outline'])
+            btn.setMinimumHeight(32)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setEnabled(len(candidates) > 0)
+            select_bar.addWidget(btn)
+        select_bar.addStretch()
+        apply_remaining = QCheckBox(
+            'ใช้ตัวเลือกและโหมดปรับ Mapping แบบเดียวกันกับ Job ที่เหลือ')
+        apply_remaining.setVisible(self._settings_batch_active)
+        select_bar.addWidget(apply_remaining)
+        vl.addLayout(select_bar)
+
+        def _set_checks(mode):
+            for i, row in candidates.iterrows():
+                checked = mode == 'all' or (
+                    mode == 'hard' and row['QC_Level'] == 'Hard QC')
+                table.item(i, 0).setCheckState(
+                    Qt.CheckState.Checked if checked
+                    else Qt.CheckState.Unchecked)
+
+        btn_hard.clicked.connect(lambda: _set_checks('hard'))
+        btn_all.clicked.connect(lambda: _set_checks('all'))
+        btn_clear.clicked.connect(lambda: _set_checks('none'))
+
+        result = {
+            'choice': None,
+            'selected': [],
+            'policy': None,
+            'apply_remaining': False,
+            'use_model_safeguards': False,
+        }
+
+        def _normal():
+            result.update(
+                choice='normal',
+                selected=[],
+                policy='normal',
+                apply_remaining=apply_remaining.isChecked(),
+                use_model_safeguards=False)
+            dlg.accept()
+
+        def _selected():
+            rows = [
+                i for i in range(len(candidates))
+                if table.item(i, 0).checkState()
+                == Qt.CheckState.Checked]
+            hard_rows = [
+                i for i, row in candidates.iterrows()
+                if row['QC_Level'] == 'Hard QC']
+            if set(rows) == set(range(len(candidates))) and rows:
+                policy = 'all'
+            elif set(rows) == set(hard_rows) and rows:
+                policy = 'hard'
+            elif not rows:
+                policy = 'normal'
+            else:
+                policy = 'custom'
+            result.update(
+                choice='selected',
+                selected=rows,
+                policy=policy,
+                apply_remaining=(
+                    apply_remaining.isChecked() and
+                    policy in {'normal', 'hard', 'all'}),
+                use_model_safeguards=True)
+            dlg.accept()
+
+        actions = QHBoxLayout()
+        btn_cancel = QPushButton('ยกเลิก')
+        btn_cancel.setStyleSheet(_BTN_STYLES['outline'])
+        btn_normal = QPushButton('รันปกติ (วิธีเดิม)')
+        btn_normal.setStyleSheet(_BTN_STYLES['outline'])
+        btn_apply = QPushButton('ยืนยันตัด/ปรับ Mapping แล้วรันต่อ')
+        btn_apply.setStyleSheet(_BTN_STYLES['danger'])
+        for btn in [btn_cancel, btn_normal, btn_apply]:
+            btn.setMinimumHeight(42)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            actions.addWidget(btn, 1)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_normal.clicked.connect(_normal)
+        btn_apply.clicked.connect(_selected)
+        btn_apply.setDefault(True)
+        vl.addLayout(actions)
+
+        self._center_toplevel(dlg)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return result
+
+    def _prepare_long_qc_before_analysis(self, cross_filters):
+        """Confirm exclusions and optional model safeguards before analysis."""
+        self._restore_qc_full_long_data()
+        self._qc_use_model_safeguards = False
+        self.qc_candidates_df = self._build_long_qc_candidates()
+        model_warnings = self._preview_model_warnings(cross_filters)
+
+        policy = (
+            self._settings_batch_qc_policy
+            if self._settings_batch_active else None)
+        if policy in {'normal', 'hard', 'all'}:
+            self._qc_use_model_safeguards = bool(
+                self._settings_batch_model_safeguards)
+            if policy == 'normal':
+                selected_rows = []
+            elif policy == 'hard':
+                selected_rows = self.qc_candidates_df.index[
+                    self.qc_candidates_df['QC_Level']
+                    == 'Hard QC'].tolist()
+            else:
+                selected_rows = self.qc_candidates_df.index.tolist()
+            self._apply_qc_candidate_rows(selected_rows)
+            mode_text = (
+                'เปิด' if self._qc_use_model_safeguards else 'ปิด')
+            self.log_message(
+                f'QC: ใช้ policy จาก Job ก่อนหน้า = {policy}; '
+                f'Model safeguards = {mode_text}')
+            return True
+
+        if self.qc_candidates_df.empty and model_warnings.empty:
+            self.log_message(
+                'QC: ไม่พบเคสคัดกรองหรือคำเตือน Low N/Factor collision')
+            return True
+
+        result = self._show_long_qc_dialog(
+            self.qc_candidates_df, model_warnings)
+        if result is None:
+            return False
+
+        self._qc_use_model_safeguards = bool(
+            result['use_model_safeguards'])
+        if result['choice'] == 'normal':
+            self._restore_qc_full_long_data()
+            self.log_message(
+                'QC: ผู้ใช้เลือกรันปกติ ไม่ตัดเคสและใช้ Mapping เดิม')
+        else:
+            self._apply_qc_candidate_rows(result['selected'])
+            self.log_message(
+                'QC: เปิด one-to-one Factor Mapping และคำเตือนใน Log')
+
+        if self._settings_batch_active and result['apply_remaining']:
+            self._settings_batch_qc_policy = result['policy']
+            self._settings_batch_model_safeguards = bool(
+                result['use_model_safeguards'])
+            self.log_message(
+                f"QC: จะใช้ policy {result['policy']} และ Model safeguards "
+                f"กับ Job ที่เหลือ")
+        return True
+
     def run_analysis_and_export(self, automated=False):
         """เตรียมการบน main thread แล้วส่งงานหนักไปให้ worker thread"""
         if self.transformed_df is None:
@@ -3990,11 +4960,19 @@ class SpssProcessorApp(QMainWindow):
                 "ไม่พบข้อมูลที่แปลงแล้ว (Transformed Data)")
             return
 
-        self.update_status("กำลังเตรียมการวิเคราะห์...")
-
-        # snapshot ค่าจาก widget ก่อน แล้ว logic จะอ่านจาก snapshot เท่านั้น
+        # Snapshot filters first so the QC dialog can preview the exact
+        # Factor/Regression groups that will be analysed.
         self._snapshot_ui_inputs()
         cross_filters = self._cross_filters()
+
+        if not self._prepare_long_qc_before_analysis(cross_filters):
+            self.update_status("ยกเลิกการตรวจ QC", "warning")
+            if self._settings_batch_active:
+                self._settings_batch_fail_current(
+                    "ตรวจ QC", "ผู้ใช้ยกเลิกก่อนเริ่มวิเคราะห์")
+            return
+
+        self.update_status("กำลังเตรียมการวิเคราะห์...")
 
         if not cross_filters and not automated:
             ret = self._msg_ask(
@@ -4005,7 +4983,19 @@ class SpssProcessorApp(QMainWindow):
                 self.update_status("ยกเลิกโดยผู้ใช้", "warning")
                 return
 
-        self.show_log_panel("กำลังวิเคราะห์ข้อมูล...")
+        if self._settings_batch_active:
+            number = self._settings_batch_index + 1
+            total = len(self._settings_batch_files)
+            filename = os.path.basename(
+                self._settings_batch_current or '')
+            self.show_log_panel(
+                f"คิว {number}/{total} — วิเคราะห์ {filename}")
+            self.log_message(
+                f"กำลังวิเคราะห์และส่งออกคิว {number}/{total}: "
+                f"{filename}")
+            self.log_message("")
+        else:
+            self.show_log_panel("กำลังวิเคราะห์ข้อมูล...")
         self.start_progress()
 
         def _done(payload):
@@ -4027,6 +5017,19 @@ class SpssProcessorApp(QMainWindow):
                     f"⚠ {len(self._beta_zero_groups)} กลุ่มมี "
                     "B.S–B.E = 0 ทั้งหมด → Index = 0 ด้วย")
 
+            if self._model_warning_groups:
+                low_count = sum(
+                    'Low N' in item['warning']
+                    for item in self._model_warning_groups)
+                collision_count = sum(
+                    'collision' in item['warning'].lower()
+                    for item in self._model_warning_groups)
+                alerts.append(
+                    f"⚠ Model Warning {len(self._model_warning_groups)} กลุ่ม "
+                    f"(Low N {low_count} | "
+                    f"Factor collision {collision_count})\n"
+                    "     ดูรายละเอียดรายกลุ่มได้ที่ Log ด้านขวา")
+
             if self._weak_model_groups:
                 alerts.append(
                     f"⚠ {len(self._weak_model_groups)} กลุ่มที่โมเดลอธิบาย"
@@ -4040,11 +5043,22 @@ class SpssProcessorApp(QMainWindow):
                     "'ปัจจัยนี้ไม่สำคัญ'")
 
             info = []
+            if self.qc_excluded_df is not None \
+                    and not self.qc_excluded_df.empty:
+                info.append(
+                    f"ℹ QC ตัด {len(self.qc_excluded_df)} คู่ "
+                    "SBJNUM+Index1 ออกจาก Long Format")
             if self._beta_warnings:
                 info.append(
                     f"ℹ {len(self._beta_warnings)} กลุ่มมี beta ติดลบ "
                     "— แปลงเป็นค่าสัมบูรณ์ (ABS) ให้แล้ว B.S–B.E "
                     "จึงอยู่ในช่วง 0–100 ปกติ")
+
+            if self._settings_batch_active:
+                self._complete_settings_batch_job(
+                    final_output, final_message,
+                    notices=alerts + info)
+                return
 
             if alerts:
                 self._msg_warn(
@@ -4063,9 +5077,14 @@ class SpssProcessorApp(QMainWindow):
                 300,
                 lambda: self.display_analysis_tabs(final_output))
 
+        on_error = (
+            self._on_settings_batch_analysis_failed
+            if self._settings_batch_active
+            else None)
         self._run_in_thread(
             lambda: self._analysis_pipeline(cross_filters),
-            _done)
+            _done,
+            on_error)
 
     def _analysis_pipeline(self, cross_filters):
         """งานวิเคราะห์+ส่งออกทั้งหมด — รันบน worker thread เท่านั้น"""
@@ -4080,6 +5099,7 @@ class SpssProcessorApp(QMainWindow):
         self._beta_abs_used = False
         self._weak_beta_cells = []
         self._weak_model_groups = []
+        self._model_warning_groups = []
         self._sample_size_approx = False
         self._respondent_key = _UNSET
         start_time = time.time()
@@ -4163,7 +5183,10 @@ class SpssProcessorApp(QMainWindow):
                     )
                     self.log_message("   ✓ T2B สำเร็จ")
             except Exception as e:
-                self.log_message(f"   ⚠ ข้ามการคำนวณ T2B: {e}")
+                self.log_message(f"   T2B failed: {e}")
+                raise RuntimeError(
+                    f"Agree/T2B failed ({f_label}): {e}"
+                ) from e
             self.set_progress(current_step, total_steps)
 
             # --- Factor & Regression ---
@@ -4302,6 +5325,20 @@ class SpssProcessorApp(QMainWindow):
             self.log_message(
                 "   ใช้จำนวนแถวสูงสุดของ Index1 เดียวแทน "
                 "ซึ่งจะถูกต้องเมื่อผู้ตอบทุกคนตอบครบทุก Index1")
+
+        if self._model_warning_groups:
+            self.log_message("")
+            self.log_message(
+                f"⚠ Model safeguards: "
+                f"{len(self._model_warning_groups)} กลุ่มต้องระวัง")
+            for item in self._model_warning_groups[:15]:
+                self.log_message(
+                    f"    - {item['filter']}: "
+                    f"{item['warning']}")
+            if len(self._model_warning_groups) > 15:
+                self.log_message(
+                    f"    ... และอีก "
+                    f"{len(self._model_warning_groups) - 15} กลุ่ม")
 
         if self._beta_zero_groups:
             self.log_message("")
@@ -4506,8 +5543,21 @@ class SpssProcessorApp(QMainWindow):
                                     pass
 
                         summary_row_df['Index1'] = index1_val
-                        summary_row_df['SampleSize'] = \
-                            self._unique_sample_size(df_group)
+
+                        # Show respondent base and complete Regression rows
+                        # in one cell, for example "22 / Reg=4".
+                        base_n = self._unique_sample_size(df_group)
+                        regression_cols = [
+                            'N_S', 'N_P', 'N_C', 'N_E', 'ZA']
+                        if all(
+                                col in df_group.columns
+                                for col in regression_cols):
+                            regression_n = int(len(
+                                df_group[regression_cols].dropna()))
+                        else:
+                            regression_n = 0
+                        summary_row_df['SampleSize'] = (
+                            f"{base_n} / Reg={regression_n}")
                         summary_list.append(summary_row_df)
 
             if not summary_list:
@@ -4674,10 +5724,13 @@ class SpssProcessorApp(QMainWindow):
                 tr_col_lookup.get(str(v).strip(), str(v).strip())
                 for v in agree_p_vars
             ]
-            agree_cols_all = [
+            # Some settings list Q6#25-Q6#31 in both AgreeS and
+            # AgreeP. Select each source column once so pandas returns a
+            # Series, not a duplicate-column DataFrame, for AgreeP.
+            agree_cols_all = list(dict.fromkeys(
                 c for c in (resolved_agree_s + resolved_agree_p)
                 if c in df_group.columns
-            ]
+            ))
             dedup_keys = [
                 c for c in self.id_vars
                 if c in df_group.columns and c not in agree_cols_all
@@ -4736,28 +5789,8 @@ class SpssProcessorApp(QMainWindow):
         results_for_saving = OrderedDict()
         old_stdout = sys.stdout; sys.stdout = captured_output = io.StringIO()
         try:
-            groups_to_analyze = OrderedDict()
-            groups_to_analyze['Overall'] = df_for_analysis
-
-            primary_values = []
-            if primary_filter:
-                primary_values = sorted(df_for_analysis[primary_filter].dropna().unique())
-                for p_val in primary_values:
-                    filter_name = self._format_filter_val(primary_filter, p_val)
-                    groups_to_analyze[filter_name] = df_for_analysis[df_for_analysis[primary_filter] == p_val]
-
-            if cross_filter:
-                cross_values = sorted(df_for_analysis[cross_filter].dropna().unique())
-                for c_val in cross_values:
-                    filter_name_cross = self._format_filter_val(cross_filter, c_val)
-                    if filter_name_cross not in groups_to_analyze:
-                        groups_to_analyze[filter_name_cross] = df_for_analysis[df_for_analysis[cross_filter] == c_val]
-
-                    if primary_filter:
-                        for p_val in primary_values:
-                            nested_name = f"{self._format_filter_val(primary_filter, p_val)}+{self._format_filter_val(cross_filter, c_val)}"
-                            subset = df_for_analysis[(df_for_analysis[primary_filter] == p_val) & (df_for_analysis[cross_filter] == c_val)]
-                            groups_to_analyze[nested_name] = subset
+            groups_to_analyze = self._build_analysis_groups(
+                primary_filter, cross_filter, df_for_analysis)
 
             for name, df_group in groups_to_analyze.items():
                 sys.stdout.write(f"\n{'='*80}\n--- ผลการวิเคราะห์สำหรับ: {name} ---\n{'='*80}\n")
@@ -4788,15 +5821,24 @@ class SpssProcessorApp(QMainWindow):
           ต้องเก็บไว้แจ้งผู้ใช้ ไม่ใช่กลืนเงียบจนได้ Beta = 0 ทั้งไฟล์
         """
         try:
-            factor_scores_df, sorted_loadings_df, factor_to_variable_map = self.perform_factor_analysis(target_df)
+            (
+                factor_scores_df,
+                sorted_loadings_df,
+                factor_to_variable_map,
+                mapping_diagnostics,
+            ) = self.perform_factor_analysis(target_df)
             if factor_scores_df is not None:
                 analysis_df = target_df.join(factor_scores_df)
                 beta_df, beta_sorted_df, _, diagnostics = \
                     self.perform_regression_analysis(
                         analysis_df, factor_to_variable_map)
-                return {'loadings': sorted_loadings_df, 'beta': beta_df,
-                        'beta_sorted': beta_sorted_df,
-                        'diagnostics': diagnostics}
+                diagnostics.update(mapping_diagnostics)
+                return {
+                    'loadings': sorted_loadings_df,
+                    'beta': beta_df,
+                    'beta_sorted': beta_sorted_df,
+                    'diagnostics': diagnostics,
+                }
         except ValueError as e:
             print(f"\n!!! ข้อมูลไม่พอสำหรับกลุ่มนี้: {e}\n!!! ข้ามการวิเคราะห์กลุ่มนี้...\n")
             self._analysis_skipped.append((group_name, str(e)))
@@ -4964,7 +6006,7 @@ class SpssProcessorApp(QMainWindow):
 
         # คอลัมน์ข้อความด้านซ้ายกว้างพอให้อ่านหัวตารางออก
         for col_letter, width in (
-                ('A', 12), ('B', 30), ('C', 12), ('D', 22)):
+                ('A', 12), ('B', 30), ('C', 16), ('D', 22)):
             worksheet.column_dimensions[col_letter].width = width
 
         worksheet.freeze_panes = 'B2'
@@ -5058,7 +6100,8 @@ class SpssProcessorApp(QMainWindow):
             'SandP': '00B0F0',
             'Correspondence(S)': 'FF0000',
             'Correspondence(P)': 'FF0000',
-            'Rawdata': '7030A0'
+            'Rawdata': '7030A0',
+            'QC Excluded': 'FFC000'
         }
         for sname, color in tab_map.items():
             if sname in workbook.sheetnames:
@@ -5098,20 +6141,65 @@ class SpssProcessorApp(QMainWindow):
             template_rows = []
 
             diag_by_filter = {}
+            self._model_warning_groups = []
             for filter_name in summary_df['Filter']:
                 row_data = {'Filter': filter_name}
                 analysis_result = results_dict.get(filter_name)
+                diagnostics = None
 
-                if analysis_result and analysis_result.get('beta_sorted') is not None:
-                    betas = analysis_result['beta_sorted']['Beta'].to_dict()
+                if analysis_result and \
+                        analysis_result.get('beta_sorted') is not None:
+                    betas = analysis_result[
+                        'beta_sorted']['Beta'].to_dict()
                     for factor in expected_factors:
                         row_data[factor] = betas.get(factor, 0)
-                    if analysis_result.get('diagnostics'):
-                        diag_by_filter[filter_name] = \
-                            analysis_result['diagnostics']
+                    diagnostics = analysis_result.get('diagnostics')
+                    if diagnostics:
+                        diag_by_filter[filter_name] = diagnostics
                 else:
                     for factor in expected_factors:
                         row_data[factor] = 0
+
+                if self._qc_use_model_safeguards:
+                    warnings = []
+                    n_rows = (
+                        diagnostics.get('n_rows')
+                        if diagnostics else None)
+                    if n_rows is not None and \
+                            n_rows < self._MODEL_LOW_N:
+                        warnings.append(
+                            f'Low N: Reg={n_rows} < '
+                            f'{self._MODEL_LOW_N}')
+
+                    if diagnostics and diagnostics.get(
+                            'factor_collision_detected'):
+                        collision_parts = []
+                        for factor, variables in diagnostics.get(
+                                'factor_collisions', {}).items():
+                            collision_parts.append(
+                                f"{factor}: {'/'.join(variables)}")
+                        collision_text = '; '.join(collision_parts)
+                        if diagnostics.get(
+                                'factor_collision_corrected'):
+                            warnings.append(
+                                'Factor collision corrected'
+                                + (
+                                    f' ({collision_text})'
+                                    if collision_text else ''))
+                        else:
+                            warnings.append(
+                                'Factor collision detected'
+                                + (
+                                    f' ({collision_text})'
+                                    if collision_text else ''))
+
+                    warning_text = ' | '.join(warnings)
+                    if warnings:
+                        self._model_warning_groups.append({
+                            'filter': filter_name,
+                            'n': n_rows,
+                            'warning': warning_text,
+                        })
 
                 template_rows.append(row_data)
 
@@ -5147,11 +6235,17 @@ class SpssProcessorApp(QMainWindow):
 
             beta_cols_to_add = ['B.S', 'B.P', 'B.C', 'B.E']
             if 'Filter' in template_df.columns:
-                cols_to_drop = [col for col in beta_cols_to_add if col in summary_df.columns]
+                cols_to_drop = [
+                    col for col in beta_cols_to_add
+                    if col in summary_df.columns]
                 if cols_to_drop:
                     summary_df = summary_df.drop(columns=cols_to_drop)
 
-                summary_df = pd.merge(summary_df, template_df[['Filter'] + beta_cols_to_add], on='Filter', how='left')
+                summary_df = pd.merge(
+                    summary_df,
+                    template_df[['Filter'] + beta_cols_to_add],
+                    on='Filter',
+                    how='left')
 
             # เก็บค่า agree_* จาก Summary ลง JSON เฉพาะรอบปกติ
             # (โหมด Re-analyze ห้ามเขียนทับ JSON เดิม)
@@ -5175,9 +6269,7 @@ class SpssProcessorApp(QMainWindow):
                     if header is None: continue
 
                     format_str = None
-                    if header == 'SampleSize':
-                        format_str = '#,##0'
-                    elif header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
+                    if header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
                         (header.startswith(('S_', 'P_', 'E_')) and 'cor' not in header):
                         format_str = '0.00'
                     elif header.startswith('C_'):
@@ -5215,6 +6307,11 @@ class SpssProcessorApp(QMainWindow):
                 if rawdata_df is not None:
                     rawdata_df.to_excel(writer, sheet_name='Rawdata', index=False)
 
+                if self.qc_excluded_df is not None \
+                        and not self.qc_excluded_df.empty:
+                    self.qc_excluded_df.to_excel(
+                        writer, sheet_name='QC Excluded', index=False)
+
                 if not summary_only:
                     if not template_df.empty:
                         final_template_cols = ['Filter', 'N_S', 'N_P', 'N_C', 'N_E', 'Total', 'B.S', 'B.P', 'B.C', 'B.E']
@@ -5241,7 +6338,8 @@ class SpssProcessorApp(QMainWindow):
                     'SandP',
                     'Correspondence(S)',
                     'Correspondence(P)',
-                    'Rawdata']
+                    'Rawdata',
+                    'QC Excluded']
                 for idx, name in enumerate(desired):
                     if name in workbook.sheetnames:
                         workbook.move_sheet(
@@ -5255,6 +6353,11 @@ class SpssProcessorApp(QMainWindow):
 
             if saved_agree_json:
                 final_message += "\n\nบันทึก Agree Original JSON เรียบร้อยแล้ว"
+            if self.qc_excluded_df is not None \
+                    and not self.qc_excluded_df.empty:
+                final_message += (
+                    f"\n\nQC ตัด {len(self.qc_excluded_df)} คู่ "
+                    "SBJNUM+Index1 และบันทึกในชีท QC Excluded")
 
             self.update_status("บันทึก Excel สำเร็จ", "success")
             return final_message
@@ -5282,6 +6385,7 @@ class SpssProcessorApp(QMainWindow):
 
     # เกณฑ์บอกว่า "เลขนี้เชื่อไม่ได้" -- ไม่ได้ใช้ตัดหรือแก้ค่าใดๆ
     # ใช้แจ้งเตือนเท่านั้น เพื่อไม่ให้เอาเลขที่เป็น noise ไปตีความ
+    _MODEL_LOW_N = 30          # เตือนเมื่อ Regression N ต่ำกว่าเกณฑ์นี้
     _RELIABILITY_P = 0.05     # beta ที่ p เกินนี้ = แยกจากศูนย์ไม่ได้
     _RELIABILITY_R2 = 0.30    # R2 ต่ำกว่านี้ = โมเดลอธิบายกลุ่มนี้ไม่ได้
 
@@ -5424,33 +6528,105 @@ class SpssProcessorApp(QMainWindow):
     # CORE ANALYSIS LOGIC (UNCHANGED)
     # ===================================================================
     def perform_factor_analysis(self, target_df):
-        print("ส่วนที่ 1: การวิเคราะห์องค์ประกอบ (Factor Analysis)\n" + "-"*50 + "\n")
+        print(
+            "ส่วนที่ 1: การวิเคราะห์องค์ประกอบ (Factor Analysis)\n"
+            + "-" * 50 + "\n")
         factor_vars = ['N_S', 'N_P', 'N_C', 'N_E']
-        if not all(col in target_df.columns for col in factor_vars): raise KeyError(f"ไม่พบคอลัมน์สำหรับ Factor Analysis: {', '.join(factor_vars)}")
+        if not all(col in target_df.columns for col in factor_vars):
+            raise KeyError(
+                f"ไม่พบคอลัมน์สำหรับ Factor Analysis: "
+                f"{', '.join(factor_vars)}")
         df_factor = target_df[factor_vars].dropna().copy()
-        if len(df_factor) < len(factor_vars): raise ValueError("ข้อมูลไม่เพียงพอสำหรับ Factor Analysis หลังจากการลบค่าว่าง")
-        print(f"ข้อมูลที่ใช้ในการวิเคราะห์องค์ประกอบ: {len(df_factor)} แถว\n")
-        fa_rotated = FactorAnalyzer(n_factors=4, rotation='equamax', method='principal', rotation_kwargs={'kappa': 0.5, 'max_iter': 250}); fa_rotated.fit(df_factor)
-        original_loadings = fa_rotated.loadings_
-        ss_loadings = np.sum(original_loadings**2, axis=0)
-        spss_col_order = np.argsort(ss_loadings)[::-1]
-        L = original_loadings[:, spss_col_order]
-        print("Rotation: Rotated Component Matrix (Equamax - SPSS Compatible):")
-        loadings_rotated_df = pd.DataFrame(L, index=df_factor.columns, columns=[f'Factor{i+1}' for i in range(4)])
-        abs_loadings = loadings_rotated_df.abs(); primary_factor_map = abs_loadings.idxmax(axis=1)
-        factor_to_variable_map = {v: k for k, v in primary_factor_map.items()}
-        sort_list = sorted([(int(primary_factor_map[var].replace('Factor', '')), -abs_loadings.loc[var].max(), var) for var in abs_loadings.index])
-        sorted_loadings_df = loadings_rotated_df.loc[[var for _, _, var in sort_list]]
-        print(_df_map(sorted_loadings_df, lambda x: f"{x:.3f}" if abs(x) >= 0.4 else "")); print("\n" + "-"*50 + "\n")
+        if len(df_factor) < len(factor_vars):
+            raise ValueError(
+                "ข้อมูลไม่เพียงพอสำหรับ Factor Analysis หลังจากการลบค่าว่าง")
+        print(
+            f"ข้อมูลที่ใช้ในการวิเคราะห์องค์ประกอบ: "
+            f"{len(df_factor)} แถว\n")
+
+        loadings_rotated_df = self._rotated_factor_loadings(df_factor)
+        print(
+            "Rotation: Rotated Component Matrix "
+            "(Equamax - SPSS Compatible):")
+        abs_loadings = loadings_rotated_df.abs()
+        factor_to_variable_map, variable_to_factor_map, collisions =             self._factor_mapping_details(
+                abs_loadings,
+                resolve_collisions=self._qc_use_model_safeguards)
+
+        collision_details = {
+            factor: list(variables)
+            for factor, variables in collisions.items()}
+        collision_corrected = bool(
+            collisions and self._qc_use_model_safeguards
+            and len(factor_to_variable_map) == len(factor_vars))
+        if collisions:
+            text = '; '.join(
+                f"{factor}: {'/'.join(variables)}"
+                for factor, variables in collisions.items())
+            if collision_corrected:
+                print(
+                    "WARNING: Factor mapping collision detected "
+                    f"({text}); applied one-to-one assignment.")
+            elif self._qc_use_model_safeguards:
+                print(
+                    "WARNING: Factor mapping collision detected "
+                    f"({text}); one-to-one assignment was not safe, "
+                    "so legacy mapping was retained.")
+            else:
+                print(
+                    "WARNING: Factor mapping collision detected "
+                    f"({text}); normal mode keeps legacy mapping.")
+
+        sort_list = sorted([
+            (
+                int(variable_to_factor_map[var].replace('Factor', '')),
+                -abs_loadings.loc[var].max(),
+                var,
+            )
+            for var in abs_loadings.index])
+        sorted_loadings_df = loadings_rotated_df.loc[
+            [var for _, _, var in sort_list]]
+        print(_df_map(
+            sorted_loadings_df,
+            lambda x: f"{x:.3f}" if abs(x) >= 0.4 else ""))
+        print("\n" + "-" * 50 + "\n")
         print("คำนวณ Factor Scores ด้วยวิธี Anderson-Rubin (PCA)...\n")
-        Z = StandardScaler().fit_transform(df_factor); R = df_factor.corr().values; inv_R = inv(R)
-        temp_matrix = L.T @ inv_R @ L; eigvals, eigvecs = eigh(temp_matrix)
-        inv_sqrt_eigvals_arr = np.zeros_like(eigvals); positive_eigvals_mask = eigvals > 1e-12
-        inv_sqrt_eigvals_arr[positive_eigvals_mask] = 1.0 / np.sqrt(eigvals[positive_eigvals_mask])
-        inv_sqrt_temp = eigvecs @ np.diag(inv_sqrt_eigvals_arr) @ eigvecs.T
-        C_AR = inv_R @ L @ inv_sqrt_temp; factor_scores = Z @ C_AR
-        df_scores = pd.DataFrame(factor_scores, columns=[f'FAC{i+1}_1' for i in range(factor_scores.shape[1])], index=df_factor.index)
-        return df_scores, sorted_loadings_df, factor_to_variable_map
+
+        loadings_matrix = loadings_rotated_df.to_numpy()
+        standardized = StandardScaler().fit_transform(df_factor)
+        correlation = df_factor.corr().values
+        inv_correlation = inv(correlation)
+        temp_matrix = (
+            loadings_matrix.T @ inv_correlation @ loadings_matrix)
+        eigvals, eigvecs = eigh(temp_matrix)
+        inv_sqrt_eigvals_arr = np.zeros_like(eigvals)
+        positive_eigvals_mask = eigvals > 1e-12
+        inv_sqrt_eigvals_arr[positive_eigvals_mask] = (
+            1.0 / np.sqrt(eigvals[positive_eigvals_mask]))
+        inv_sqrt_temp = (
+            eigvecs @ np.diag(inv_sqrt_eigvals_arr) @ eigvecs.T)
+        score_coefficients = (
+            inv_correlation @ loadings_matrix @ inv_sqrt_temp)
+        factor_scores = standardized @ score_coefficients
+        df_scores = pd.DataFrame(
+            factor_scores,
+            columns=[
+                f'FAC{i + 1}_1'
+                for i in range(factor_scores.shape[1])],
+            index=df_factor.index)
+
+        mapping_diagnostics = {
+            'factor_collision_detected': bool(collisions),
+            'factor_collision_corrected': collision_corrected,
+            'factor_collisions': collision_details,
+            'factor_mapping': dict(factor_to_variable_map),
+        }
+        return (
+            df_scores,
+            sorted_loadings_df,
+            factor_to_variable_map,
+            mapping_diagnostics,
+        )
 
     def perform_regression_analysis(self, target_df, factor_to_variable_map):
         print("\nส่วนที่ 2: การวิเคราะห์การถดถอย (Regression Analysis)\n" + "-"*50 + "\n")

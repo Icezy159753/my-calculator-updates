@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.82"
+CURRENT_VERSION = "1.1.83"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -983,13 +983,13 @@ PROGRAMS = [
         "enabled": True
     },   
     {
-        "id": "Program ลบTotal+NA Table Lychee V1",
-        "name": "Program ลบTotal+NA Table Lychee V1",
+        "id": "Program ลบTotal+NA Table Lychee V2",
+        "name": "Program ลบTotal+NA Table Lychee V2",
         "description": "เอาไว้ลบตาราง Total+NA จากไฟล์ Excel",
         "type": "local_py_module",
-        "module_path": "150_Delete_NA_Lychee", # <--- ปรับชื่อ module_path
+        "module_path": "156_DeleteTotalNA", # <--- ปรับชื่อ module_path
         "entry_point": "run_this_app",
-        "icon": "Delete_NA.ico",
+        "icon": "Del_NA.png",
         "category": "Excel", # <--- เพิ่ม category
         "enabled": True
     },   
@@ -1035,6 +1035,17 @@ PROGRAMS = [
         "entry_point": "run_this_app",
         "icon": "Tranform.ico",
         "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },  
+    {
+        "id": "Program แปลง SPSS เป็น 01",
+        "name": "แปลง Rawdata SPSS เป็น 01",
+        "description": "เอาไว้แปลง SPSS เป็น SPSS หรือ Excel 01",
+        "type": "local_py_module",
+        "module_path": "155_TRF SPSS Excel 01", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "tft01.png",
+        "category": "SPSS", # <--- เพิ่ม category
         "enabled": True
     },  
 ]

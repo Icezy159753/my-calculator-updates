@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "output": "C:\\Users\\songklod\\Desktop\\Main_Program\\tmp_bs_xlsm_build\\test_runtime\\BrandSense_Engine_Input BS Output.xlsx",
+  "mode": "safe_all",
+  "setting": "setting_1.xlsx",
+  "raw_rows": 208,
+  "qc_candidates": 45,
+  "qc_excluded": 45,
+  "model_warnings": 8
+}
