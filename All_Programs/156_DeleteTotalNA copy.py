@@ -47,15 +47,12 @@ class ProcessResult:
     merged_areas_changed: int = 0
     total_columns_deleted: int = 0
     na_columns_deleted: int = 0
-    na_rows_deleted: int = 0
-    empty_rows_deleted: int = 0
 
     def summary(self) -> str:
         return (
             f"{self.sheets_scanned} ชีต · ยกเลิก Merge {self.merged_areas_changed} จุด · "
             f"ลบ TOTAL {self.total_columns_deleted} คอลัมน์ · "
-            f"ลบ NA {self.na_columns_deleted} คอลัมน์ · {self.na_rows_deleted} แถว · "
-            f"ลบแถวไม่มี Label/Frequency {self.empty_rows_deleted} แถว"
+            f"ลบ NA {self.na_columns_deleted} คอลัมน์"
         )
 
 
@@ -248,10 +245,6 @@ def _unmerge_from_index(ws: Any, addresses: list[str]) -> int:
                 default=0)
     if not first:
         return 0
-    header_row = _find_total_row(ws)
-    if header_row and first >= header_row:
-        # A merged statistic (e.g. Mean) is data, not a banner header.
-        return 0
     last_col = _last_value_column(ws, first - 1)
     count = 0
     selected = []
@@ -311,9 +304,6 @@ def _unmerge_and_shift_first_merged_row(ws: Any) -> int:
             break
 
     if first_merged_row == 0:
-        return 0
-    header_row = _find_total_row(ws)
-    if header_row and first_merged_row >= header_row:
         return 0
 
     reference_last_col = _last_value_column(ws, first_merged_row - 1)
@@ -478,185 +468,10 @@ def _delete_extra_total_and_na_columns(ws: Any, target_row: int) -> tuple[int, i
     return total_deleted, na_deleted
 
 
-def _delete_na_rows(ws: Any) -> int:
-    """Delete NA stub rows, including every row of a vertically merged label."""
-    last_row = int(ws.Range(f"B{int(ws.Rows.Count)}").End(XL_UP).Row)
-    raw = ws.Range(f"B1:B{last_row}").Value
-    values = ((raw,),) if last_row == 1 else raw
-    rows: set[int] = set()
-    for row, (value,) in enumerate(values, start=1):
-        if _cell_text(value).strip().upper() != "NA":
-            continue
-        cell = ws.Range(f"B{row}")
-        if bool(cell.MergeCells):
-            area = cell.MergeArea
-            first = int(area.Row)
-            end = first + int(area.Rows.Count) - 1
-        else:
-            first = end = row
-        rows.update(range(first, end + 1))
-
-    # Work upwards so earlier row numbers remain valid after each deletion.
-    for first, end in reversed(_contiguous_runs(sorted(rows))):
-        ws.Range(f"{first}:{end}").Delete()
-    return len(rows)
-
-
-def _delete_empty_label_frequency_rows(
-    ws: Any, header_row: int, merge_addresses: list[str] | None = None,
-    on_progress: Callable[[str], None] | None = None,
-) -> int:
-    """Remove empty data rows while preserving merged records and annotations."""
-    if not header_row:
-        return 0
-    # UsedRange can include formatting down to row 1,048,576. Find actual
-    # content (including formulas) instead of scanning those empty cells.
-    find_options = dict(What="*", After=ws.Range("A1"), LookIn=-4123,
-                        LookAt=2, SearchDirection=2, MatchCase=False,
-                        SearchFormat=False)
-    last_cell = ws.Cells.Find(SearchOrder=1, **find_options)
-    if last_cell is None:
-        return 0
-    last_row = int(last_cell.Row)
-    last_col = max(3, int(ws.Cells.Find(SearchOrder=2, **find_options).Column))
-    intervals: list[tuple[int, int]] = []
-    if merge_addresses is not None:
-        for address in merge_addresses:
-            _, first, _, _ = _address_span(address)
-            end = int(_ADDRESS_PART.fullmatch(address.split(":")[-1]).group(2))
-            if end > first:
-                intervals.append((first, end))
-        # Combine overlapping vertical merges; adjacent records stay separate.
-        combined: list[tuple[int, int]] = []
-        for first, end in sorted(intervals):
-            if combined and first <= combined[-1][1]:
-                combined[-1] = (combined[-1][0], max(end, combined[-1][1]))
-            else:
-                combined.append((first, end))
-        intervals = combined
-        for first, end in intervals:
-            if first <= last_row <= end:
-                last_row = end
-    else:
-        # Binary files use COM discovery, including the last merged tail.
-        for col in _merged_columns_in_row(ws, last_row, last_col):
-            area = ws.Range(_cell_ref(last_row, col)).MergeArea
-            last_row = max(last_row, int(area.Row) + int(area.Rows.Count) - 1)
-    rows: list[int] = []
-
-    def empty_or_zero(value: Any) -> bool:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return True
-        if isinstance(value, bool):
-            return False
-        try:
-            return float(value) == 0
-        except (TypeError, ValueError):
-            return False
-
-    for start in range(header_row + 1, last_row + 1, 256):
-        end = min(start + 255, last_row)
-        if on_progress is not None:
-            on_progress(f"ตรวจ Label/Frequency แถว {start}–{end}/{last_row}")
-        values = ws.Range(f"A{start}:{_column_letter(last_col)}{end}").Value
-        for row, record in enumerate(values, start):
-            if _cell_text(record[1]).strip():
-                continue
-            # Keep notes in the code column; numeric category codes are allowed.
-            code = _cell_text(record[0]).strip()
-            if code:
-                try:
-                    float(code)
-                except ValueError:
-                    continue
-            if not all(empty_or_zero(value) for value in record[2:]):
-                continue
-            rows.append(row)
-    candidates = set(rows)
-    if merge_addresses is not None:
-        # All merge geometry is already in memory: no per-cell COM calls.
-        for first, end in intervals:
-            if first > last_row:
-                break
-            if not all(row in candidates for row in range(first, end + 1)):
-                candidates.difference_update(range(first, end + 1))
-        rows = sorted(candidates)
-        for first, end in reversed(_contiguous_runs(rows)):
-            if on_progress is not None:
-                on_progress(f"ลบแถว {first}–{end}")
-            ws.Range(f"{first}:{end}").Delete()
-        return len(rows)
-    rows = []
-    visited: set[int] = set()
-    for row in sorted(candidates):
-        if row in visited:
-            continue
-        # Treat all rows connected by vertical merges as one record. Inspect
-        # its head AND continuation rows, including significance annotations.
-        group: set[int] = set()
-        pending = [row]
-        seen_areas: set[str] = set()
-        while pending:
-            current = pending.pop()
-            if current in group:
-                continue
-            group.add(current)
-            for col in _merged_columns_in_row(ws, current, last_col):
-                area = ws.Range(_cell_ref(current, col)).MergeArea
-                address = str(area.Address)
-                if address in seen_areas:
-                    continue
-                seen_areas.add(address)
-                first = int(area.Row)
-                end = first + int(area.Rows.Count) - 1
-                pending.extend(r for r in range(first, end + 1) if r not in group)
-        visited.update(group)
-        if group <= candidates:
-            rows.extend(group)
-    for first, end in reversed(_contiguous_runs(rows)):
-        ws.Range(f"{first}:{end}").Delete()
-    return len(rows)
-
-
-def _normalize_table_spacing(ws: Any) -> None:
-    """Keep one empty worksheet row before each subsequent exported table."""
-    last_row = int(ws.Range(f"A{int(ws.Rows.Count)}").End(XL_UP).Row)
-    if last_row < 2:
-        return
-    values = ws.Range(f"A1:A{last_row}").Value
-    starts = [row for row, (value,) in enumerate(values, 1)
-              if _cell_text(value).strip().lower() == "contents"]
-    if len(starts) < 2:
-        return
-    used = ws.UsedRange
-    last_col = int(used.Column) + int(used.Columns.Count) - 1
-    for start in reversed(starts[1:]):
-        previous_start = max(row for row in starts if row < start)
-        first_blank = start
-        for row in range(start - 1, previous_start, -1):
-            span = ws.Range(_row_span_ref(row, 1, last_col))
-            raw = span.Value
-            record = (raw,) if last_col == 1 else raw[0]
-            # Never mistake a blank continuation of Mean/data for a spacer.
-            if span.MergeCells is not False or any(
-                _cell_text(value).strip() for value in record
-            ):
-                break
-            first_blank = row
-        blank_count = start - first_blank
-        if blank_count > 1:
-            ws.Range(f"{first_blank + 1}:{start - 1}").Delete()
-        elif blank_count == 0:
-            ws.Range(f"{start}:{start}").Insert()
-            ws.Range(f"{start}:{start}").Clear()
-            ws.Range(f"{start}:{start}").RowHeight = ws.StandardHeight
-
-
 def process_workbook(
     excel: Any,
     workbook_path: Path,
     on_sheet: Callable[[float, str], None] | None = None,
-    delete_empty_rows: bool = False,
 ) -> ProcessResult:
     result = ProcessResult()
     book = None
@@ -699,16 +514,7 @@ def process_workbook(
         excel.Calculate()
 
         for position, ws in enumerate(sheets, start=1):
-            def detail(message: str) -> None:
-                if on_sheet is not None:
-                    on_sheet(done / steps, f"{ws.Name} · ชีต {position}/{total_sheets} · {message}")
-
-            detail("กำลังตรวจตาราง")
             target_row = _find_total_row(ws)
-            if delete_empty_rows:
-                result.empty_rows_deleted += _delete_empty_label_frequency_rows(
-                    ws, target_row, merge_index.get(ws.Name), detail
-                )
             if target_row:
                 _add_left_borders_to_previous_row(ws, target_row)
                 total_deleted, na_deleted = _delete_extra_total_and_na_columns(
@@ -716,14 +522,9 @@ def process_workbook(
                 )
                 result.total_columns_deleted += total_deleted
                 result.na_columns_deleted += na_deleted
-            na_rows_deleted = _delete_na_rows(ws)
-            result.na_rows_deleted += na_rows_deleted
-            _normalize_table_spacing(ws)
-            if target_row or na_rows_deleted:
                 # Refresh cross-sheet formulas before inspecting the next sheet.
-                detail("กำลังคำนวณสูตร")
                 excel.Calculate()
-            step(f"ลบคอลัมน์ TOTAL/NA และแถว NA · ชีต {position}/{total_sheets}")
+            step(f"ลบคอลัมน์ TOTAL/NA · ชีต {position}/{total_sheets}")
 
         excel.Calculation = XL_CALCULATION_AUTOMATIC
         book.Save()
@@ -788,7 +589,6 @@ def process_files(
     jobs: list[dict[str, Any]],
     work_dir: Path,
     progress: Callable[[float, str, str, str], None],
-    delete_empty_rows: bool = False,
 ) -> None:
     import pythoncom
     import pywintypes
@@ -828,9 +628,7 @@ def process_files(
                 ) -> None:
                     progress(base + fraction, origin, "processing", detail)
 
-                result = process_workbook(
-                    excel, working_copy, on_sheet, delete_empty_rows=delete_empty_rows
-                )
+                result = process_workbook(excel, working_copy, on_sheet)
                 job["processed_path"] = str(working_copy)
                 job["result"] = result.summary()
                 job["status"] = "ready"
@@ -891,10 +689,9 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPixmap, QPainter, QPen
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -904,8 +701,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QStyle,
-    QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -1050,13 +845,11 @@ class BatchWorker(QObject):
     finished = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, mode: str, jobs: list[dict[str, Any]], work_dir: Path,
-                 delete_empty_rows: bool = False):
+    def __init__(self, mode: str, jobs: list[dict[str, Any]], work_dir: Path):
         super().__init__()
         self.mode = mode
         self.jobs = jobs
         self.work_dir = work_dir
-        self.delete_empty_rows = delete_empty_rows
 
     def run(self) -> None:
         try:
@@ -1064,8 +857,7 @@ class BatchWorker(QObject):
                 count, path, status, detail
             )
             if self.mode == "process":
-                process_files(self.jobs, self.work_dir, callback,
-                              delete_empty_rows=self.delete_empty_rows)
+                process_files(self.jobs, self.work_dir, callback)
             else:
                 save_processed_files(self.jobs, callback)
             self.finished.emit(self.mode)
@@ -1100,40 +892,6 @@ class DropCard(QFrame):
         paths = [url.toLocalFile() for url in event.mimeData().urls()]
         self.files_dropped.emit(paths)
         event.acceptProposedAction()
-
-
-class VisibleCheckBox(QCheckBox):
-    """Draw a contrasting indicator independently of the Windows theme."""
-
-    def __init__(self, text: str) -> None:
-        super().__init__(text)
-        self.setStyleSheet(
-            "QCheckBox { spacing: 10px; padding: 6px 0; }"
-            "QCheckBox::indicator { width: 20px; height: 20px; }"
-        )
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
-        rect = self.style().subElementRect(
-            QStyle.SubElement.SE_CheckBoxIndicator, option, self
-        ).adjusted(1, 1, -1, -1)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = QColor("#2563EB" if self.isChecked() else "#526580")
-        if not self.isEnabled():
-            color = QColor("#94A3B8")
-        painter.setPen(QPen(color, 2))
-        painter.setBrush(color if self.isChecked() else QColor("#FFFFFF"))
-        painter.drawRoundedRect(rect, 3, 3)
-        if self.isChecked():
-            painter.setPen(QPen(QColor("#FFFFFF"), 2.5,
-                                Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            x, y = rect.left(), rect.top()
-            painter.drawLine(x + 4, y + 9, x + 7, y + 12)
-            painter.drawLine(x + 7, y + 12, x + 14, y + 5)
-        painter.end()
 
 
 class MainWindow(QMainWindow):
@@ -1196,16 +954,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.clear_button)
         toolbar.addStretch()
         page.addLayout(toolbar)
-
-        self.delete_empty_rows_checkbox = VisibleCheckBox(
-            "ลบแถวที่ไม่มี Label และ Frequency ทุกคอลัมน์เป็น 0 หรือว่าง"
-        )
-        self.delete_empty_rows_checkbox.setChecked(False)
-        self.delete_empty_rows_checkbox.setToolTip(
-            "ใช้กับทุก Table เมื่อประมวลผล โดยคงแถวที่มี Label, ค่าที่ไม่ใช่ 0 "
-            "และตรวจครบทุกแถวในรายการที่ Merge ก่อนลบ"
-        )
-        page.addWidget(self.delete_empty_rows_checkbox)
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["ชื่อไฟล์", "ตำแหน่ง", "สถานะ"])
@@ -1330,7 +1078,6 @@ class MainWindow(QMainWindow):
         busy = self.thread is not None and self.thread.isRunning()
         ready_count = sum(job.get("status") == "ready" for job in self.jobs)
         self.add_button.setEnabled(not busy)
-        self.delete_empty_rows_checkbox.setEnabled(not busy)
         self.remove_button.setEnabled(bool(self.jobs) and not busy)
         self.clear_button.setEnabled(bool(self.jobs) and not busy)
         self.run_button.setEnabled(bool(self.jobs) and not busy)
@@ -1377,10 +1124,7 @@ class MainWindow(QMainWindow):
     def _start_worker(self, mode: str) -> None:
         self._started_at = time.perf_counter()
         self.thread = QThread(self)
-        self.worker = BatchWorker(
-            mode, self.jobs, self.work_dir,
-            delete_empty_rows=self.delete_empty_rows_checkbox.isChecked(),
-        )
+        self.worker = BatchWorker(mode, self.jobs, self.work_dir)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
