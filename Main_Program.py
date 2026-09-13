@@ -169,7 +169,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.84"
+CURRENT_VERSION = "1.1.85"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -619,17 +619,50 @@ def show_error_dialog(title, text):
 
 # --- กำหนดรายการโปรแกรม (เพิ่ม "category" และปรับ "module_path") ---
 PROGRAMS = [
-    #{
-        #"id": "โปรแกรมfull Itemdef+Genpromt Beta V1",
-        #"name": "โปรแกรมfull Itemdef+Genpromt Beta V1",
-        #"description": "เอาไว้ แปะภาษาENG+สร้างItemdefและT2B แบบเต็ม",
-        #"type": "local_py_module",
-        #"module_path": "108_GenPromt_NewBeta", # <--- ปรับชื่อ module_path
-        #"entry_point": "run_this_app",
-        #"icon": "GenPromt.ico",
-        #"category": "Lychee", # <--- เพิ่ม category
-        #"enabled": True
-    #},
+    {
+        "id": "โปรแกรมสร้าง Promt แปะ Eng Full AI",
+        "name": "โปรแกรม GetValue+Promt แปะ Eng Full AI Beta",
+        "description": "เอาไว้ แปะภาษาENG ภายในด้วย AI",
+        "type": "local_py_module",
+        "module_path": "157_Newen_Promt_AI", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "PromtAI.png",
+        "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },
+    {
+        "id": "โปรแกรมสร้าง Promt แปะ Eng v1",
+        "name": "โปรแกรม GetValue+Promt แปะ Eng",
+        "description": "เอาไว้ GetValue+Copy Promt แปะ Eng",
+        "type": "local_py_module",
+        "module_path": "117_Newen_Promt", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "promt.ico",
+        "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },
+    {
+        "id": "โปรแกรม Get SPSS",
+        "name": "โปรแกรม Get SPSS V2",
+        "description": "โปรแกรม GenSyntax Get SPSS",
+        "type": "local_py_module",
+        "module_path": "105_GetSPSS", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "Get.ico",
+        "category": "SPSS", # <--- เพิ่ม category
+        "enabled": True
+    },
+    {
+        "id": "โปรแกรมซ่อมไฟล์SPSS V1",
+        "name": "โปรแกรมซ่อมไฟล์SPSS V1",
+        "description": "เอาไว้แปลงไฟล์ SPSS ที่มีปัญหาเป็น UTF-8",
+        "type": "local_py_module",
+        "module_path": "convert_SPSS_UTF8", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "convert.ico",
+        "category": "SPSS", # <--- เพิ่ม category
+        "enabled": True
+    },
     {
         "id": "spss_log",
         "name": "สร้าง Itemdef จากSPSS V3",
@@ -663,18 +696,6 @@ PROGRAMS = [
         #"category": "SPSS", # <--- เพิ่ม category
         #"enabled": True
     #},
-    {
-        "id": "โปรแกรมสร้าง Promt แปะ Eng v1",
-        "name": "โปรแกรม GetValue+Promt แปะ Eng",
-        "description": "เอาไว้ GetValue+Copy Promt แปะ Eng",
-        "type": "local_py_module",
-        "module_path": "117_Newen_Promt", # <--- ปรับชื่อ module_path
-        "entry_point": "run_this_app",
-        "icon": "promt.ico",
-        "category": "Lychee", # <--- เพิ่ม category
-        "enabled": True
-    },
-
     {
         "id": "Cleandata SPSS",
         "name": "CleanData+Frequenzy SPSS V1",
@@ -730,17 +751,6 @@ PROGRAMS = [
         "enabled": True
     },
     {
-        "id": "โปรแกรม Get SPSS",
-        "name": "โปรแกรม Get SPSS V2",
-        "description": "โปรแกรม GenSyntax Get SPSS",
-        "type": "local_py_module",
-        "module_path": "105_GetSPSS", # <--- ปรับชื่อ module_path
-        "entry_point": "run_this_app",
-        "icon": "Get.ico",
-        "category": "SPSS", # <--- เพิ่ม category
-        "enabled": True
-    },
-    {
         "id": "โปรแกรม แปลงCE Otherจาก Edit V2",
         "name": "โปรแกรม แปลงCE Otherจาก Edit V2",
         "description": "แปลงไฟล์ CE Other จาก Edit เป็นไฟล์ Excel",
@@ -771,17 +781,6 @@ PROGRAMS = [
         "entry_point": "run_this_app",
         "icon": "diary.ico",
         "category": "Diary", # <--- เพิ่ม category
-        "enabled": True
-    },
-    {
-        "id": "โปรแกรมซ่อมไฟล์SPSS V1",
-        "name": "โปรแกรมซ่อมไฟล์SPSS V1",
-        "description": "เอาไว้แปลงไฟล์ SPSS ที่มีปัญหาเป็น UTF-8",
-        "type": "local_py_module",
-        "module_path": "convert_SPSS_UTF8", # <--- ปรับชื่อ module_path
-        "entry_point": "run_this_app",
-        "icon": "convert.ico",
-        "category": "SPSS", # <--- เพิ่ม category
         "enabled": True
     },
     {
