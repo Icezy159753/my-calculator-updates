@@ -51,7 +51,8 @@ def _embedded_api_key():
 DEFAULT_VAR_BATCH_ROWS = 40
 DEFAULT_VALUE_BATCH_ROWS = 120
 DEFAULT_PARALLEL = 6         # จำนวนชุดที่ส่งให้ AI พร้อมกัน
-DEFAULT_DEADLINE_MIN = 5     # เพดานเวลาต่อการกด Gen 1 ครั้ง (นาที) ถึงเวลาแล้วหยุดและเก็บผลที่ได้
+DEFAULT_DEADLINE_MIN = 0     # เพดานเวลาต่อการกด Gen 1 ครั้ง (นาที) | 0 = ไม่จำกัด ทำต่อเองจนจบ
+AI_MAX_PASSES = 8            # จำนวนรอบเก็บตกอัตโนมัติสูงสุดต่อการกด Gen 1 ครั้ง
 THAI_RE = re.compile(r'[฀-๿]')
 AI_MAX_TOKENS = 32000
 AI_RETRY_PER_BATCH = 3
@@ -1338,7 +1339,7 @@ class App:
         num_row(5, "Var (โจทย์):", self.var_batch_var, "แถว/ชุด")
         num_row(6, "Value (Code):", self.var_batch_value, "แถว/ชุด")
         num_row(7, "ส่งพร้อมกัน:", self.var_parallel, "ชุด (ลดเองอัตโนมัติเมื่อ AI ไม่ว่าง)")
-        num_row(8, "เพดานเวลา:", self.var_deadline, "นาที/ครั้ง (ถึงเวลาหยุดเองและเก็บผลไว้ กด Gen ซ้ำเพื่อทำต่อเฉพาะแถวที่ขาด)")
+        num_row(8, "เพดานเวลา:", self.var_deadline, "นาที/ครั้ง   (0 = ไม่จำกัด โปรแกรมจะทำต่อเองจนจบ แนะนำให้ใช้ 0)")
 
         # --- ตัวเลือก ---
         section(9, "ตัวเลือก", top=14)
@@ -1387,6 +1388,14 @@ class App:
     # -----------------------------------------------------------------
     #  ตารางผลลัพธ์ (ส่วนที่ 3)
     # -----------------------------------------------------------------
+    # หน้าต่างการตัดแบบสอบถามต่อชุด: (จำนวนบรรทัดหลังหัวข้อ, หลังการเอ่ยถึงรหัสข้อ, รอบข้อความที่ตรงกัน)
+    # ไล่จากกว้าง -> แคบ จนกว่าขนาดจะพอดีเพดาน prompt
+    # (บรรทัดหลังหัวข้อ, หลังการเอ่ยถึงรหัส, รอบข้อความที่ตรงกัน, จำกัดจุดที่ตรงกันต่อข้อความ, จำกัดจุดต่อรหัสข้อ)
+    CTX_PROFILES = {
+        'jod':  ((150, 8, 4, 8, 16), (100, 5, 3, 6, 12), (60, 3, 3, 4, 8), (35, 2, 2, 3, 5), (20, 1, 1, 2, 3), (12, 0, 0, 1, 2)),
+        'code': ((80, 6, 4, 8, 16), (50, 4, 3, 5, 10), (30, 3, 3, 3, 6), (18, 2, 2, 2, 3), (10, 1, 1, 1, 2)),
+    }
+
     TABLE_SPECS = {
         'jod': [("Name", "ชื่อตัวแปร", 115), ("VAR_THA", "ข้อความไทย (VAR_THA)", 310), ("VAR_ENG", "ภาษาอังกฤษ (VAR_ENG)", 310)],
         'code': [("Variable", "ตัวแปร", 95), ("Value", "ค่า", 50), ("Label", "ข้อความไทย (Label)", 290), ("Label_EN", "ภาษาอังกฤษ (Label_EN)", 290)],
@@ -2036,7 +2045,7 @@ class App:
     def _build_prompt(self, kind, rows_df=None):
         """สร้าง Prompt; ถ้าให้ rows_df มา จะใช้เฉพาะแถวนั้น (สำหรับส่งเป็นชุด)
         และตัดแบบสอบถามให้เหลือเฉพาะส่วนที่เกี่ยวข้อง (ถ้าเปิดตัวเลือกไว้)"""
-        fast = rows_df is not None and self.fast_output.get()
+        fast = rows_df is not None and getattr(self, "_fast_flag", True)
         if kind == 'jod':
             src = self.spss_df_var if rows_df is None else rows_df
             table_text = src[['Name', 'VAR_THA']].to_csv(sep='\t', index=False, header=True)
@@ -2046,7 +2055,7 @@ class App:
             value_df = src.rename(columns={'Label': 'Label_Th'})
             table_text = value_df[['Variable', 'Value', 'Label_Th']].to_csv(sep='\t', index=False, header=True)
             template = PROMPT_CODE_FAST if fast else PROMPT_CODE
-        if rows_df is not None and self.slice_context.get():
+        if rows_df is not None and getattr(self, "_slice_flag", True):
             # งบตัวอักษรที่เหลือให้ส่วนแบบสอบถาม = เพดาน prompt ทั้งก้อน - เทมเพลต - ตารางของชุดนี้
             budget = PROMPT_CHAR_LIMIT - (len(template) - len(DATA_PLACEHOLDER)) - len(table_text) - 200
             cap = max(6000, min(CONTEXT_CHAR_CAP, budget))
@@ -2057,7 +2066,7 @@ class App:
         return template.replace(DATA_PLACEHOLDER, combined)
 
     def _aliases_for(self, kind):
-        if self.fast_output.get():
+        if getattr(self, "_fast_flag", True):
             return VAR_COL_ALIASES_FAST if kind == 'jod' else VALUE_COL_ALIASES_FAST
         return VAR_COL_ALIASES if kind == 'jod' else VALUE_COL_ALIASES
 
@@ -2066,12 +2075,45 @@ class App:
     _LABEL_PREFIX_RE = re.compile(r'^\s*(?:\(R\d+\)\s*)?(?:[A-Za-z]{1,3}\d+(?:\.\d+)?[A-Za-z]?\s*[.:)]?\s*)?')
 
     def _prepare_questionnaire_index(self):
-        """เตรียมบรรทัดของแบบสอบถาม (cache) สำหรับค้นหา"""
+        """เตรียม index ของแบบสอบถามไว้ล่วงหน้า (ทำครั้งเดียวต่อไฟล์) เพื่อให้ค้นหาเร็ว"""
         if getattr(self, "_q_cache_src", None) is self.questionnaire_data:
             return
+        import bisect
         self._q_cache_src = self.questionnaire_data
         self._q_lines = self.questionnaire_data.split("\n")
         self._q_lines_norm = [re.sub(r'\s+', ' ', ln).strip().lower() for ln in self._q_lines]
+        # ข้อความก้อนเดียว + ตำแหน่งเริ่มต้นของแต่ละบรรทัด (ใช้แปลงตำแหน่งที่เจอ -> เลขบรรทัด)
+        self._q_join = "\n".join(self._q_lines_norm)
+        offs = []
+        pos = 0
+        for ln in self._q_lines_norm:
+            offs.append(pos)
+            pos += len(ln) + 1
+        self._q_offsets = offs
+        self._q_bisect = bisect.bisect_right
+
+    def _lines_containing(self, needle):
+        """เลขบรรทัดทั้งหมดที่มีข้อความ needle (ค้นบนข้อความก้อนเดียว เร็วกว่าไล่ทีละบรรทัดมาก)"""
+        hits = []
+        if not needle:
+            return hits
+        text = self._q_join
+        offs = self._q_offsets
+        bis = self._q_bisect
+        start = text.find(needle)
+        while start != -1:
+            hits.append(bis(offs, start) - 1)
+            start = text.find(needle, start + 1)
+        return hits
+
+    def _lines_matching(self, pattern):
+        """เลขบรรทัดทั้งหมดที่ตรงกับ regex (ค้นครั้งเดียวบนข้อความก้อนเดียว)"""
+        hits = []
+        offs = self._q_offsets
+        bis = self._q_bisect
+        for mo in pattern.finditer(self._q_join):
+            hits.append(bis(offs, mo.start()) - 1)
+        return hits
 
     @classmethod
     def _codes_from_name(cls, name):
@@ -2124,17 +2166,27 @@ class App:
             if pd.notna(r[label_col]):
                 keys.update(self._label_keys(r[label_col]))
         # รหัสข้อที่ไม่พบในต้นฉบับเลย (เช่น q12a ที่ต้นฉบับใช้ Q12) ให้ลองรหัสฐานแทน (ตัดตัวอักษร/เลขย่อยท้าย)
-        joined = "\n".join(norm)
+        joined = self._q_join
         for c in list(codes):
             if not re.search(r'(?<![a-z0-9])' + re.escape(c) + r'(?![a-z0-9])', joined):
                 base_c = re.sub(r'[a-z]$', '', c)
                 if base_c != c and re.search(r'(?<![a-z0-9])' + re.escape(base_c) + r'(?![a-z0-9])', joined):
                     codes.add(base_c)
-        code_res = [re.compile(r'(?<![a-z0-9])' + re.escape(c) + r'(?![a-z0-9])') for c in codes]
+        code_re_all = re.compile(r'(?<![a-z0-9])(?:' + "|".join(re.escape(c) for c in sorted(codes)) + r')(?![a-z0-9])') if codes else None
         # บรรทัดที่ "เป็นหัวข้อ" = สั้นและขึ้นต้นด้วยรหัสข้อ (ต่างจากการเอ่ยถึงในเงื่อนไข routing)
         header_re = re.compile(r'^\W*([a-z]{1,3}\d+[a-z]?(?:\.\d+)?)\b')
 
-        def build(after_hdr, after_mention, key_win):
+        # หาบรรทัดที่เกี่ยวข้องก่อน (ครั้งเดียว) แล้วค่อยขยายหน้าต่างในแต่ละรอบ
+        code_hits_all = self._lines_matching(code_re_all) if code_re_all else []
+        key_hits_all = {k: self._lines_containing(k) for k in keys}
+
+        def build(after_hdr, after_mention, key_win, max_key_hits=4, max_code_hits=8):
+            # จำกัดจำนวนจุดที่จับคู่ได้ต่อข้อความ/ต่อรหัสข้อ (ข้อความที่ซ้ำทั้งแบบสอบถาม เช่น สเกล จะไม่ทำให้ context บวม)
+            code_line_set = set(code_hits_all[:max_code_hits * max(1, len(codes))])
+            key_line_set = set()
+            for _k, _hits in key_hits_all.items():
+                key_line_set.update(_hits[:max_key_hits])
+            key_line_set -= code_line_set
             keep = bytearray(n)
 
             def mark(i, before, after):
@@ -2142,10 +2194,11 @@ class App:
                 for j in range(lo, hi):
                     keep[j] = 1
 
-            for i, ln in enumerate(norm):
+            for i in sorted(code_line_set | key_line_set):
+                ln = norm[i]
                 if not ln:
                     continue
-                if any(cr.search(ln) for cr in code_res):
+                if i in code_line_set:
                     m_hdr = header_re.match(ln)
                     if m_hdr and len(ln) <= 60 and m_hdr.group(1) in codes:
                         # หัวข้อ: ขยายไปจนถึงหัวข้อคำถามถัดไป (ตัวอักษรนำหน้าเดียวกัน เช่น Q12a -> Q13
@@ -2162,11 +2215,8 @@ class App:
                     else:
                         mark(i, 2, after_mention)
                     continue
-                for k in keys:
-                    if k in ln:
-                        # คู่ภาษาอังกฤษมักอยู่บรรทัดถัดไป (docx) หรือบรรทัดเดียวกัน (Excel) จึงเก็บถัดไปอย่างน้อย 2 บรรทัดเสมอ
-                        mark(i, key_win, max(key_win, 2))
-                        break
+                # คู่ภาษาอังกฤษมักอยู่บรรทัดถัดไป (docx) หรือบรรทัดเดียวกัน (Excel) จึงเก็บถัดไปอย่างน้อย 2 บรรทัดเสมอ
+                mark(i, key_win, max(key_win, 2))
             if not any(keep):
                 return None
             blocks, cur = [], []
@@ -2182,11 +2232,11 @@ class App:
         # ลดขนาดหน้าต่างลงเรื่อย ๆ จนกว่า context จะไม่ใหญ่เกินเพดาน (proxy รับ prompt ใหญ่มากพร้อมกันหลายชุดไม่ได้)
         context = None
         self._ctx_tight = False
-        profiles = ((150, 8, 4), (100, 5, 3), (60, 3, 3), (35, 2, 2), (20, 1, 1), (12, 0, 0))
-        for p_idx, (after_hdr, after_mention, key_win) in enumerate(profiles):
+        profiles = self.CTX_PROFILES.get(kind, self.CTX_PROFILES['jod'])
+        for p_idx, prof in enumerate(profiles):
             if p_idx >= 3:
                 self._ctx_tight = True   # ต้องบีบมาก: ควรแบ่งชุดให้เล็กลงแทน
-            context = build(after_hdr, after_mention, key_win)
+            context = build(*prof)
             if context is None:
                 # ไม่พบรหัสข้อหรือข้อความของแถวในชุดนี้เลย: ถ้าแบบสอบถามเล็กพอส่งทั้งฉบับ ไม่งั้นไม่ส่ง (AI จะเว้นว่างตามกติกา)
                 if len(full) <= cap:
@@ -2238,10 +2288,19 @@ class App:
         self.output_text.insert(tk.END, text)
         self.output_text.see("1.0")
 
+    def _sync_flags(self):
+        """อัปเดตค่าตัวเลือกจากหน้าจอ (ต้องเรียกบนเธรดหลักก่อนใช้ _build_prompt)"""
+        try:
+            self._fast_flag = bool(self.fast_output.get())
+            self._slice_flag = bool(self.slice_context.get())
+        except Exception:
+            pass
+
     def generate_prompt_jod(self):
         if not self.questionnaire_data:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือก 'ไฟล์แบบสอบถาม' ก่อนครับ")
             return
+        self._sync_flags()
         prompt = self._build_prompt('jod')
         self._set_output(prompt)
         self.last_prompt_type = 'jod'
@@ -2251,6 +2310,7 @@ class App:
         if not self.questionnaire_data:
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาเลือก 'ไฟล์แบบสอบถาม' ก่อนครับ")
             return
+        self._sync_flags()
         prompt = self._build_prompt('code')
         self._set_output(prompt)
         self.last_prompt_type = 'code'
@@ -2312,9 +2372,9 @@ class App:
             deadline_min = float(self.var_deadline.get().strip())
         except ValueError:
             deadline_min = DEFAULT_DEADLINE_MIN
-        if deadline_min <= 0:
-            deadline_min = DEFAULT_DEADLINE_MIN
-        self.var_deadline.set(f"{deadline_min:g}")
+        if deadline_min < 0:
+            deadline_min = 0
+        self.var_deadline.set(f"{deadline_min:g}")   # 0 = ไม่จำกัด (ทำต่อเองจนจบ)
 
         # --- แยกแถวที่ไม่มีภาษาไทย (ไม่ต้องถาม AI) ---
         src_df = self.spss_df_var if kind == 'jod' else self.spss_df_value
@@ -2355,7 +2415,8 @@ class App:
         self.ai_raw_parts = []
         self.ai_cache_hits = 0
         self.ai_deadline_event.clear()
-        self.ai_deadline_at = time.time() + deadline_min * 60
+        self.ai_deadline_at = (time.time() + deadline_min * 60) if deadline_min > 0 else None
+        self._prev_missing = None
         self._display_idx = 0
         self._buf = {}
         self._done = {}
@@ -2431,47 +2492,31 @@ class App:
             except queue.Empty:
                 break
 
+        # เก็บค่าตัวเลือกไว้เป็นค่าธรรมดา (เธรดเบื้องหลังอ่านตัวแปร Tk ไม่ได้)
+        self._fast_flag = bool(self.fast_output.get())
+        self._slice_flag = bool(self.slice_context.get())
+
         batches = list(self._split_batches(ai_df, kind, batch_rows))
-        jobs = []
-        # สร้าง prompt ทีละชุด ถ้าชุดไหนต้องบีบส่วนแบบสอบถามมากเกินไป (เสี่ยงตัดคู่ภาษาอังกฤษทิ้ง) ให้แบ่งชุดนั้นเป็นครึ่งแทน
-        queue_b = list(batches)
-        built = []
-        while queue_b:
-            bdf = queue_b.pop(0)
-            self._ctx_tight = False
-            prompt = self._build_prompt(kind, bdf)
-            if getattr(self, "_ctx_tight", False) and len(bdf) >= 16:
-                half = len(bdf) // 2
-                queue_b.insert(0, bdf.iloc[half:])
-                queue_b.insert(0, bdf.iloc[:half])
-                continue
-            built.append((bdf, prompt))
-        for i, (bdf, prompt) in enumerate(built):
-            jobs.append({
-                "index": i,
-                "start": int(bdf.index[0]) + 1,
-                "end": int(bdf.index[-1]) + 1,
-                "rows": len(bdf),
-                "prompt": prompt,
-            })
-        self.ai_jobs = jobs
-        self.ai_batch_total = len(jobs)
+        self.ai_jobs = []
+        self.ai_batch_total = len(batches)   # ตัวเลขชั่วคราว (อาจเพิ่มถ้ามีการแบ่งชุดย่อย)
+        self._prepare_questionnaire_index()  # เตรียม index ครั้งเดียว (ปลอดภัยกับเธรด)
 
         if pass_no > 1:
-            self.log(f"รอบเก็บตกอัตโนมัติที่ {pass_no}: ส่ง {len(ai_df):,} แถวที่ยังขาด ({len(jobs)} ชุด)", "warn")
+            self.log(f"รอบเก็บตกอัตโนมัติที่ {pass_no}: ส่ง {len(ai_df):,} แถวที่ยังขาด ({len(batches)} ชุด)", "warn")
+        limit_txt = "ไม่จำกัดเวลา ทำต่อเองจนจบ" if not cfg['deadline_min'] else f"เพดาน {cfg['deadline_min']:g} นาที"
         self.label_output_title.config(
-            text=f"ผลลัพธ์ AI {label} (Real-time: {len(ai_df):,} แถว แบ่ง {len(jobs)} ชุด ส่งพร้อมกัน {min(parallel, len(jobs))} ชุด, "
-                 f"เพดาน {cfg['deadline_min']:g} นาที{'' if pass_no == 1 else f', รอบเก็บตก {pass_no}'})")
+            text=f"ผลลัพธ์ AI {label} (Real-time: {len(ai_df):,} แถว แบ่ง {len(batches)} ชุด ส่งพร้อมกัน {min(parallel, len(batches))} ชุด, "
+                 f"{limit_txt}{'' if pass_no == 1 else f', รอบที่ {pass_no}'})")
         if pass_no == 1:
-            self.log(f"เริ่ม Gen {label}: {len(ai_df):,} แถว แบ่ง {len(jobs)} ชุด "
-                     f"(ส่งพร้อมกัน {min(parallel, len(jobs))} ชุด, เพดานเวลา {cfg['deadline_min']:g} นาที)", "head")
+            self.log(f"เริ่ม Gen {label}: {len(ai_df):,} แถว แบ่ง {len(batches)} ชุด "
+                     f"(ส่งพร้อมกัน {min(parallel, len(batches))} ชุด, {limit_txt})", "head")
         self.label_ai_status.config(
-            text=f"สถานะ AI: กำลังส่ง {min(parallel, len(jobs))} ชุดแรกไปยัง {cfg['model']} ... (แบบสอบถาม {len(self.questionnaire_data):,} ตัวอักษร)",
+            text=f"สถานะ AI: กำลังเตรียมข้อมูล {len(batches)} ชุด (ตัดเฉพาะส่วนแบบสอบถามที่เกี่ยวข้อง)...",
             foreground=self.WARNING_COLOR)
 
         self.ai_thread = threading.Thread(
             target=self._ai_worker,
-            args=(cfg["base_url"], cfg["model"], cfg["api_key"], jobs, self.ai_stop_event, parallel),
+            args=(cfg["base_url"], cfg["model"], cfg["api_key"], kind, batches, self.ai_stop_event, parallel),
             daemon=True
         )
         self.ai_thread.start()
@@ -2681,8 +2726,43 @@ class App:
         while time.time() < end and not stop_event.is_set():
             time.sleep(0.25)
 
-    def _ai_worker(self, base_url, model, api_key, jobs, stop_event, parallel):
-        """ทำงานใน thread แยก: กระจายชุดให้ worker หลายตัวส่งพร้อมกัน แล้วรอจนครบ"""
+    def _build_jobs(self, kind, batches):
+        """สร้าง prompt ของแต่ละชุด (ทำในเธรดเบื้องหลัง) ถ้าชุดไหนต้องบีบแบบสอบถามมากเกินไปจะแบ่งครึ่ง"""
+        queue_b = list(batches)
+        jobs = []
+        while queue_b:
+            bdf = queue_b.pop(0)
+            self._ctx_tight = False
+            prompt = self._build_prompt(kind, bdf)
+            if getattr(self, "_ctx_tight", False) and len(bdf) >= 16:
+                half = len(bdf) // 2
+                queue_b.insert(0, bdf.iloc[half:])
+                queue_b.insert(0, bdf.iloc[:half])
+                continue
+            jobs.append({
+                "index": len(jobs),
+                "start": int(bdf.index[0]) + 1,
+                "end": int(bdf.index[-1]) + 1,
+                "rows": len(bdf),
+                "prompt": prompt,
+            })
+        return jobs
+
+    def _ai_worker(self, base_url, model, api_key, kind, batches, stop_event, parallel):
+        """ทำงานใน thread แยก: เตรียม prompt แล้วกระจายชุดให้ worker หลายตัวส่งพร้อมกัน"""
+        try:
+            self._ai_worker_body(base_url, model, api_key, kind, batches, stop_event, parallel)
+        except Exception as e:
+            self.ai_queue.put(("worker_error", None, f"{type(e).__name__}: {e}"))
+            self.ai_queue.put(("all_done", None, None))
+
+    def _ai_worker_body(self, base_url, model, api_key, kind, batches, stop_event, parallel):
+        t_prep = time.time()
+        jobs = self._build_jobs(kind, batches)
+        self.ai_queue.put(("jobs_ready", None, (jobs, time.time() - t_prep)))
+        if stop_event.is_set() or self.ai_deadline_event.is_set():
+            self.ai_queue.put(("stopped" if stop_event.is_set() else "all_done", None, None))
+            return
         url = base_url.rstrip("/") + "/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -2732,6 +2812,13 @@ class App:
                         self._append_output(payload)
                     else:
                         self._buf.setdefault(idx, []).append(payload)
+                elif kind == "worker_error":
+                    self.log(f"เกิดข้อผิดพลาดในเบื้องหลัง: {str(payload)[:160]}", "err")
+                elif kind == "jobs_ready":
+                    jobs, prep_sec = payload
+                    self.ai_jobs = jobs
+                    self.ai_batch_total = len(jobs)
+                    self.log(f"เตรียมข้อมูลเสร็จ {len(jobs)} ชุด ({prep_sec:.1f} วินาที) เริ่มส่งให้ AI")
                 elif kind == "batch_start":
                     self._active.add(idx)
                     if idx == self._display_idx:
@@ -2840,7 +2927,7 @@ class App:
         elapsed = time.time() - (self.ai_started_at or time.time())
         done_n = len(self._done)
         active = ", ".join(str(i + 1) for i in sorted(self._active))
-        remain_txt = ""
+        remain_txt = f" | รอบที่ {self.ai_pass_no}" if self.ai_pass_no > 1 else ""
         if self.ai_deadline_at:
             remain = self.ai_deadline_at - time.time()
             if remain <= 0 and not self.ai_deadline_event.is_set():
@@ -2862,13 +2949,21 @@ class App:
         stopped = (kind == "stopped")
         timed_out = self.ai_deadline_event.is_set()
 
-        # --- เก็บตกอัตโนมัติ: ถ้ายังมีแถวที่ AI ไม่ได้ส่งกลับ และยังมีเวลา ให้ส่งซ้ำเฉพาะแถวนั้นในคลิกเดียวกัน ---
-        if not stopped and not timed_out and self.ai_batch_parsed and self.ai_pass_no < 3:
+        # --- ทำต่อเองจนจบ: ส่งซ้ำเฉพาะแถวที่ยังขาด โดยผู้ใช้ไม่ต้องกด Gen ใหม่ ---
+        if not stopped and not timed_out and self.ai_batch_parsed and self.ai_pass_no < AI_MAX_PASSES:
             missing_df = self._missing_rows_df(gen_type)
-            remain = (self.ai_deadline_at - time.time()) if self.ai_deadline_at else 0
-            if missing_df is not None and len(missing_df) > 0 and remain > 30:
+            n_missing = 0 if missing_df is None else len(missing_df)
+            prev_missing = getattr(self, "_prev_missing", None)
+            time_ok = (self.ai_deadline_at is None) or (self.ai_deadline_at - time.time() > 30)
+            progressed = (prev_missing is None) or (n_missing < prev_missing)
+            if n_missing > 0 and time_ok and progressed:
+                self._prev_missing = n_missing
+                self.log(f"ยังขาด {n_missing:,} แถว - ทำต่อเองรอบที่ {self.ai_pass_no + 1} (ไม่ต้องกด Gen ซ้ำ)", "warn")
                 self._launch_pass(gen_type, missing_df)
                 return
+            if n_missing > 0 and not progressed:
+                self.log(f"ยังขาด {n_missing:,} แถว แต่รอบล่าสุดไม่คืบหน้าแล้ว จึงหยุด "
+                         f"(แถวเหล่านี้น่าจะไม่มีคู่ภาษาอังกฤษในแบบสอบถาม)", "warn")
 
         self.ai_is_running = False
         self._set_ai_buttons_running(False)
@@ -2938,7 +3033,7 @@ class App:
         if consist_n:
             summary += f" (เติมตามข้อความไทยที่ตรงกัน {consist_n} แถว)"
         if self.ai_pass_no > 1:
-            summary += f" (เก็บตกอัตโนมัติ {self.ai_pass_no - 1} รอบ)"
+            summary += f" (ทำต่อเอง {self.ai_pass_no} รอบ)"
         cache_hits = getattr(self, "ai_cache_hits", 0)
         if cache_hits:
             summary += f" ⚡ {cache_hits}/{self.ai_batch_total} ชุดตอบจาก cache ของ proxy (เวลาที่เห็นไม่ใช่เวลาจริง)"
@@ -2950,7 +3045,7 @@ class App:
         if timed_out:
             warn += " ⏱ ถึงเพดานเวลา"
         if missing_n:
-            warn += f" ⚠ ยังขาด {missing_n} แถวที่ AI ไม่ส่งกลับ (ตอนบันทึก SPSS จะคงข้อความเดิม; กด Gen อีกครั้งจะทำเฉพาะแถวนี้)"
+            warn += f" ⚠ ยังขาด {missing_n} แถวที่ไม่มีคู่ในแบบสอบถาม (ตอนบันทึก SPSS จะคงข้อความเดิม)"
 
         self.label_ai_status.config(
             text=f"สถานะ AI: {label} เสร็จแล้ว ({elapsed:,.0f} วินาที) - {summary}{warn}",
