@@ -64,6 +64,119 @@ def find_bundled_template():
     return None
 
 
+# =========================================================================
+#  ไฟล์ Value ภาษาอังกฤษ (Value.xlsx: ชีท Var + ชีท Value)
+# =========================================================================
+def _find_header_columns(ws, required, sheet_label):
+    """คืน {ชื่อหัวคอลัมน์(ตัวเล็ก): index} จากแถวที่ 1 และตรวจว่ามีคอลัมน์ที่ต้องใช้ครบ"""
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    headers = {str(h).strip().lower(): i for i, h in enumerate(header_row) if h is not None}
+    missing = [name for name in required if name.lower() not in headers]
+    if missing:
+        raise ValueError(f"ชีท '{sheet_label}' ไม่มีคอลัมน์: {', '.join(missing)}")
+    return headers
+
+
+def _to_int_code(value):
+    """แปลง Code ใน Excel (1 / 1.0 / '1') เป็น int คืน None ถ้าไม่ใช่ตัวเลขจำนวนเต็ม"""
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else None
+
+
+def load_english_value_file(filepath):
+    """
+    อ่าน Value.xlsx ตาม Template
+      ชีท Var   : Name | VAR_THA | VAR_ENG
+      ชีท Value : Variable | Value | Label | Label_EN
+    คืน {'var': {ชื่อตัวแปร: label_en}, 'value': {ชื่อตัวแปร: {code(int): label_en}}}
+    """
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    try:
+        sheets = {name.strip().lower(): wb[name] for name in wb.sheetnames}
+        missing_sheets = [s for s in ("Var", "Value") if s.lower() not in sheets]
+        if missing_sheets:
+            raise ValueError(f"ไม่พบชีท: {', '.join(missing_sheets)} (ต้องมีชีท Var และ Value)")
+
+        ws_var = sheets["var"]
+        h = _find_header_columns(ws_var, ("Name", "VAR_ENG"), "Var")
+        c_name, c_eng = h["name"], h["var_eng"]
+        var_labels = {}
+        for row in ws_var.iter_rows(min_row=2, values_only=True):
+            if len(row) <= max(c_name, c_eng) or row[c_name] is None:
+                continue
+            label_en = row[c_eng]
+            if label_en is not None and str(label_en).strip():
+                var_labels[str(row[c_name]).strip()] = str(label_en)
+
+        ws_value = sheets["value"]
+        h = _find_header_columns(ws_value, ("Variable", "Value", "Label_EN"), "Value")
+        c_var, c_code, c_eng = h["variable"], h["value"], h["label_en"]
+        value_labels = defaultdict(dict)
+        for row in ws_value.iter_rows(min_row=2, values_only=True):
+            if len(row) <= max(c_var, c_code, c_eng) or row[c_var] is None:
+                continue
+            code = _to_int_code(row[c_code])
+            label_en = row[c_eng]
+            if code is None or label_en is None or not str(label_en).strip():
+                continue
+            value_labels[str(row[c_var]).strip()][code] = str(label_en)
+    finally:
+        wb.close()
+
+    if not var_labels and not value_labels:
+        raise ValueError("ไม่พบ Label ภาษาอังกฤษในไฟล์ (คอลัมน์ VAR_ENG / Label_EN ว่างทั้งหมด)")
+    return {'var': var_labels, 'value': dict(value_labels)}
+
+
+def apply_english_labels(column_names, column_labels, value_labels_by_var, english_labels):
+    """
+    แทน Label ของ SPSS ด้วยภาษาอังกฤษ เฉพาะตัวแปร/Code ที่ตรงกัน (ที่ไม่มีใน Excel ใช้ของ SPSS เดิม)
+    ตัวแปร MA _O2, _O3, ... ที่ไม่มีในไฟล์ จะใช้ข้อมูลของ _O1 แทน
+    """
+    en_var, en_value = english_labels['var'], english_labels['value']
+    o_suffix = re.compile(r'_O\d+$')
+
+    def lookup(table, var_name):
+        if var_name in table:
+            return table[var_name]
+        if o_suffix.search(var_name):
+            return table.get(o_suffix.sub('_O1', var_name))
+        return None
+
+    new_column_labels = list(column_labels)
+    var_hits = 0
+    for i, var_name in enumerate(column_names):
+        label_en = lookup(en_var, var_name)
+        if label_en is not None:
+            new_column_labels[i] = label_en
+            var_hits += 1
+
+    new_value_labels = {}
+    code_hits = code_total = 0
+    for var_name, labels in value_labels_by_var.items():
+        codes_en = lookup(en_value, var_name) if isinstance(labels, dict) else None
+        if not codes_en:
+            new_value_labels[var_name] = labels
+            continue
+        replaced = {}
+        for code, label in labels.items():
+            code_total += 1
+            int_code = _to_int_code(code)
+            if int_code is not None and int_code in codes_en:
+                replaced[code] = codes_en[int_code]
+                code_hits += 1
+            else:
+                replaced[code] = label
+        new_value_labels[var_name] = replaced
+
+    print(f"ใช้ Label ภาษาอังกฤษ: ตัวแปร {var_hits}/{len(column_names)}, "
+          f"Code (ในตัวแปรที่มีในไฟล์) {code_hits}/{code_total}", flush=True)
+    return new_column_labels, new_value_labels
+
+
 def get_base_name_heuristic(var_name):
     """
     Tries to derive a base name by removing trailing/intermediate numbers/identifiers.
@@ -808,6 +921,187 @@ class LoopNamingDialog(QtWidgets.QDialog):
             if name:
                 self.edited_names[first_var] = name
         self.accept()
+
+
+# =========================================================================
+#  Dialog: Popup แบบการ์ดตัวเลือก (ใช้ถามเรื่องไฟล์ Value ภาษาอังกฤษ)
+# =========================================================================
+class ChoiceCardDialog(QtWidgets.QDialog):
+    """
+    Popup ขนาดใหญ่ อ่านง่าย: หัวเรื่อง + คำอธิบาย + การ์ดตัวเลือกที่กดได้ทั้งใบ
+    options = [(key, badge, title, description, tone)]  tone: "gold" / "slate" / "blue"
+    ผลลัพธ์อยู่ที่ self.choice (None = ยกเลิก / ปิดหน้าต่าง)
+    """
+    STYLE = """
+    QDialog#ChoiceDialog { background-color: #FFFFFF; }
+    QWidget#ChoiceHeader { background-color: #FFF8E6; border-bottom: 1px solid #F3DFB2; }
+    QWidget#ChoiceBody { background-color: #FFFFFF; }
+    QLabel { background: transparent; }
+    QLabel#HeaderBadge {
+        background-color: #D69E2E; color: #FFFFFF; border-radius: 28px;
+        font-size: 17pt; font-weight: 800;
+    }
+    QLabel#HeaderTitle { font-size: 15pt; font-weight: 700; color: #1A202C; }
+    QLabel#HeaderSubtitle { font-size: 10.5pt; color: #5A6578; }
+    QPushButton#ChoiceCard {
+        background-color: #FFFFFF; border: 2px solid #E2E8F0; border-radius: 12px;
+        padding: 0px; text-align: left;
+    }
+    QPushButton#ChoiceCard:hover { background-color: #FFFBF0; border-color: #D69E2E; }
+    QPushButton#ChoiceCard:focus { border-color: #D69E2E; }
+    QPushButton#ChoiceCard:pressed { background-color: #FEF3D7; }
+    QLabel#CardBadge {
+        border-radius: 23px; font-size: 11pt; font-weight: 800; color: #FFFFFF;
+    }
+    QLabel#CardBadge[tone="gold"]  { background-color: #D69E2E; }
+    QLabel#CardBadge[tone="slate"] { background-color: #718096; }
+    QLabel#CardBadge[tone="blue"]  { background-color: #3182CE; }
+    QLabel#CardTitle { font-size: 12.5pt; font-weight: 700; color: #1A202C; }
+    QLabel#CardDesc { font-size: 10pt; color: #5A6578; }
+    QLabel#CardArrow { font-size: 16pt; color: #A0AEC0; }
+    QFrame#InfoPanel {
+        background-color: #F7FAFC; border: 1px solid #E2E8F0; border-radius: 10px;
+    }
+    QLabel#InfoText { font-size: 10pt; color: #2D3748; }
+    QPushButton#CancelButton {
+        background: transparent; border: none; color: #718096;
+        font-size: 10.5pt; padding: 6px 14px;
+    }
+    QPushButton#CancelButton:hover { color: #C53030; text-decoration: underline; }
+    """
+
+    def __init__(self, parent, window_title, badge, title, subtitle, options,
+                 info_html=None, cancel_text="ยกเลิก"):
+        super().__init__(parent)
+        self.choice = None
+        self.setObjectName("ChoiceDialog")
+        self.setWindowTitle(window_title)
+        self.setModal(True)
+        self.setMinimumWidth(640)
+        self.setStyleSheet(self.STYLE)
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ----- Header -----
+        header = QtWidgets.QWidget()
+        header.setObjectName("ChoiceHeader")
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(28, 22, 28, 22)
+        header_layout.setSpacing(18)
+
+        badge_label = QtWidgets.QLabel(badge)
+        badge_label.setObjectName("HeaderBadge")
+        badge_label.setFixedSize(56, 56)
+        badge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(badge_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setSpacing(4)
+        text_col.addStretch(1)
+        title_label = QtWidgets.QLabel(title)
+        title_label.setObjectName("HeaderTitle")
+        text_col.addWidget(title_label)
+        if subtitle:
+            subtitle_label = QtWidgets.QLabel(subtitle)
+            subtitle_label.setObjectName("HeaderSubtitle")
+            text_col.addWidget(subtitle_label)
+        text_col.addStretch(1)
+        header_layout.addLayout(text_col, 1)
+        root.addWidget(header)
+
+        # ----- Body -----
+        body = QtWidgets.QWidget()
+        body.setObjectName("ChoiceBody")
+        body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        body_layout = QtWidgets.QVBoxLayout(body)
+        body_layout.setContentsMargins(28, 22, 28, 16)
+        body_layout.setSpacing(12)
+
+        if info_html:
+            panel = QtWidgets.QFrame()
+            panel.setObjectName("InfoPanel")
+            panel_layout = QtWidgets.QVBoxLayout(panel)
+            panel_layout.setContentsMargins(16, 12, 16, 12)
+            info_label = QtWidgets.QLabel(info_html)
+            info_label.setObjectName("InfoText")
+            info_label.setTextFormat(Qt.TextFormat.RichText)
+            info_label.setWordWrap(True)
+            panel_layout.addWidget(info_label)
+            body_layout.addWidget(panel)
+
+        first_card = None
+        for key, card_badge, card_title, card_desc, tone in options:
+            card = self._make_card(key, card_badge, card_title, card_desc, tone)
+            body_layout.addWidget(card)
+            first_card = first_card or card
+
+        footer = QtWidgets.QHBoxLayout()
+        footer.addStretch(1)
+        cancel_btn = QtWidgets.QPushButton(cancel_text)
+        cancel_btn.setObjectName("CancelButton")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setAutoDefault(False)
+        cancel_btn.clicked.connect(self.reject)
+        footer.addWidget(cancel_btn)
+        body_layout.addSpacing(2)
+        body_layout.addLayout(footer)
+        root.addWidget(body)
+
+        if first_card is not None:
+            first_card.setDefault(True)
+            first_card.setFocus()
+
+    def _make_card(self, key, badge, title, description, tone):
+        card = QtWidgets.QPushButton()
+        card.setObjectName("ChoiceCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setMinimumHeight(86)
+        card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding,
+                           QtWidgets.QSizePolicy.Policy.Fixed)
+        card.clicked.connect(lambda _checked=False, k=key: self._choose(k))
+
+        layout = QtWidgets.QHBoxLayout(card)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(16)
+
+        badge_label = QtWidgets.QLabel(badge)
+        badge_label.setObjectName("CardBadge")
+        badge_label.setProperty("tone", tone)
+        badge_label.setFixedSize(46, 46)
+        badge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(badge_label)
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setSpacing(3)
+        title_label = QtWidgets.QLabel(title)
+        title_label.setObjectName("CardTitle")
+        desc_label = QtWidgets.QLabel(description)
+        desc_label.setObjectName("CardDesc")
+        text_col.addWidget(title_label)
+        text_col.addWidget(desc_label)
+        layout.addLayout(text_col, 1)
+
+        arrow = QtWidgets.QLabel("›")
+        arrow.setObjectName("CardArrow")
+        layout.addWidget(arrow)
+
+        # ให้คลิกตรงไหนของการ์ดก็ได้ (ป้ายข้อความไม่แย่ง mouse event)
+        for child in (badge_label, title_label, desc_label, arrow):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        return card
+
+    def _choose(self, key):
+        self.choice = key
+        self.accept()
+
+    @classmethod
+    def ask(cls, parent, *args, **kwargs):
+        dialog = cls(parent, *args, **kwargs)
+        dialog.exec()
+        return dialog.choice
 
 
 # =========================================================================
@@ -1798,6 +2092,68 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
             print("--- export_rawdata_excel สำเร็จ ---", flush=True)
 
     # ------------------------------------------------------------------
+    #  ไฟล์ Value ภาษาอังกฤษ
+    # ------------------------------------------------------------------
+    def _ask_english_value_file(self):
+        """
+        ถามว่ามีไฟล์ Excel Value ภาษาอังกฤษแล้วหรือยัง
+        คืนค่า: dict (Yes + โหลดสำเร็จ) / None (No = ใช้ Label จาก SPSS) / False (ยกเลิก)
+        """
+        answer = ChoiceCardDialog.ask(
+            self, "Run Itemdef · ไฟล์ Value ภาษาอังกฤษ", "EN",
+            "มีไฟล์ Excel Value ภาษาอังกฤษแล้วหรือยัง?",
+            "เลือกว่าจะสร้าง Itemdef ด้วย Label ภาษาอังกฤษ หรือใช้ Label จาก SPSS",
+            [("yes", "Yes", "Yes  —  มีไฟล์แล้ว",
+              "โหลดไฟล์ Value.xlsx ที่แปะ Eng แล้ว มาใช้เป็น Label", "gold"),
+             ("no", "No", "No  —  ยังไม่มี",
+              "Run Itemdef ปกติ ใช้ Label จาก SPSS", "slate")])
+        if answer == "no":
+            print("ไม่ใช้ไฟล์ Value ภาษาอังกฤษ -> ใช้ Label จาก SPSS", flush=True)
+            return None
+        if answer != "yes":
+            return False
+
+        answer = ChoiceCardDialog.ask(
+            self, "Run Itemdef · โหลดไฟล์ Value", "xlsx",
+            "กรุณาโหลดไฟล์ Value.xlsx ที่แปะ Eng แล้ว",
+            "ไฟล์ต้องเป็นตาม Template 2 ชีท",
+            [("load", "เปิด", "เลือกไฟล์ Value.xlsx",
+              "กดเพื่อเลือกไฟล์ แล้วโปรแกรมจะสร้าง Itemdef ต่อทันที", "blue")],
+            info_html=("<b>ชีท Var</b> &nbsp;:&nbsp; Name &nbsp;|&nbsp; VAR_THA &nbsp;|&nbsp; "
+                       "<b style='color:#B7791F;'>VAR_ENG</b><br>"
+                       "<b>ชีท Value</b> &nbsp;:&nbsp; Variable &nbsp;|&nbsp; Value &nbsp;|&nbsp; "
+                       "Label &nbsp;|&nbsp; <b style='color:#B7791F;'>Label_EN</b>"))
+        if answer != "load":
+            return False
+
+        filepath, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "เลือกไฟล์ Value.xlsx ที่แปะ Eng แล้ว", os.path.dirname(self.spss_file_path),
+            "Excel files (*.xlsx);;All files (*.*)")
+        if not filepath:
+            return False
+
+        filepath = os.path.normpath(filepath)
+        try:
+            print(f"กำลังโหลดไฟล์ Value ภาษาอังกฤษ: {filepath}", flush=True)
+            english_labels = load_english_value_file(filepath)
+        except PermissionError:
+            QtWidgets.QMessageBox.critical(
+                self, "ข้อผิดพลาด", f"เปิดไฟล์ไม่ได้:\n{filepath}\nอาจจะเปิดไฟล์นี้ค้างไว้อยู่")
+            self.set_status("เกิดข้อผิดพลาด: เปิดไฟล์ Value ไม่ได้", "#C53030")
+            return False
+        except Exception as e:
+            print(f"ERROR loading Value file: {e}", flush=True)
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(
+                self, "ข้อผิดพลาด", f"โหลดไฟล์ Value ภาษาอังกฤษไม่สำเร็จ:\n{e}")
+            self.set_status("เกิดข้อผิดพลาด: ไฟล์ Value ไม่ถูกต้อง", "#C53030")
+            return False
+
+        print(f"โหลดสำเร็จ: Var {len(english_labels['var'])} ตัวแปร, "
+              f"Value {len(english_labels['value'])} ตัวแปร", flush=True)
+        return english_labels
+
+    # ------------------------------------------------------------------
     #  Run Itemdef
     # ------------------------------------------------------------------
     def convert_file(self):
@@ -1824,6 +2180,12 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
             self.set_status("เกิดข้อผิดพลาด: Output .xlsx", "#C53030")
             return
         print("Input validation passed.", flush=True)
+
+        english_labels = self._ask_english_value_file()
+        if english_labels is False:
+            print("ยกเลิกการ Run Itemdef", flush=True)
+            self.set_status("ยกเลิกการ Run Itemdef")
+            return
 
         self.set_status("กำลังประมวลผล...", "#DD6B20")
         processed_ma_base_names_auto = set()
@@ -1860,6 +2222,12 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
                     temp_filtered[var] = new_labels
                 filtered_meta_value_labels = temp_filtered
                 print(f"{count} codes filtered.", flush=True)
+
+            # --- Label ภาษาอังกฤษจากไฟล์ Value.xlsx (ถ้ามี) แทน Label ใน SPSS ---
+            column_labels = list(meta.column_labels)
+            if english_labels:
+                column_labels, filtered_meta_value_labels = apply_english_labels(
+                    meta.column_names, column_labels, filtered_meta_value_labels, english_labels)
 
             # ============================================================ #
             #   PHASE 1: PRE-COMPUTATION OF ALL LOOP GROUPS                #
@@ -2119,7 +2487,7 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
                     print(f"   Writing {len(reps)} consolidated sub-items...", flush=True)
                     for i_sub, rep_var_name in enumerate(reps, 1):
                         rep_var_index = var_name_to_index.get(rep_var_name, -1)
-                        sub_label_value = meta.column_labels[rep_var_index] if rep_var_index != -1 else ""
+                        sub_label_value = column_labels[rep_var_index] if rep_var_index != -1 else ""
                         ws.cell(row=write_row, column=loopsub_idx).value = "Loop sub"
                         ws.cell(row=write_row, column=id_idx).value = f"{final_loop_id_to_write}({i_sub})"
                         ws.cell(row=write_row, column=label_idx).value = sub_label_value
@@ -2166,7 +2534,7 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
                     for i_sub, key in enumerate(sorted(sub_items_to_write.keys()), 1):
                         rep_var_name = sub_items_to_write[key]
                         sub_var_index = var_name_to_index.get(rep_var_name, -1)
-                        sub_label_value = meta.column_labels[sub_var_index] if sub_var_index != -1 else ""
+                        sub_label_value = column_labels[sub_var_index] if sub_var_index != -1 else ""
                         ws.cell(row=write_row, column=loopsub_idx).value = "Loop sub"
                         ws.cell(row=write_row, column=id_idx).value = f"{disp_id}({i_sub})"
                         ws.cell(row=write_row, column=label_idx).value = sub_label_value
@@ -2180,7 +2548,7 @@ class SpssToExcelConverter(QtWidgets.QMainWindow):
                     continue
 
                 # --- 7.C Non-Loop / Auto-Detect ---
-                var_label = meta.column_labels[index]
+                var_label = column_labels[index]
                 current_value_labels = filtered_meta_value_labels.get(var_name)
 
                 col_d_value = None
