@@ -10,7 +10,6 @@ import json
 import time
 import queue
 import threading
-import uuid
 import pyperclip
 import webbrowser
 
@@ -1014,10 +1013,6 @@ class App:
         self.ai_batch_failed = []
         self.ai_raw_parts = []
         self.ai_direct_idx = []          # index ของแถวที่ไม่ต้องส่ง AI (ไม่มีภาษาไทย)
-        self._value_var_to_rep = {}      # Variable -> ตัวแทนของ Code List ที่เหมือนกันในงานปัจจุบัน
-        self._value_rep_to_vars = {}     # ตัวแทน -> Variables ที่ใช้ Code List เดียวกัน
-        self._value_no_collapse_vars = set()
-        self.ai_dedupe_saved = 0
         self.ai_jobs = []
         self._display_idx = 0            # ชุดที่กำลังแสดงในกล่องข้อความ (แสดงเรียงลำดับ)
         self._buf = {}                   # ข้อความที่รอแสดงของชุดที่ยังไม่ถึงคิว
@@ -2167,13 +2162,7 @@ class App:
         label_col = 'VAR_THA' if kind == 'jod' else 'Label'
         codes, keys = set(), set()
         for _, r in rows_df.iterrows():
-            names = [r[name_col]]
-            if kind == 'code':
-                var_key = str(r[name_col]).strip().lower()
-                rep = getattr(self, "_value_var_to_rep", {}).get(var_key, str(r[name_col]).strip())
-                names = getattr(self, "_value_rep_to_vars", {}).get(str(rep).lower(), names)
-            for name in names:
-                codes.update(self._codes_from_name(name))
+            codes.update(self._codes_from_name(r[name_col]))
             if pd.notna(r[label_col]):
                 keys.update(self._label_keys(r[label_col]))
         # รหัสข้อที่ไม่พบในต้นฉบับเลย (เช่น q12a ที่ต้นฉบับใช้ Q12) ให้ลองรหัสฐานแทน (ตัดตัวอักษร/เลขย่อยท้าย)
@@ -2263,77 +2252,6 @@ class App:
             context = context[:cap]
             context = context[:context.rfind("\n")] + "\n\n[...ตัดส่วนที่เหลือเพราะเกินขนาดที่ส่งได้...]"
         return "(ด้านล่างเป็นบางส่วนของแบบสอบถามที่เกี่ยวข้องกับตารางในชุดนี้ ส่วนที่ไม่เกี่ยวถูกตัดออกด้วยเครื่องหมาย [...])\n\n" + context
-
-    @staticmethod
-    def _dedupe_label_key(value):
-        """normalize Label เฉพาะสำหรับตรวจว่า Code List สองชุดเหมือนกันทั้งชุดหรือไม่"""
-        if pd.isna(value):
-            return ""
-        return re.sub(r'\s+', ' ', str(value)).strip().casefold()
-
-    def _prepare_value_code_list_dedupe(self, src_df):
-        """จัดกลุ่ม Variable ที่มีชุด Value+Label เหมือนกัน เพื่อส่ง AI แค่ตัวแทนเดียวต่อกลุ่ม"""
-        self._value_var_to_rep = {}
-        self._value_rep_to_vars = {}
-        self._value_no_collapse_vars = set()
-        signature_to_rep = {}
-
-        if src_df is None or src_df.empty:
-            return
-
-        var_keys = src_df['Variable'].apply(lambda v: str(v).strip().lower())
-        for _group_key, group in src_df.groupby(var_keys, sort=False):
-            variable = str(group.iloc[0]['Variable']).strip()
-            if not variable:
-                continue
-            value_keys = [_norm_value(v) for v in group['Value']]
-            # Value ซ้ำในตัวแปรเดียวกันจับคู่กลับอย่างปลอดภัยไม่ได้ จึงไม่รวมกับตัวแปรอื่น
-            if len(value_keys) != len(set(value_keys)):
-                signature = ("unique-variable", variable.lower())
-                self._value_no_collapse_vars.add(variable.lower())
-            else:
-                pairs = zip(value_keys, (self._dedupe_label_key(v) for v in group['Label']))
-                signature = ("code-list", tuple(sorted(pairs)))
-
-            rep = signature_to_rep.setdefault(signature, variable)
-            self._value_var_to_rep[variable.lower()] = rep
-            self._value_rep_to_vars.setdefault(rep.lower(), []).append(variable)
-
-    def _collapse_value_code_lists(self, df):
-        """เปลี่ยน Code List ซ้ำให้เหลือแถวของตัวแทนเพียงชุดเดียวก่อนส่ง AI"""
-        if df is None or df.empty or not getattr(self, "_value_var_to_rep", None):
-            return df
-        collapsed = df.copy()
-        keep_idx = []
-        seen = set()
-        for idx, row in collapsed.iterrows():
-            variable = str(row['Variable']).strip()
-            rep = self._value_var_to_rep.get(variable.lower(), variable)
-            if variable.lower() in getattr(self, "_value_no_collapse_vars", set()):
-                key = (rep.lower(), _norm_value(row['Value']), idx)
-            else:
-                key = (rep.lower(), _norm_value(row['Value']))
-            if key in seen:
-                continue
-            seen.add(key)
-            collapsed.at[idx, 'Variable'] = rep
-            keep_idx.append(idx)
-        return collapsed.loc[keep_idx]
-
-    def _expand_value_code_list_results(self, df):
-        """กระจายผลของตัวแทนกลับไปยังทุก Variable ที่ใช้ Code List เดียวกัน"""
-        if df is None or df.empty or not getattr(self, "_value_rep_to_vars", None):
-            return df
-        rows = []
-        for _, row in df.iterrows():
-            variable = str(row['Variable']).strip()
-            rep = self._value_var_to_rep.get(variable.lower(), variable)
-            targets = self._value_rep_to_vars.get(rep.lower(), [variable])
-            for target in targets:
-                expanded = row.copy()
-                expanded['Variable'] = target
-                rows.append(expanded)
-        return pd.DataFrame(rows, columns=df.columns) if rows else df
 
     def _split_batches(self, df, kind, batch_rows):
         """แบ่งตารางเป็นชุด ๆ ละประมาณ batch_rows แถว โดยไม่ตัดกลางกลุ่มตัวแปรเดียวกัน (Value)"""
@@ -2462,12 +2380,6 @@ class App:
         src_df = self.spss_df_var if kind == 'jod' else self.spss_df_value
         label_col = 'VAR_THA' if kind == 'jod' else 'Label'
         out_col = 'VAR_ENG' if kind == 'jod' else 'Label_EN'
-        if kind == 'code':
-            self._prepare_value_code_list_dedupe(src_df)
-        else:
-            self._value_var_to_rep = {}
-            self._value_rep_to_vars = {}
-            self._value_no_collapse_vars = set()
         if self.skip_non_thai.get():
             mask = src_df[label_col].apply(lambda v: bool(THAI_RE.search(str(v))) if pd.notna(v) else False)
             ai_df = src_df[mask]
@@ -2492,11 +2404,6 @@ class App:
                     self.ai_continue_prev = prev
                     ai_df = ai_df.loc[missing_ai]
 
-        rows_before_dedupe = len(ai_df)
-        if kind == 'code':
-            ai_df = self._collapse_value_code_lists(ai_df)
-        self.ai_dedupe_saved = rows_before_dedupe - len(ai_df)
-
         # --- รีเซ็ตสถานะ ---
         self.current_gen_type = kind
         self.last_prompt_type = kind
@@ -2507,9 +2414,6 @@ class App:
         self.ai_batch_failed = []
         self.ai_raw_parts = []
         self.ai_cache_hits = 0
-        # เปลี่ยนทุกครั้งที่เริ่ม Gen ใหม่ เพื่อไม่ให้ proxy นำคำตอบจากการรันก่อนมาใช้ซ้ำ
-        # retry/รอบเก็บตกภายในการ Gen ครั้งเดียวกันจะใช้รหัสเดิม
-        self._ai_run_id = uuid.uuid4().hex
         self.ai_deadline_event.clear()
         self.ai_deadline_at = (time.time() + deadline_min * 60) if deadline_min > 0 else None
         self._prev_missing = None
@@ -2529,9 +2433,6 @@ class App:
         self.output_text.delete("1.0", tk.END)
         if self.ai_direct_idx:
             self.log(f"ข้าม {len(self.ai_direct_idx):,} แถวที่ไม่มีภาษาไทย (ใช้ข้อความเดิมเป็น Eng ไม่ส่ง AI)")
-        if self.ai_dedupe_saved:
-            self.log(f"รวม Code List ซ้ำในงานนี้: ลดแถวที่ต้องส่ง AI จาก {rows_before_dedupe:,} เหลือ {len(ai_df):,} แถว "
-                     f"(ใช้คำตอบร่วมกัน {self.ai_dedupe_saved:,} แถว)", "ok")
 
         if self.ai_continue_prev is not None:
             self.log(f"ทำต่อจากรอบก่อน: ส่งเฉพาะ {len(ai_df):,} แถวที่ยังขาด", "warn")
@@ -2571,8 +2472,6 @@ class App:
     def _launch_pass(self, kind, ai_df):
         """ส่งแถวใน ai_df ให้ AI 1 รอบ (รอบแรก หรือรอบเก็บตกอัตโนมัติสำหรับแถวที่ยังขาด)"""
         cfg = self._pass_cfg
-        if kind == 'code':
-            ai_df = self._collapse_value_code_lists(ai_df)
         self.ai_pass_no += 1
         pass_no = self.ai_pass_no
         batch_rows = cfg["batch_rows"] if pass_no == 1 else max(15, cfg["batch_rows"] // 2)
@@ -2639,11 +2538,9 @@ class App:
 
     def _stream_one_request(self, url, headers, prompt, stop_event, on_chunk):
         """เรียก API แบบ stream 1 ครั้ง คืนค่า (ข้อความทั้งหมด, finish_reason). โยน Exception ถ้าล้มเหลว"""
-        run_id = getattr(self, "_ai_run_id", None) or uuid.uuid4().hex
-        fresh_prompt = f"<!-- fresh-run-id:{run_id} -->\n{prompt}"
         payload = {
             "model": self._ai_model,
-            "messages": [{"role": "user", "content": fresh_prompt}],
+            "messages": [{"role": "user", "content": prompt}],
             "stream": True,
             "temperature": 0,
             "max_tokens": AI_MAX_TOKENS,
@@ -2735,7 +2632,7 @@ class App:
                 pass
         if not stop_event.is_set() and not got_done and not full_text:
             raise AIStreamError("การเชื่อมต่อจบลงโดยไม่มีเนื้อหา", "")
-        if self._last_from_cache:
+        if self._last_from_cache or (full_text and time.time() - started < 3 and finish_reason != "deadline"):
             finish_reason = f"{finish_reason or 'stop'}|cache"
         return "".join(full_text), finish_reason
 
@@ -2979,8 +2876,6 @@ class App:
         self.ai_raw_parts.append(text)
         df, note = parse_ai_table(text, aliases)
         if df is not None:
-            if gen_type == 'code':
-                df = self._expand_value_code_list_results(df)
             self.ai_batch_parsed.append(df)
             got = len(df)
             try:
@@ -3137,8 +3032,6 @@ class App:
         summary = f"AI จับคู่ได้ {matched}/{ai_rows} แถว, ใช้ค่าเดิม {direct_n} แถว, มี Eng รวม {filled}/{total_rows} แถว"
         if consist_n:
             summary += f" (เติมตามข้อความไทยที่ตรงกัน {consist_n} แถว)"
-        if getattr(self, "ai_dedupe_saved", 0):
-            summary += f" (ลด Code List ซ้ำก่อนส่ง AI {self.ai_dedupe_saved:,} แถว)"
         if self.ai_pass_no > 1:
             summary += f" (ทำต่อเอง {self.ai_pass_no} รอบ)"
         cache_hits = getattr(self, "ai_cache_hits", 0)
