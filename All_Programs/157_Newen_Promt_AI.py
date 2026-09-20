@@ -752,6 +752,8 @@ PROMPT_CODE = """คุยไทยนะ
     *   **หากไม่พบ**ข้อความภาษาอังกฤษที่**จับคู่กันโดยตรง**กับ Label_Th ในตำแหน่งที่สอดคล้องกันในข้อมูลต้นฉบับ ให้**เว้นว่าง**คอลัมน์ Label_En สำหรับแถวนั้นไว้ **ห้าม**นำข้อมูลภาษาอังกฤษจากส่วนอื่นของเอกสารที่ไม่ใช่คู่โดยตรงมาเติม หรือทำการแปลเอง
     *   **กติกาทั่วไปเมื่อข้อความไทยตรงกันเป๊ะกับข้ออื่น:** ถ้าไม่พบข้อคำถามของ Variable นั้นในต้นฉบับ (เช่น ตัวแปรที่สร้างเพิ่มตอนประมวลผล หรือสเกลมาตรฐานที่ใช้ซ้ำหลายข้อ) แต่พบ Label_Th ที่**ตรงกันทุกตัวอักษร**คู่กับภาษาอังกฤษในข้ออื่น ให้ใช้คำแปลนั้นได้ และให้ทำเหมือนกันครบทุกค่าของสเกล/ชุดตัวเลือกเดียวกัน
     *   **กติกาทั่วไปเมื่อข้อความไทยเดียวกันมีคู่ภาษาอังกฤษหลายแบบในต้นฉบับ:** ให้เลือกคู่ที่**ความหมายตรงกับข้อความไทย** (เป็นคำแปลหรือคำทับศัพท์ของข้อความนั้น เช่น ชื่อยี่ห้อ/สินค้าภาษาไทยเลือกคู่ที่เป็นชื่อยี่ห้อ/สินค้าภาษาอังกฤษ) มากกว่าคู่ที่เป็นข้อความคนละเรื่อง (เช่น ชื่อยี่ห้อภาษาไทยที่ไปอยู่คู่กับชื่อ concept/design ภาษาอังกฤษ) กติกานี้ใช้เฉพาะเมื่อมีคู่ให้เลือกหลายแบบ ถ้ามีคู่เดียวและอยู่คู่กันโดยตรงในข้อนั้น ให้ใช้คู่นั้นตามปกติ
+    *   **กติกาทั่วไปเมื่อรหัสข้อเดียวกันปรากฏหลายจุด (แบบสอบถามหลาย sheet/หลายชุดคำถาม):** ให้เลือกข้อที่**ชุดตัวเลือกตรงกับ Code List ทั้งชุด** (ทุก Value ของ Variable นั้นมีข้อความไทยตรงกัน) เป็นคู่ของ Variable นั้น และคัดลอกภาษาอังกฤษของ**ทุกค่า**จากข้อนั้นข้อเดียว ห้ามหยิบบางค่าจากข้ออื่นที่มีข้อความไทยตรงกันเพียงบางค่า (เช่น ข้ออื่นที่มีแค่ค่า 5 กับ 1 ตรงกัน แต่ค่า 4 กับ 2 ไม่มี)
+    *   **ลำดับความสำคัญของแหล่งที่คัดลอก:** (1) ข้อของ Variable นั้นเอง (รหัสข้อตรงกัน เช่น rc_q20 -> Q20) ถ้าข้อนั้นมีคู่ภาษาอังกฤษของ Label_Th อยู่ ต้องใช้ของข้อนั้นเสมอ แม้ข้ออื่นจะมีข้อความไทยเหมือนกันแต่ภาษาอังกฤษต่างกัน (2) เฉพาะเมื่อข้อของตัวเองไม่มีภาษาอังกฤษของค่านั้นเลย หรือหาข้อของตัวเองไม่พบ จึงใช้คู่จากข้ออื่นที่ Label_Th ตรงกันทุกตัวอักษรได้ (3) ถ้าไม่มีทั้งสองอย่าง ให้เว้นว่าง
     *   **กติกาทั่วไปเมื่อข้อความไทยต่างกันเล็กน้อย:** ถ้า Label_Th เป็นส่วนต้นของตัวเลือกในข้อเดียวกันในต้นฉบับ หรือตัวเลือกนั้นเป็นส่วนต้นของ Label_Th (ต่างกันแค่คำต่อท้าย เช่น "รู้สึกปลอดภัย" กับ "รู้สึกปลอดภัยในการใช้") และไม่มีตัวเลือกอื่นที่ใกล้เคียงกว่า ให้ถือว่าเป็นคู่กันได้
     *   **กติกาทั่วไปสำหรับตัวเลือก "อื่นๆ":** ถ้า Label_Th เป็น "อื่นๆ" / "อื่นๆ ระบุ" / "อื่น ๆ (ระบุ...)" และข้อนั้นในต้นฉบับมีตัวเลือกอื่นๆ ระบุ ให้ใช้คำแปลของตัวเลือกนั้น (เช่น "Others, please specify") แม้ข้อความไทยจะสั้น/ยาวไม่เท่ากัน
     *   **Label_Th ที่เป็นตัวเลขหรือภาษาอังกฤษล้วน** (เช่น "2", "3", "None") ให้ใส่ค่าเดิมใน Label_En
@@ -1288,6 +1290,14 @@ class App:
         self.btn_load_ai_result.grid(row=1, column=0, sticky="ew", padx=(0, 5))
         self.btn_save_spss = RoundButton(final_action_frame, text="บันทึก ENG ลง SPSS (.sav)", command=self.save_labels_to_spss, state="disabled", style='Purple.TButton')
         self.btn_save_spss.grid(row=1, column=1, sticky="ew", padx=(5, 0))
+        self.btn_export_spss_syntax = RoundButton(
+            final_action_frame,
+            text="Get Syntax SPSS (Var+Value)",
+            command=self.export_spss_syntax,
+            state="disabled",
+            style='Accent.TButton'
+        )
+        self.btn_export_spss_syntax.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
     # -----------------------------------------------------------------
     #  หน้าต่างตั้งค่า AI (เปิดจากปุ่มฟันเฟือง)
@@ -1835,6 +1845,166 @@ class App:
     # -----------------------------------------------------------------
     #  SPSS
     # -----------------------------------------------------------------
+    @staticmethod
+    def _spss_quoted_text(value):
+        """คืนค่า string literal ที่ปลอดภัยสำหรับ SPSS syntax."""
+        if value is None or pd.isna(value):
+            text = ""
+        else:
+            text = str(value)
+        text = re.sub(r"[\r\n\t]+", " ", text).strip()
+        return "'" + text.replace("'", "''") + "'"
+
+    @classmethod
+    def _spss_value_token(cls, value, is_string):
+        """แปลง value code เป็น token ของ SPSS โดยรักษาชนิด string/numeric."""
+        if is_string:
+            return cls._spss_quoted_text(value)
+        if value is None or pd.isna(value):
+            return "SYSMIS"
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            return format(value, ".15g")
+        text = str(value).strip()
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return text
+        return format(number, ".15g")
+
+    @classmethod
+    def _build_spss_label_syntax(cls, meta, source_name=""):
+        """สร้าง VARIABLE LABELS + VALUE LABELS จาก metadata ของไฟล์ .sav ทุกตัวแปร."""
+        column_names = list(getattr(meta, "column_names", []) or [])
+        column_labels = list(getattr(meta, "column_labels", []) or [])
+        readstat_types = getattr(meta, "readstat_variable_types", {}) or {}
+        original_types = getattr(meta, "original_variable_types", {}) or {}
+        variable_types = getattr(meta, "variable_types", {}) or {}
+        value_labels = getattr(meta, "variable_value_labels", {}) or {}
+        # SPSS * comments จบที่จุดแรก จึงไม่ใส่จุดจากนามสกุลไฟล์ไว้กลาง comment
+        safe_source_name = re.sub(r"[.\r\n]+", "_", str(source_name or "SPSS data file")).strip()
+
+        lines = [
+            "* SPSS Variable Labels and Value Labels.",
+            f"* Source: {safe_source_name}.",
+            "* Generated by GetValue + AI.",
+            ""
+        ]
+
+        # แบ่งคำสั่งเป็นช่วงเล็ก ๆ เพื่อไม่ให้ SPSS ต้อง parse คำสั่งเดียวขนาดใหญ่มาก
+        variable_chunk_size = 200
+        for start in range(0, len(column_names), variable_chunk_size):
+            lines.append("VARIABLE LABELS")
+            for index in range(start, min(start + variable_chunk_size, len(column_names))):
+                variable = column_names[index]
+                label = column_labels[index] if index < len(column_labels) else ""
+                lines.append(f"  {variable} {cls._spss_quoted_text(label)}")
+            lines.extend([".", ""])
+        lines.append("* Value labels grouped by identical code lists.")
+
+        value_variable_count = 0
+        value_label_count = 0
+        grouped_value_labels = {}
+        for variable in column_names:
+            labels = value_labels.get(variable) or {}
+            if not labels:
+                continue
+            value_variable_count += 1
+            readstat_type = str(readstat_types.get(variable, "")).lower()
+            original_type = str(original_types.get(variable, "")).upper()
+            is_string = (
+                readstat_type == "string"
+                or original_type.startswith("A")
+                or variable_types.get(variable, 0) != 0
+            )
+            entries = []
+            for value, label in labels.items():
+                token = cls._spss_value_token(value, is_string)
+                entries.append((token, cls._spss_quoted_text(label)))
+                value_label_count += 1
+            # ตัวแปรจำนวนมาก (โดยเฉพาะ MA/Grid) ใช้ code list เดียวกัน
+            # SPSS รองรับการระบุหลายตัวแปรหน้า value list จึงไม่ต้องเขียน labels ซ้ำเป็นแสนบรรทัด
+            # SPSS อนุญาตให้แชร์ value list ระหว่าง string variables ได้เฉพาะเมื่อ width เท่ากัน
+            group_type = original_type if is_string else "__NUMERIC__"
+            grouped_value_labels.setdefault((group_type, tuple(entries)), []).append(variable)
+
+        def append_wrapped_variable_list(variables):
+            current = "VALUE LABELS"
+            for variable in variables:
+                candidate = f"{current} {variable}"
+                if len(candidate) > 110 and current != "VALUE LABELS":
+                    lines.append(current)
+                    current = f"  {variable}"
+                else:
+                    current = candidate
+            lines.append(current)
+
+        # จำกัดจำนวนตัวแปรต่อคำสั่งด้วย เพื่อให้ SPSS รุ่นเก่าเปิดและ parse ได้เร็วขึ้น
+        value_variable_chunk_size = 200
+        for (_, entries), variables in grouped_value_labels.items():
+            for start in range(0, len(variables), value_variable_chunk_size):
+                append_wrapped_variable_list(variables[start:start + value_variable_chunk_size])
+                for token, quoted_label in entries:
+                    lines.append(f"  {token} {quoted_label}")
+                lines.extend([".", ""])
+
+        lines.extend([
+            "EXECUTE.",
+            "",
+            f"* Summary: {len(column_names)} variables, "
+            f"{value_label_count} value label assignments in {value_variable_count} variables, "
+            f"grouped into {len(grouped_value_labels)} shared code lists."
+        ])
+        return "\n".join(lines) + "\n", len(column_names), value_label_count
+
+    def export_spss_syntax(self):
+        """บันทึก Variable Labels และ Value Labels ทั้งหมดเป็นไฟล์ SPSS Syntax (.sps)."""
+        if self.spss_meta is None:
+            messagebox.showerror("ไม่มีข้อมูล", "กรุณาโหลดไฟล์ SPSS ก่อนครับ")
+            return
+
+        source_name = os.path.basename(self.spss_filepath) if self.spss_filepath else "SPSS data file"
+        default_name = os.path.splitext(source_name)[0] + "_Var_Value_Syntax.sps"
+        initial_dir = os.path.dirname(self.spss_filepath) if self.spss_filepath else None
+        syntax_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="บันทึก SPSS Syntax (Variable + Value Labels)",
+            defaultextension=".sps",
+            initialfile=default_name,
+            initialdir=initial_dir,
+            filetypes=[("SPSS Syntax Files", "*.sps"), ("All files", "*.*")]
+        )
+        if not syntax_path:
+            return
+
+        try:
+            syntax, variable_count, value_label_count = self._build_spss_label_syntax(
+                self.spss_meta, source_name
+            )
+            with open(syntax_path, "w", encoding="utf-8-sig", newline="\n") as output_file:
+                output_file.write(syntax)
+            self.log(
+                f"บันทึก SPSS Syntax: {os.path.basename(syntax_path)} "
+                f"(Var {variable_count:,}, Value {value_label_count:,})",
+                "ok"
+            )
+            messagebox.showinfo(
+                "บันทึก Syntax สำเร็จ",
+                f"บันทึกไฟล์ SPSS Syntax เรียบร้อยแล้ว\n\n{syntax_path}\n\n"
+                f"Variable Labels: {variable_count:,} ตัวแปร\n"
+                f"Value Labels: {value_label_count:,} ค่า"
+            )
+        except PermissionError:
+            messagebox.showerror(
+                "ไม่สามารถเขียนไฟล์ได้",
+                "ไฟล์ปลายทางอาจถูกเปิดอยู่ หรือไม่มีสิทธิ์เขียน โปรดปิดไฟล์แล้วลองใหม่"
+            )
+        except Exception as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่สามารถบันทึกไฟล์ SPSS Syntax ได้:\n{e}")
+
     def _process_spss_data(self, spss_file_path, delimiter):
         try:
             df, meta = pyreadstat.read_sav(spss_file_path)
@@ -1895,6 +2065,7 @@ class App:
             self.label_spss_file.config(text=status_msg, foreground=self.TEXT_COLOR)
 
             self.btn_export_excel.config(state="normal")
+            self.btn_export_spss_syntax.config(state="normal")
             self.btn_load_q.config(state="normal")
             self.btn_load_ai_result.config(state="normal")
             self.show_result_table('jod', df_var)
@@ -2077,6 +2248,8 @@ class App:
 
     # ----- ตัดแบบสอบถามให้เหลือเฉพาะส่วนที่เกี่ยวข้องกับแถวในชุด -----
     _CODE_TOKEN_RE = re.compile(r'[A-Za-z]{1,3}\d+[A-Za-z]?')
+    # บรรทัดหัวข้อในแบบสอบถาม (normalized/lowercase): ขึ้นต้นด้วยรหัสข้อ แล้วตามด้วยขอบเซลล์/เครื่องหมายคั่น หรือช่องว่าง
+    _HEADER_RE = re.compile(r'^\W*([a-z]{1,3}\d+[a-z]?(?:\.\d+)?)(?=[\t.):_]|\s|$)')
     _LABEL_PREFIX_RE = re.compile(r'^\s*(?:\(R\d+\)\s*)?(?:[A-Za-z]{1,3}\d+(?:\.\d+)?[A-Za-z]?\s*[.:)]?\s*)?')
 
     def _prepare_questionnaire_index(self):
@@ -2166,16 +2339,21 @@ class App:
         name_col = 'Name' if kind == 'jod' else 'Variable'
         label_col = 'VAR_THA' if kind == 'jod' else 'Label'
         codes, keys = set(), set()
+        row_keys = []   # (รหัสข้อของแถว, ข้อความค้นหาของแถว) ต่อแถว ใช้ตัดสินว่าแถวนั้นพบในบล็อกของข้อตัวเองแล้วหรือยัง
         for _, r in rows_df.iterrows():
             names = [r[name_col]]
             if kind == 'code':
                 var_key = str(r[name_col]).strip().lower()
                 rep = getattr(self, "_value_var_to_rep", {}).get(var_key, str(r[name_col]).strip())
                 names = getattr(self, "_value_rep_to_vars", {}).get(str(rep).lower(), names)
+            r_codes, r_keys = set(), set()
             for name in names:
-                codes.update(self._codes_from_name(name))
+                r_codes.update(self._codes_from_name(name))
             if pd.notna(r[label_col]):
-                keys.update(self._label_keys(r[label_col]))
+                r_keys.update(self._label_keys(r[label_col]))
+            codes.update(r_codes)
+            keys.update(r_keys)
+            row_keys.append((r_codes, r_keys))
         # รหัสข้อที่ไม่พบในต้นฉบับเลย (เช่น q12a ที่ต้นฉบับใช้ Q12) ให้ลองรหัสฐานแทน (ตัดตัวอักษร/เลขย่อยท้าย)
         joined = self._q_join
         for c in list(codes):
@@ -2183,21 +2361,137 @@ class App:
                 base_c = re.sub(r'[a-z]$', '', c)
                 if base_c != c and re.search(r'(?<![a-z0-9])' + re.escape(base_c) + r'(?![a-z0-9])', joined):
                     codes.add(base_c)
-        code_re_all = re.compile(r'(?<![a-z0-9])(?:' + "|".join(re.escape(c) for c in sorted(codes)) + r')(?![a-z0-9])') if codes else None
-        # บรรทัดที่ "เป็นหัวข้อ" = สั้นและขึ้นต้นด้วยรหัสข้อ (ต่างจากการเอ่ยถึงในเงื่อนไข routing)
-        header_re = re.compile(r'^\W*([a-z]{1,3}\d+[a-z]?(?:\.\d+)?)\b')
+        # บรรทัดที่ "เป็นหัวข้อ" = ขึ้นต้นด้วยรหัสข้อ แล้วตามด้วยขอบเซลล์/เครื่องหมายคั่น (แท็บ . ) :) หรือช่องว่าง
+        # (ต่างจากการเอ่ยถึงในเงื่อนไข routing ที่รหัสอยู่กลางประโยค) ไม่จำกัดความยาวบรรทัด เพราะใน Excel
+        # แถวหัวข้อรวมข้อความคำถามไทย+อังกฤษไว้บรรทัดเดียวจึงยาวเสมอ
+        header_re = self._HEADER_RE
+
+        def header_code(ln):
+            m_hdr = header_re.match(ln)
+            return m_hdr.group(1) if m_hdr else None
 
         # หาบรรทัดที่เกี่ยวข้องก่อน (ครั้งเดียว) แล้วค่อยขยายหน้าต่างในแต่ละรอบ
-        code_hits_all = self._lines_matching(code_re_all) if code_re_all else []
+        # แยกเก็บ "ต่อรหัสข้อ" และแยก "หัวข้อ" ออกจาก "การเอ่ยถึง": ถ้าใช้โควตารวมตามลำดับในไฟล์ รหัสข้อที่อยู่ท้ายไฟล์
+        # (เช่น Q20 ใน sheet หลัง ๆ ของแบบสอบถามที่มีหลาย sheet/หลายชุดคำถาม) จะถูกตัดทิ้งทั้งข้อ
+        # เพราะรหัสใน sheet ต้น ๆ ใช้โควตาหมดก่อน ทำให้ AI ไม่เห็นข้อที่ถูกต้องและไปหยิบสเกลจากข้ออื่นแทน
+        code_hdr_hits, code_mention_hits = {}, {}
+        for c in sorted(codes):
+            c_re = re.compile(r'(?<![a-z0-9])' + re.escape(c) + r'(?![a-z0-9])')
+            hdrs, mentions = [], []
+            for i in dict.fromkeys(self._lines_matching(c_re)):
+                (hdrs if header_code(norm[i]) == c else mentions).append(i)
+            code_hdr_hits[c], code_mention_hits[c] = hdrs, mentions
         key_hits_all = {k: self._lines_containing(k) for k in keys}
+        MAX_HDR_PER_CODE = 8   # หัวข้อของรหัสเดียวกันมีได้หลายจุด (1 จุดต่อ sheet/ชุดคำถาม) จึงเก็บให้ครบเสมอ
+
+        def block_end(i, c, limit):
+            # บล็อกของหัวข้อ: ขยายไปจนถึงหัวข้อคำถามถัดไป (ตัวอักษรนำหน้าเดียวกัน เช่น Q12a -> Q13
+            # ส่วน R1/A1 ที่เป็นแถวคุณลักษณะในตารางไม่นับเป็นหัวข้อ) แต่ไม่เกิน limit บรรทัด
+            cur_prefix = re.match(r'[a-z]+', c).group(0)
+            end = i + 1
+            while end < n and end - i < limit:
+                c2 = header_code(norm[end])
+                if (c2 and c2 not in codes and end - i > 8
+                        and re.match(r'[a-z]+', c2).group(0) == cur_prefix):
+                    break
+                end += 1
+            return end
+
+        # รหัสข้อเดียวกันที่ปรากฏหลายจุด (หลาย sheet/หลายชุดคำถาม) มักเป็นคนละคำถาม: ให้คะแนนแต่ละหัวข้อ
+        # ตามจำนวนบรรทัดในบล็อกที่มีข้อความของแถวในชุดนี้ แล้วเก็บเฉพาะหัวข้อที่มีข้อความตรงอยู่จริง
+        # (ถ้าไม่มีหัวข้อไหนตรงเลย ค่อยเก็บทุกหัวข้อตามลำดับในไฟล์) เพื่อไม่ส่งข้อผิด sheet ไปให้ AI หยิบสเกลผิด
+        # ให้คะแนนด้วยข้อความของแถวที่เป็นรหัสนั้นเท่านั้น (ไม่ใช่ทุกแถวในชุด) ไม่งั้นบล็อกของ Q25 ผิด sheet
+        # จะได้คะแนนจากสเกลของ Q20 ที่บังเอิญอยู่ในชุดเดียวกัน
+        code_key_lines = {}
+        for r_codes, r_keys in row_keys:
+            r_lines = set()
+            for k in r_keys:
+                r_lines.update(key_hits_all.get(k, ()))
+            for c in r_codes:
+                code_key_lines.setdefault(c, set()).update(r_lines)
+                base_c = re.sub(r'[a-z]$', '', c)
+                if base_c != c and base_c in codes:
+                    code_key_lines.setdefault(base_c, set()).update(r_lines)
+        HDR_SCORE_WIN = 60
+        ctx_dbg = {"hdr_scores": {}}   # ข้อมูลวินิจฉัย (ดูได้จาก self._ctx_debug หลังเรียก) ไม่มีผลต่อการทำงาน
+        for c, hdrs in code_hdr_hits.items():
+            c_lines = code_key_lines.get(c, set())
+            scored = [(sum(1 for j in range(i, block_end(i, c, HDR_SCORE_WIN)) if j in c_lines), i) for i in hdrs]
+            ctx_dbg["hdr_scores"][c] = list(scored)
+            max_s = max((s for s, _ in scored), default=0)
+            if max_s > 0:
+                # เก็บเฉพาะหัวข้อที่คะแนนไม่ต่ำกว่าครึ่งของหัวข้อที่ตรงที่สุด (คำถามเดียวกันที่ซ้ำหลาย sheet ได้คะแนนเท่ากัน
+                # จึงถูกเก็บทั้งหมด ส่วนคำถามอื่นที่ใช้รหัสเดียวกันแต่ตรงแค่คำสั้น ๆ เช่น "เฉยๆ" จะถูกตัด)
+                scored = [(s, i) for s, i in scored if s * 2 >= max_s]
+            scored.sort(key=lambda t: (-t[0], t[1]))
+            code_hdr_hits[c] = [i for _, i in scored]
+            # การเอ่ยถึงรหัส (routing/หมายเหตุ) ให้เอาจุดที่อยู่ใกล้หัวข้อที่เลือกไว้ก่อน ไม่ใช่ตามลำดับในไฟล์
+            # ไม่งั้นหมายเหตุใต้ Q25 ของ sheet แรกจะลากสเกลของข้อผิด sheet เข้ามาทั้งชุด
+            # และเมื่อพบหัวข้อแล้ว เก็บเฉพาะการเอ่ยถึงที่อยู่ในละแวกหัวข้อนั้น (การเอ่ยถึงไกล ๆ เช่น "ข้ามไปข้อ Q25"
+            # ใน sheet อื่น ไม่ช่วยจับคู่ข้อความ) ถ้าไม่พบหัวข้อเลยจึงใช้การเอ่ยถึงตามลำดับในไฟล์ตามเดิม
+            kept = code_hdr_hits[c][:MAX_HDR_PER_CODE]
+            if kept:
+                near = [(min(abs(j - h) for h in kept), j) for j in code_mention_hits[c]]
+                code_mention_hits[c] = [j for d, j in sorted(near) if d <= 2 * HDR_SCORE_WIN]
+
+        # แถวที่พบข้อความของตัวเองในบล็อกหัวข้อของรหัสตัวเองแล้ว ไม่ต้องค้นด้วยข้อความ (fallback) อีก
+        # เพื่อไม่ดึงข้ออื่นที่บังเอิญมีข้อความไทยเหมือนกันแต่คู่ภาษาอังกฤษต่างกัน (เช่น สเกลของข้ออื่น) เข้ามาปน
+        # การค้นด้วยข้อความยังใช้กับแถวที่หาข้อของตัวเองไม่พบ (ตัวแปรสร้างเพิ่ม/สเกลมาตรฐานที่ใช้ซ้ำ) ตามเดิม
+        # (ตัดสินในแต่ละรอบของ build ตามหน้าต่างหลังหัวข้อที่จะเก็บจริงในรอบนั้น ไม่ใช่หน้าต่างให้คะแนน)
+        row_cand = []
+        for r_codes, r_keys in row_keys:
+            if not r_keys:
+                continue
+            r_lines = set()
+            for k in r_keys:
+                r_lines.update(key_hits_all.get(k, ()))
+            cand = set()
+            for c in r_codes:
+                cand.add(c)
+                base_c = re.sub(r'[a-z]$', '', c)
+                if base_c in codes:
+                    cand.add(base_c)
+            row_cand.append((cand, r_keys, r_lines))
+
+        _eng_word_re = re.compile(r'[A-Za-z]{2,}')
+
+        def has_eng_near(j):
+            return any(_eng_word_re.search(lines[k]) for k in range(j, min(n, j + 2)))
+
+        def fallback_hits_for(after_hdr):
+            """คืนรายการจุดที่พบข้อความ (เรียงลำดับแล้ว) ของแต่ละแถวที่ยังไม่พบในบล็อกของข้อตัวเอง
+            เรียงจากจุดที่ใกล้หัวข้อของรหัสตัวเองที่สุดก่อน (เช่น ตัวเลือกท้าย ๆ ของข้อยาวที่เกินหน้าต่าง)
+            ถ้าไม่มีหัวข้อของตัวเองเลย ใช้ลำดับในไฟล์ตามเดิม"""
+            ranges = {c: [(i, block_end(i, c, after_hdr)) for i in hdrs[:MAX_HDR_PER_CODE]]
+                      for c, hdrs in code_hdr_hits.items()}
+            out = []
+            for cand, _r_keys, r_lines in row_cand:
+                own = [lo for c in cand for lo, _hi in ranges.get(c, ())]
+                # "พบแล้ว" ต้องมีคู่ภาษาอังกฤษอยู่จริงในบล็อกตัวเอง (บรรทัดเดียวกันใน Excel หรือ 1-2 บรรทัดถัดไปใน docx)
+                # ถ้าบล็อกตัวเองมีแต่ภาษาไทย ให้ไปค้นข้ออื่นที่ข้อความตรงกันมาให้ AI ใช้แทนได้
+                if any(lo <= j <= hi and has_eng_near(j)
+                       for c in cand for lo, hi in ranges.get(c, ()) for j in r_lines):
+                    continue
+                if own:
+                    out.append(sorted(r_lines, key=lambda j: (min(abs(j - lo) for lo in own), j)))
+                else:
+                    out.append(sorted(r_lines))
+            return out
 
         def build(after_hdr, after_mention, key_win, max_key_hits=4, max_code_hits=8):
             # จำกัดจำนวนจุดที่จับคู่ได้ต่อข้อความ/ต่อรหัสข้อ (ข้อความที่ซ้ำทั้งแบบสอบถาม เช่น สเกล จะไม่ทำให้ context บวม)
-            code_line_set = set(code_hits_all[:max_code_hits * max(1, len(codes))])
+            hdr_line_set, code_line_set = set(), set()
+            for c in codes:
+                hdr_line_set.update(code_hdr_hits[c][:MAX_HDR_PER_CODE])
+                code_line_set.update(code_mention_hits[c][:max_code_hits])
+            code_line_set -= hdr_line_set
             key_line_set = set()
-            for _k, _hits in key_hits_all.items():
+            for _hits in fallback_hits_for(after_hdr):
                 key_line_set.update(_hits[:max_key_hits])
+            key_line_set -= hdr_line_set
             key_line_set -= code_line_set
+            ctx_dbg.update(after_hdr=after_hdr, hdr=set(hdr_line_set), mention=set(code_line_set), key=set(key_line_set))
+            self._ctx_debug = ctx_dbg
             keep = bytearray(n)
 
             def mark(i, before, after):
@@ -2205,26 +2499,15 @@ class App:
                 for j in range(lo, hi):
                     keep[j] = 1
 
-            for i in sorted(code_line_set | key_line_set):
+            for i in sorted(hdr_line_set | code_line_set | key_line_set):
                 ln = norm[i]
                 if not ln:
                     continue
+                if i in hdr_line_set:
+                    mark(i, 3, block_end(i, header_code(ln), after_hdr) - i)
+                    continue
                 if i in code_line_set:
-                    m_hdr = header_re.match(ln)
-                    if m_hdr and len(ln) <= 60 and m_hdr.group(1) in codes:
-                        # หัวข้อ: ขยายไปจนถึงหัวข้อคำถามถัดไป (ตัวอักษรนำหน้าเดียวกัน เช่น Q12a -> Q13
-                        # ส่วน R1/A1 ที่เป็นแถวคุณลักษณะในตารางไม่นับเป็นหัวข้อ) แต่ไม่เกิน after_hdr บรรทัด
-                        cur_prefix = re.match(r'[a-z]+', m_hdr.group(1)).group(0)
-                        end = i + 1
-                        while end < n and end - i < after_hdr:
-                            m2 = header_re.match(norm[end])
-                            if (m2 and len(norm[end]) <= 60 and m2.group(1) not in codes and end - i > 8
-                                    and re.match(r'[a-z]+', m2.group(1)).group(0) == cur_prefix):
-                                break
-                            end += 1
-                        mark(i, 3, end - i)
-                    else:
-                        mark(i, 2, after_mention)
+                    mark(i, 2, after_mention)
                     continue
                 # คู่ภาษาอังกฤษมักอยู่บรรทัดถัดไป (docx) หรือบรรทัดเดียวกัน (Excel) จึงเก็บถัดไปอย่างน้อย 2 บรรทัดเสมอ
                 mark(i, key_win, max(key_win, 2))
@@ -2276,10 +2559,82 @@ class App:
         self._value_var_to_rep = {}
         self._value_rep_to_vars = {}
         self._value_no_collapse_vars = set()
+        self._dedupe_debug = {}
         signature_to_rep = {}
 
         if src_df is None or src_df.empty:
             return
+
+        # รหัสข้อที่มีหัวข้อในแบบสอบถาม: ข้อความไทยชุดเดียวกันในคนละข้ออาจมีภาษาอังกฤษต่างกัน
+        # (เช่น Q1 sheet Main = "Very dissatisfied" แต่ Q21 sheet Recall = "Not satisfied at all")
+        # จึงรวมกลุ่มเฉพาะตัวแปรที่เป็น "ข้อเดียวกัน" (รหัสข้อเดียวกัน เช่น rc_q22_1..rc_q22_7) หรือตัวแปรที่หาข้อ
+        # ในแบบสอบถามไม่พบเลย (ซึ่งต้องพึ่งข้ออื่นที่ข้อความตรงกันเหมือนกันอยู่แล้ว)
+        header_codes = set()
+        if getattr(self, "questionnaire_data", ""):
+            self._prepare_questionnaire_index()
+            for ln in self._q_lines_norm:
+                mo = self._HEADER_RE.match(ln)
+                if mo:
+                    header_codes.add(mo.group(1))
+
+        def question_of(variable):
+            for c in self._codes_from_name(variable):
+                if c in header_codes:
+                    return c
+                base_c = re.sub(r'[a-z]$', '', c)
+                if base_c in header_codes:
+                    return base_c
+            return ""
+
+        # ข้อต่างกันแต่ภาษาอังกฤษในบล็อกของตัวเองเหมือนกันทุกค่า (อ่านจากแบบสอบถามโดยตรง) ยังรวมกลุ่มได้ เพื่อไม่ให้
+        # จำนวนแถวที่ส่ง AI บวมโดยไม่จำเป็น (ใช้เป็นลายเซ็นจัดกลุ่มเท่านั้น ภาษาอังกฤษที่แปะจริงยังมาจาก AI คัดลอก)
+        header_lines = {}
+        if header_codes:
+            for i, ln in enumerate(self._q_lines_norm):
+                mo = self._HEADER_RE.match(ln)
+                if mo:
+                    header_lines.setdefault(mo.group(1), []).append(i)
+
+        def own_block_english(code, label_keys):
+            """(สถานะ, tuple ภาษาอังกฤษต่อ label) จากบล็อกของรหัสนี้
+            สถานะ: "eng" = พบคู่ครบทุก label และทุกบล็อกให้เหมือนกัน | "absent" = ไม่พบ label ใดในบล็อกเลย
+            (เช่น รายการยี่ห้อที่เป็น list กลาง) | "partial" = พบบางส่วน/ไม่มีอังกฤษ/หลายบล็อกให้ต่างกัน"""
+            if not code or not label_keys:
+                return "absent", None
+            norm, raw, n = self._q_lines_norm, self._q_lines, len(self._q_lines)
+            strip_r = lambda s: re.sub(r'^\(?r\d+\)?\s*', '', s)   # "(R1) ยี่ห้อ" กับ "ยี่ห้อ" ถือว่าตรงกัน
+            results = set()
+            any_label_seen = False
+            for h in header_lines.get(code, ()):
+                # บล็อกของข้อ = จนถึงหัวข้อรหัสอื่นถัดไป (docx ที่เซลล์ซ้ำ ๆ อาจยาวหลายร้อยบรรทัด จึงไม่ใช้หน้าต่างสั้น)
+                end = h + 1
+                while end < n and end - h < 600:
+                    c2 = self._HEADER_RE.match(norm[end])
+                    if c2 and c2.group(1) != code:
+                        break
+                    end += 1
+                found = []
+                for lab in label_keys:
+                    eng = None
+                    lab_s = strip_r(lab)
+                    for j in range(h + 1, end):
+                        cells = [strip_r(re.sub(r'\s+', ' ', c).strip().casefold()) for c in raw[j].split("\t")]
+                        if lab_s in cells:
+                            any_label_seen = True
+                            k = cells.index(lab_s)
+                            eng = next((c for c in cells[k + 1:] if re.search(r'[A-Za-z]{2,}', c) and not THAI_RE.search(c)), None)
+                            if eng is None and j + 1 < end and not THAI_RE.search(raw[j + 1]) and re.search(r'[A-Za-z]{2,}', raw[j + 1]):
+                                eng = re.sub(r'\s+', ' ', raw[j + 1]).strip().casefold()
+                            break
+                    if eng is None:
+                        found = None
+                        break
+                    found.append(eng)
+                if found is not None:
+                    results.add(tuple(found))
+            if len(results) == 1:
+                return "eng", next(iter(results))
+            return ("partial" if any_label_seen else "absent"), None
 
         var_keys = src_df['Variable'].apply(lambda v: str(v).strip().lower())
         for _group_key, group in src_df.groupby(var_keys, sort=False):
@@ -2292,8 +2647,17 @@ class App:
                 signature = ("unique-variable", variable.lower())
                 self._value_no_collapse_vars.add(variable.lower())
             else:
-                pairs = zip(value_keys, (self._dedupe_label_key(v) for v in group['Label']))
-                signature = ("code-list", tuple(sorted(pairs)))
+                label_keys = [self._dedupe_label_key(v) for v in group['Label']]
+                pairs = tuple(sorted(zip(value_keys, label_keys)))
+                q_code = question_of(variable)
+                status, eng = own_block_english(q_code, label_keys)
+                if status == "eng":
+                    signature = ("code-list", "eng", eng, pairs)        # รวมได้กับทุกข้อที่อังกฤษเหมือนกัน
+                elif status == "absent":
+                    signature = ("code-list", "", pairs)                # ไม่มี code list ของตัวเอง: รวมข้ามข้อได้ตามเดิม
+                else:
+                    signature = ("code-list", q_code, pairs)            # รวมเฉพาะข้อเดียวกัน
+                self._dedupe_debug[variable] = (q_code, status, eng)   # ข้อมูลวินิจฉัย ไม่มีผลต่อการทำงาน
 
             rep = signature_to_rep.setdefault(signature, variable)
             self._value_var_to_rep[variable.lower()] = rep
