@@ -83,11 +83,12 @@ class AutoLycheePackagingTests(unittest.TestCase):
         method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_fast_launch_submodule')
         namespace = {'os': os, 'sys': sys, '__file__': str(ROOT / 'Main_Program.py'), '_fast_show_error': Mock()}
         exec(compile(ast.Module(body=[method], type_ignores=[]), '<fast-route>', 'exec'), namespace)
-        with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(ROOT / 'dist'), create=True), patch.object(sys, 'argv', ['Main_Program.exe', '--run-module', '158_AutoLychee_OneFile', '--entry-point', 'run_this_app', '--check']), patch('os.path.isfile', return_value=True), patch('subprocess.call', return_value=0) as call:
+        with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', str(ROOT / 'dist'), create=True), patch.object(sys, 'argv', ['Main_Program.exe', '--run-module', '158_AutoLychee_OneFile', '--entry-point', 'run_this_app', '--check']), patch('os.path.isfile', return_value=True), patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')) as call:
             with self.assertRaises(SystemExit) as result:
                 namespace['_fast_launch_submodule']()
             self.assertEqual(result.exception.code, 0)
             self.assertEqual(call.call_args.args[0], [str(ROOT / 'dist/AutoLychee/AutoLychee.exe'), '--check'])
+            self.assertTrue(call.call_args.kwargs['capture_output'])
 
 
 if __name__ == '__main__':

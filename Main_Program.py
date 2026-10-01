@@ -69,6 +69,17 @@ def _fast_launch_submodule():
                 child_env = os.environ.copy()
                 child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
                 child_env.pop("MAIN_PROGRAM_SCRIPT_MODULE", None)
+                if script_args[:1] in (["--check"], ["--smoke-test"]):
+                    # Windowed parent processes have no Python console streams.
+                    # Explicit pipes give the child's _bind_stdio valid Windows handles.
+                    result = subprocess.run(
+                        [executable, *script_args], env=child_env,
+                        capture_output=True, text=True, encoding="utf-8", timeout=90)
+                    if sys.stdout is not None:
+                        sys.stdout.write(result.stdout)
+                    if sys.stderr is not None:
+                        sys.stderr.write(result.stderr)
+                    raise SystemExit(result.returncode)
                 raise SystemExit(subprocess.call([executable, *script_args], env=child_env))
             import runpy
             spec = importlib.util.find_spec(full_module_name)
