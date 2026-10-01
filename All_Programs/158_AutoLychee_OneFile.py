@@ -77,19 +77,11 @@ def _read_sections() -> dict[str, tuple[str, int]]:
     return _sections
 
 
-def _process_command(*args: str) -> tuple[str, list[str]]:
-    """Re-enter this script, including when hosted by the Main Program executable."""
-    if FROZEN:
-        module = _os.environ.get('MAIN_PROGRAM_SCRIPT_MODULE')
-        if module == 'All_Programs.158_AutoLychee_OneFile':
-            return _sys.executable, ['--run-module', module, '--entry-point', '__main__', *args]
-        return _sys.executable, list(args)
-    return _sys.executable, ['-X', 'utf8', '-u', str(SINGLE_FILE), *args]
-
-
 def worker_command(request: str) -> tuple[str, list[str]]:
     """How the GUI starts the background worker (program, arguments)."""
-    return _process_command('--worker', request)
+    if FROZEN:
+        return _sys.executable, ['--worker', request]
+    return _sys.executable, ['-X', 'utf8', '-u', str(SINGLE_FILE), '--worker', request]
 
 
 class _SectionImporter(_abc.MetaPathFinder, _abc.Loader):
@@ -217,7 +209,7 @@ def _run_app() -> None:
 
 
 def _smoke_test() -> None:
-    """Check frozen dependencies and construct the GUI without running Lychee jobs."""
+    """Load all sections and construct the GUI without running survey jobs."""
     _check()
     _write_assets()
     namespace = {'__name__': 'app', '__file__': str(SINGLE_FILE)}
@@ -304,6 +296,10 @@ class Job:
     # The last Step (always last, user rule): how Lyche exports. sheets = separated sheets (Cross: Export
     # with Analysis Axis; Matrix: Export all → Excel(Separated Sheets)); onesheet = Export all → Excel(One Sheet).
     export_mode: str = 'sheets'
+    # Banner Manual (user request): after loading the History, replace its Banner with these Lyche item
+    # codes, in order (Clear all → Yes, then search each item → To Banner). The Stub stays the History's.
+    banner_manual: bool = False
+    banner_manual_items: str = ''  # e.g. 'QUOTA1, QUOTA6' (commas, spaces or new lines between items)
 
 
 def parse_filter(value: str):
@@ -315,6 +311,16 @@ def parse_filter(value: str):
         raise ValueError('Filter ต้องเป็น - หรือ ตัวแปร = code / ตัวแปร ^= code เช่น QUOTA6 ^= 1')
     var, operator, code = match.groups()
     return var, 'Include' if operator == '=' else 'Exclude', str(int(code))
+
+
+def manual_items(text: str) -> list[str]:
+    """Banner Manual items as a list: split on commas / semicolons / white space, duplicates dropped."""
+    items, seen = [], set()
+    for item in re.split(r'[,;\s]+', text or ''):
+        if item and item.casefold() not in seen:
+            seen.add(item.casefold())
+            items.append(item)
+    return items
 
 
 def output_name(value: str) -> str:
@@ -348,6 +354,8 @@ def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
                 raise ValueError('Base ต้องเป็นจำนวนเต็มบวก หรือเว้นว่าง')
             if job.del_sig and not re.search(r'[A-Za-z]', job.del_sig_groups or ''):
                 raise ValueError('เปิด Del Sig แล้วแต่ยังไม่ได้ใส่กลุ่ม Sig (ดับเบิลคลิกแถวเพื่อตั้งค่า)')
+            if job.banner_manual and not manual_items(job.banner_manual_items):
+                raise ValueError('เปิด Banner Manual แล้วแต่ยังไม่ได้ใส่ข้อ (คลิกช่อง Banner Manual เพื่อตั้งค่า)')
             if job.status != 'OK':
                 pending += 1
                 if check_files and (folder / name).exists():
@@ -382,6 +390,8 @@ EXPORT_MODE_LABELS = {'sheets': 'แยกชีท', 'onesheet': 'One Sheet'}
 # older exports (Banner, ชื่อไฟล์ผลลัพธ์, Filter, Base, สถานะ, รายละเอียด) still load.
 QUEUE_COLUMNS = (
     ('Banner', 'history'),
+    ('Banner Manual', 'banner_manual'),
+    ('Banner Manual ข้อ', 'banner_manual_items'),
     ('ชื่อไฟล์ผลลัพธ์', 'output'),
     ('Filter', 'filter'),
     ('Base', 'base'),
@@ -436,6 +446,8 @@ def _setting_value(field: str, text: str):
         return 'onesheet' if 'one' in folded.replace(' ', '') else 'sheets'
     if field == 'del_sig_groups':
         return text.strip().upper()
+    if field == 'banner_manual_items':
+        return ', '.join(manual_items(text))
     if isinstance(getattr(Job(), field), bool):
         return folded in (ON, 'on', 'true', '1', 'yes', 'y', '✓', 'x')
     return text
@@ -1432,12 +1444,14 @@ class Lyche:
             yield
 
     @contextmanager
-    def background_session(self):
+    def background_session(self, keep_minimised=False):
         """Run with Lyche out of sight. A minimised Cross Tabulation window stays minimised (UIA and
         WPF layout keep working; restoring it would animate on screen and Windows clamps an
         off-screen restore position back to 0,0). A normal window is moved off-screen; a maximised
         one is minimised without activation. Every new Lyche window is parked off-screen by
-        HideLycheDialogs. The window's original state is put back afterwards."""
+        HideLycheDialogs. The window's original state is put back afterwards.
+        keep_minimised: a minimised window is not brought back to normal for the ribbon (the Banner
+        Manual check needs no ribbon); if Lyche shows it by itself it is parked, then minimised again."""
         if not self.background:
             yield
             return
@@ -1453,7 +1467,9 @@ class Lyche:
         try:
             with HideLycheDialogs(self.pid, also=(handle,)) as hider:
                 self.hider = hider
-                if was_iconic or was_max:
+                if was_iconic and keep_minimised:
+                    pass
+                elif was_iconic or was_max:
                     # Ribbon drop-downs (Tabulate All) do not open while minimised, so bring the
                     # window back to normal without activation; the hook parks it off-screen at once.
                     win32gui.SetWindowPlacement(handle, (placement[0], 4, placement[2], placement[3], placement[4]))
@@ -1892,6 +1908,104 @@ class Lyche:
     def is_matrix(self):
         """True while the settings window is Lyche's Matrix one ('Tabulation for Matix settings')."""
         return win32gui.IsWindow(self.handle) and win32gui.GetWindowText(self.handle).startswith(MATRIX_PREFIXES)
+
+    def banner_codes(self, root=None):
+        """Item codes in the Banner list ('QUOTA1 QUOTA1.Quota: Brand' → 'QUOTA1'), top to bottom."""
+        grid = self.find(self.find(root or self.main(), aid='grdTabulationItemUp'), aid='lvTabulationItem')
+        codes = []
+        for row in self.all(grid, kind=50029):
+            cells = [x.window_text().strip() for x in self.all(row, kind=50020)]
+            text = next((c for c in cells if c and not c.isdigit()), '')
+            codes.append(text.split(' ', 1)[0])
+        return codes
+
+    def set_banner_items(self, items):
+        """Banner Manual (user request): replace the History's Banner with `items`, in order. As a user
+        would: Banner 'Clear all' → Yes, then per item: search the item list, select the item whose
+        code matches exactly, 'To Banner'. UIA patterns only, so it also works off-screen."""
+        if self.is_matrix():
+            raise RuntimeError('Banner Manual ใช้กับ Banner แบบ Matrix ไม่ได้ — ปิด Banner Manual ของแถวนี้')
+        root = self.settings()
+        panel = self.find(root, aid='grdTabulationItemUp')
+        if self.banner_codes(root):
+            self.click(self.find(panel, aid='btnClrRows'))
+            def cleared():
+                for prefix in ('Confirm', 'Question'):
+                    for handle in self.visible_dialogs(prefix):
+                        dialog = self.wrapper(handle)
+                        yes = self.find(dialog, name='Yes', kind=50000, required=False) \
+                            or self.find(dialog, name='&Yes', kind=50000, required=False)
+                        if yes:
+                            text = ' '.join(x.window_text() for x in self.all(dialog, kind=50020)).strip()
+                            self.press(yes)
+                            self.emit('log', text=f'Clear all Banner: {text or win32gui.GetWindowText(handle)} → Yes')
+                            return False  # wait for the list to empty
+                return not self.banner_codes(root)
+            self.wait(cleared, 'Clear all Banner')
+        for index, item in enumerate(items, 1):
+            self.checkpoint()
+            row, _ = self.find_item(root, item)
+            if row is None:
+                raise RuntimeError(f'Banner Manual: ไม่พบข้อ {item} ในรายการ Item ของ Lyche')
+            self.checkpoint()
+            row.select()
+            time.sleep(.2)
+            self.click(self.find(root, aid='btnToColQ'))
+            def added():
+                codes = self.banner_codes(root)
+                return codes if len(codes) >= index else None
+            codes = self.wait(added, f'To Banner {item}')
+            if [c.casefold() for c in codes] != [x.casefold() for x in items[:index]]:
+                raise RuntimeError(f'Banner Manual: Banner ไม่ตรงหลังเพิ่ม {item} (ได้ {", ".join(codes)})')
+        self.emit('log', text=f'Banner Manual: {", ".join(items)}')
+
+    def find_item(self, root, item):
+        """Search the settings window's item list for the item whose code is exactly `item` (case aside).
+        Returns (row, its text such as 'QUOTA6 QUOTA6') or (None, '')."""
+        search_panel = self.find(root, aid='searchPanel')
+        tree = self.find(root, aid='treeListViewQ')
+        self.find(search_panel, aid='txtKeyWord').set_edit_text(item)
+        self.click(self.find(search_panel, aid='btnSearch'))
+        def exact_row():
+            for row in self.all(tree, kind=50029):
+                for text in (x.window_text().strip() for x in self.all(row, kind=50020)):
+                    if text.split(' ', 1)[0].casefold() == item.casefold():
+                        return row, text
+            return None
+        # The search jumps to its first hit ('Quota1' also hits QUOTA10…); step with Next until the
+        # exact item is among the rows the list has drawn.
+        for _ in range(30):
+            try:
+                return self.wait(exact_row, f'ข้อ {item}', 3)
+            except TimeoutError:
+                hits = re.search(r'(\d+)\s*/\s*(\d+)', self.text(search_panel, 'txtShowinfo'))
+                if not hits or int(hits.group(1)) >= int(hits.group(2)):
+                    break
+                self.click(self.find(search_panel, aid='btnNext'))
+        return None, ''
+
+    def check_items(self, items):
+        """Banner Manual 'เช็คกับ Lyche': which items exist in the project's item list. Search only — the
+        Banner is not touched; the search box is cleared afterwards."""
+        if self.is_matrix():
+            raise RuntimeError('หน้าต่าง Lyche ตอนนี้เป็น Matrix — Banner Manual ใช้กับ Banner แบบ Matrix ไม่ได้')
+        root = self.settings()
+        results = []
+        try:
+            for item in items:
+                self.checkpoint()
+                row, text = self.find_item(root, item)
+                results.append({'item': item, 'found': row is not None, 'label': text})
+        finally:
+            try:
+                panel = self.find(root, aid='searchPanel')
+                self.find(panel, aid='txtKeyWord').set_edit_text('')
+            except Exception:
+                pass
+        found = sum(r['found'] for r in results)
+        self.emit('log', text=f'เช็คข้อ Banner Manual กับ Lyche: พบ {found}/{len(results)} ข้อ'
+                              + ''.join(f' · ไม่พบ {r["item"]}' for r in results if not r['found']))
+        return results
 
     def combo_value(self, combo):
         try:
@@ -5364,7 +5478,7 @@ from contextlib import contextmanager
 import traceback
 from datetime import datetime
 from pathlib import Path
-from core import Job, output_name, validate_jobs
+from core import Job, manual_items, output_name, validate_jobs
 
 
 _emit_lock = threading.Lock()
@@ -5476,9 +5590,10 @@ class PostPipeline:
     one at a time (1 CPU core, below-normal priority) in queue order."""
     def __init__(self, log_dir):
         import subprocess
-        import onefile
-        program, arguments = onefile._process_command('--post')
-        command = [program, *arguments]
+        if getattr(sys, 'frozen', False):
+            command = [sys.executable, '--post']
+        else:
+            command = [sys.executable, '-X', 'utf8', '-u', str(Path(__file__).resolve()), '--post']
         self.log_dir = str(log_dir)
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -5644,6 +5759,7 @@ def main():
                     items.append(item)
             emit('windows', items=items, opened=False)
             return
+        fresh = not windows()  # resolve_handle is about to open Cross Tabulation
         bot = Lyche(resolve_handle(config, windows, open_cross_tabulation), Path(config['control_dir']), emit,
                     config.get('timeout', 900), background=config.get('background', True))
         source = config.get('source', 'Personal')
@@ -5656,6 +5772,21 @@ def main():
         elif config['action'] == 'load':
             with bot.background_session():
                 bot.load(config['banner'], source)
+        elif config['action'] == 'check_items':
+            # Banner Manual 'เช็คกับ Lyche': search the item list only (the Banner is not changed). UIA search
+            # works with the window as it is (verified live), so nothing pops up (user request): a window on
+            # screen is not moved at all; a minimised one (also one just opened) stays minimised, and the
+            # parker hides it if Lyche shows it by itself — for 2 s more after a fresh open — then it is
+            # minimised again.
+            import win32gui
+            if bot.background and win32gui.IsIconic(bot.handle):
+                with bot.background_session(keep_minimised=True):
+                    results = bot.check_items(config['items'])
+                    if fresh:
+                        time.sleep(2)
+            else:
+                results = bot.check_items(config['items'])
+            emit('items_checked', results=results)
         elif config['action'] == 'run':
             jobs = [Job(**job) for job in config['jobs']]
             folder = Path(config['folder'])
@@ -5670,13 +5801,21 @@ def main():
                         continue
                     current = job
                     emit('status', id=job.id, status='กำลังรัน', detail='กำลังโหลด Banner')
-                    if job.history != loaded:
+                    # Banner Manual changes the loaded Banner, so a row reuses what is loaded only when
+                    # both the History and its manual items are the same as the previous row's.
+                    wanted = (job.history, tuple(manual_items(job.banner_manual_items)) if job.banner_manual else ())
+                    if wanted != loaded:
                         bot.load(job.history, source)
-                        loaded = job.history
+                        if wanted[1]:
+                            emit('status', id=job.id, status='กำลังรัน', detail='Banner Manual')
+                            bot.set_banner_items(list(wanted[1]))
+                        loaded = wanted
                     base = bot.set_filter(job.filter, job.base)
                     emit('status', id=job.id, status='กำลังรัน', detail='Tabulate / Export')
                     path = folder / output_name(job.output)
-                    bot.run_export(path, one_sheet=job.export_mode == 'onesheet')  # the row's last Step
+                    # the row's last Step; Banner Manual rows export with Analysis Axis only (user rule:
+                    # a One Sheet export of a manual Banner said Saved but left no file)
+                    bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not job.banner_manual)
                     detail = f'Saved | {path}'
                     if bot.matrix and job.del_sig and job.del_sig_mode != 'MATRIX':
                         job.del_sig_mode = 'MATRIX'  # user rule: a Matrix History → Del Sig in Matrix mode
@@ -5762,7 +5901,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem,
 )
 from chrome import MacWindowMixin
-from core import Job, save_json, read_jobs, validate_jobs
+from core import Job, manual_items, save_json, read_jobs, validate_jobs
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -5891,21 +6030,41 @@ class FreezeOverlay(QWidget):
         QPainter(self).drawPixmap(self.rect(), self.shot)
 
 
+# Per-row settings kept on the row's column-0 item: the Steps, plus Banner Manual (its own column/dialog).
+MANUAL_KEYS = ('banner_manual', 'banner_manual_items')
 POST_KEYS = ('total_na', 'total_na_empty_rows', 'del_sig', 'del_sig_groups', 'del_sig_mode', 'del_sig_beside',
-             'cut_percent', 'cut_percent_mode', 'export_mode')
+             'cut_percent', 'cut_percent_mode', 'export_mode') + MANUAL_KEYS
 CUT_MODES = (('both', 'N + %'), ('count', 'N Only'), ('percent', '% Only'))
 EXPORT_MODES = (('sheets', 'แยกชีท'), ('onesheet', 'One Sheet'))
 
 
 def post_settings(job):
     """The post-processing part of a Job as a plain dict (stored on the row's column-0 item)."""
-    return {key: getattr(job, key) for key in POST_KEYS}
+    post = {key: getattr(job, key) for key in POST_KEYS}
+    post['export_mode'] = export_mode(post)  # e.g. an imported queue with Banner Manual + One Sheet
+    return post
 
 
 # Step 1 Delete Total + NA, Step 2 Del Sig, Step 3 Cut N / %, then Export — always the LAST Step (user
 # rule): a new Step goes before it (new column before the last, new card before the Export card).
 STEP_COLUMNS = (6, 7, 8, 9)
 STEP_NAMES = ('Delete Total + NA', 'Del Sig (ตัด Sig)', 'ตัด N / %', 'Export')
+# Banner Manual is appended after the Steps (so no other column index changes) and shown next to Banner.
+# A new Step would take this index: move Banner Manual to the end then.
+MANUAL_COLUMN = 6 + len(STEP_COLUMNS)
+GEAR_COLUMN = MANUAL_COLUMN + 1  # one gear per row (shown last): opens the row's Step settings
+
+
+def export_mode(post):
+    """The row's Step 4 export. Banner Manual rows always export separated sheets (Export with Analysis
+    Axis): user rule 2026-10-01 — a One Sheet export of a manual Banner said Saved but left no file."""
+    return 'sheets' if post.get('banner_manual') else post.get('export_mode', 'sheets')
+
+
+def manual_text(post):
+    """Banner Manual cell text (None when off)."""
+    items = manual_items(post.get('banner_manual_items', '')) if post.get('banner_manual') else []
+    return ', '.join(items) or None
 
 
 def step_texts(post):
@@ -5918,8 +6077,8 @@ def step_texts(post):
             step2 += ' · Matrix'
         if post.get('del_sig_beside'):
             step2 += ' · ข้าง'
-    step3 = ('ตัด ' + dict(CUT_MODES).get(post.get('cut_percent_mode'), 'N + %')) if post.get('cut_percent') else None
-    export = 'Export ' + dict(EXPORT_MODES).get(post.get('export_mode'), 'แยกชีท')
+    step3 = dict(CUT_MODES).get(post.get('cut_percent_mode'), 'N + %') if post.get('cut_percent') else None
+    export = dict(EXPORT_MODES).get(export_mode(post), 'แยกชีท')
     return step1, step2, step3, export
 
 
@@ -5931,9 +6090,53 @@ def post_summary(post):
         parts.append('Sig ' + (post.get('del_sig_groups') or '?') + (' · ข้าง' if post.get('del_sig_beside') else ''))
     if post.get('cut_percent'):
         parts.append(dict(CUT_MODES).get(post.get('cut_percent_mode'), 'N + %'))
-    if post.get('export_mode') == 'onesheet':
+    if export_mode(post) == 'onesheet':
         parts.append('Export One Sheet')
     return ' + '.join(parts) or 'Off'
+
+
+def sheet_layout(dialog, width):
+    """Frameless rounded sheet with a soft shadow (the settings dialogs' look); returns its layout."""
+    dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+    dialog.setAttribute(Qt.WA_TranslucentBackground)
+    dialog.setFixedWidth(width)
+    shell = QVBoxLayout(dialog)
+    shell.setContentsMargins(20, 20, 20, 20)
+    sheet = QFrame()
+    sheet.setObjectName('sheet')
+    shadow = QGraphicsDropShadowEffect(sheet)
+    shadow.setBlurRadius(36)
+    shadow.setOffset(0, 8)
+    shadow.setColor(QColor(27, 63, 208, 60))
+    sheet.setGraphicsEffect(shadow)
+    shell.addWidget(sheet)
+    layout = QVBoxLayout(sheet)
+    layout.setContentsMargins(28, 24, 28, 22)
+    layout.setSpacing(10)
+    return layout
+
+
+def dialog_buttons(dialog, layout):
+    """'ใช้กับทุกแถว' · 'ยกเลิก' · 'ตกลง' row shared by the settings dialogs."""
+    buttons = QHBoxLayout()
+    buttons.setSpacing(8)
+    all_rows = QPushButton('ใช้กับทุกแถว')
+    all_rows.setObjectName('secondary')
+    cancel = QPushButton('ยกเลิก')
+    cancel.setObjectName('secondary')
+    ok = QPushButton('ตกลง')
+    ok.setObjectName('primary')
+    ok.setDefault(True)
+    for button in (all_rows, cancel, ok):
+        button.setCursor(Qt.PointingHandCursor)
+    all_rows.clicked.connect(dialog.accept_all)
+    cancel.clicked.connect(dialog.reject)
+    ok.clicked.connect(dialog.accept)
+    buttons.addWidget(all_rows)
+    buttons.addStretch(1)
+    buttons.addWidget(cancel)
+    buttons.addWidget(ok)
+    layout.addLayout(buttons)
 
 
 class PostProcessDialog(QDialog):
@@ -5942,23 +6145,8 @@ class PostProcessDialog(QDialog):
     (151_CutLychee_Persence.py)."""
     def __init__(self, parent, name, settings):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(580)
         self.apply_all = False
-        shell = QVBoxLayout(self)
-        shell.setContentsMargins(20, 20, 20, 20)
-        sheet = QFrame()
-        sheet.setObjectName('sheet')
-        shadow = QGraphicsDropShadowEffect(sheet)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(27, 63, 208, 60))
-        sheet.setGraphicsEffect(shadow)
-        shell.addWidget(sheet)
-        layout = QVBoxLayout(sheet)
-        layout.setContentsMargins(28, 24, 28, 22)
-        layout.setSpacing(10)
+        layout = sheet_layout(self, 580)
         heading = QLabel('ตั้งค่าหลังรัน')
         heading.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
         layout.addWidget(heading)
@@ -6076,9 +6264,14 @@ class PostProcessDialog(QDialog):
         export_label.setToolTip('แยกชีท: Cross = Export with Analysis Axis · Matrix = Export all → Excel(Separated Sheets)\n'
                                 'One Sheet: ทั้ง Cross และ Matrix = Export all → Excel(One Sheet)')
         export.addWidget(export_label)
+        manual = bool(settings.get('banner_manual'))
+        if manual:
+            locked = QLabel('Banner Manual → แยกชีทเท่านั้น')
+            locked.setStyleSheet('color: #8b97ab; font-size: 12px;')
+            export.addWidget(locked)
         export.addStretch(1)
         self.export_group = QButtonGroup(self)
-        current = settings.get('export_mode', 'sheets')
+        current = export_mode(settings)
         self.export_radios = {}
         for key, label in EXPORT_MODES:
             radio = QRadioButton(label)
@@ -6088,6 +6281,9 @@ class PostProcessDialog(QDialog):
             export.addWidget(radio)
         if self.export_group.checkedButton() is None:
             self.export_radios['sheets'].setChecked(True)
+        if manual:  # Banner Manual rows: Export with Analysis Axis only (user rule)
+            self.export_radios['onesheet'].setEnabled(False)
+            self.export_radios['onesheet'].setToolTip('แถวที่ใช้ Banner Manual Export ได้แบบแยกชีท (Export with Analysis Axis) เท่านั้น')
         layout.addWidget(export_card)
 
         self.message = QLabel('')
@@ -6098,25 +6294,7 @@ class PostProcessDialog(QDialog):
         note.setStyleSheet('color: #8b97ab; font-size: 12px;')
         layout.addWidget(note)
         layout.addSpacing(6)
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        all_rows = QPushButton('ใช้กับทุกแถว')
-        all_rows.setObjectName('secondary')
-        cancel = QPushButton('ยกเลิก')
-        cancel.setObjectName('secondary')
-        ok = QPushButton('ตกลง')
-        ok.setObjectName('primary')
-        ok.setDefault(True)
-        for button in (all_rows, cancel, ok):
-            button.setCursor(Qt.PointingHandCursor)
-        all_rows.clicked.connect(self.accept_all)
-        cancel.clicked.connect(self.reject)
-        ok.clicked.connect(self.accept)
-        buttons.addWidget(all_rows)
-        buttons.addStretch(1)
-        buttons.addWidget(cancel)
-        buttons.addWidget(ok)
-        layout.addLayout(buttons)
+        dialog_buttons(self, layout)
 
     @property
     def settings(self):
@@ -6144,6 +6322,134 @@ class PostProcessDialog(QDialog):
         self.accept()
 
 
+class BannerManualDialog(QDialog):
+    """Banner Manual of a row: Lyche item codes that replace the History's Banner (in this order).
+    The run does what a user would: Banner 'Clear all' → Yes, then per item: search → select → To Banner."""
+    def __init__(self, parent, name, settings, checker=None):
+        super().__init__(parent)
+        self.apply_all = False
+        self.checker = checker  # App.check_manual_items(items, callback): 'เช็คกับ Lyche'
+        layout = sheet_layout(self, 560)
+        heading = QLabel('Banner Manual')
+        heading.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
+        layout.addWidget(heading)
+        target = QLabel(escape(name) + '  ·  ใส่ข้อเป็น Banner แทน Banner จาก History (Stub ใช้ของ History เหมือนเดิม)')
+        target.setStyleSheet('color: #5f6f8a;')
+        target.setWordWrap(True)
+        layout.addWidget(target)
+        layout.addSpacing(4)
+        card = QFrame()
+        card.setStyleSheet('QFrame { background: #f4f7fc; border: 1px solid #d5e0ef; border-radius: 12px; } '
+                           'QLabel, QCheckBox { border: none; background: transparent; }')
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setSpacing(8)
+        self.enabled = QCheckBox('ใช้ Banner Manual')
+        self.enabled.setStyleSheet('font-size: 15px; font-weight: 700;')
+        self.enabled.setChecked(bool(settings.get('banner_manual')))
+        inner.addWidget(self.enabled)
+        caption = QLabel('ข้อที่จะใส่ เรียงตามลำดับ Banner · หลายข้อคั่นด้วย , หรือขึ้นบรรทัดใหม่')
+        caption.setStyleSheet('color: #4a5a78; font-size: 12px; font-weight: 600;')
+        caption.setWordWrap(True)
+        inner.addWidget(caption)
+        self.items = QPlainTextEdit('\n'.join(manual_items(settings.get('banner_manual_items', ''))))
+        self.items.setPlaceholderText('เช่น\nQUOTA1\nQUOTA6')
+        self.items.setFixedHeight(112)
+        # its own style: the card's 'QFrame' rule would otherwise apply (QPlainTextEdit is a QFrame)
+        self.items.setStyleSheet('QPlainTextEdit { background: #ffffff; border: 1px solid #c3d0e4; border-radius: 7px; '
+                                 'padding: 4px 6px; font-size: 13px; } QPlainTextEdit:focus { border: 1px solid #2a8de9; } '
+                                 'QPlainTextEdit:disabled { background: #f3f6fb; color: #8b97ab; }')
+        self.items.setTabChangesFocus(True)
+        inner.addWidget(self.items)
+        check_row = QHBoxLayout()
+        check_row.setSpacing(10)
+        self.check_button = QPushButton('เช็คกับ Lyche')
+        self.check_button.setObjectName('secondary')
+        self.check_button.setCursor(Qt.PointingHandCursor)
+        self.check_button.setToolTip('ค้นหาทุกข้อในรายการ Item ของ Lyche (เบื้องหลัง) ว่ามีจริงและชื่อตรง — ไม่แก้ Banner ใน Lyche')
+        self.check_button.clicked.connect(self.check_items)
+        check_row.addWidget(self.check_button, 0, Qt.AlignTop)
+        self.check_result = QLabel('')
+        self.check_result.setWordWrap(True)
+        self.check_result.setTextFormat(Qt.RichText)
+        self.check_result.setStyleSheet('font-size: 12px;')
+        check_row.addWidget(self.check_result, 1)
+        inner.addLayout(check_row)
+        self.items.textChanged.connect(lambda: self.check_result.setText(''))  # an old result no longer applies
+        how = QLabel('ตอนรัน: Clear all Banner เดิม → Yes → ค้นหาทีละข้อ → To Banner แล้วรันต่อตามปกติ · Export แยกชีทเท่านั้น\n'
+                     'ใช้กับ Banner แบบ Matrix ไม่ได้')
+        how.setStyleSheet('color: #4a5a78; font-size: 12px;')
+        how.setWordWrap(True)
+        inner.addWidget(how)
+        layout.addWidget(card)
+        self.enabled.toggled.connect(self.items.setEnabled)
+        self.enabled.toggled.connect(self.check_button.setEnabled)
+        self.items.setEnabled(self.enabled.isChecked())
+        self.check_button.setEnabled(self.enabled.isChecked())
+        self.message = QLabel('')
+        self.message.setStyleSheet('color: #c62828; font-size: 12px;')
+        self.message.hide()
+        layout.addWidget(self.message)
+        layout.addSpacing(6)
+        dialog_buttons(self, layout)
+
+    def check_items(self):
+        items = manual_items(self.items.toPlainText())
+        if not items:
+            self.check_result.setText('<span style="color:#c62828">ใส่ข้ออย่างน้อย 1 ข้อก่อนเช็ค</span>')
+            return
+        if self.checker is None:
+            return
+        self.check_button.setEnabled(False)
+        self.check_result.setText('<span style="color:#1f6fd1">กำลังเช็คกับ Lyche (เบื้องหลัง)…</span>')
+        self.checker(items, self.show_check)
+
+    def show_check(self, results, error=''):
+        """Result of 'เช็คกับ Lyche': ✓ item → Lyche's name, ✗ item not found (or the error)."""
+        try:
+            if not self.isVisible():
+                return
+        except RuntimeError:  # the dialog was closed and deleted meanwhile
+            return
+        self.check_button.setEnabled(self.enabled.isChecked())
+        if error or results is None:
+            self.check_result.setText(f'<span style="color:#c62828">เช็คไม่สำเร็จ: {escape(error or "ไม่ทราบสาเหตุ")}</span>')
+            return
+        lines = []
+        for result in results:
+            if result['found']:
+                label = result['label'] if len(result['label']) <= 48 else result['label'][:47] + '…'
+                lines.append(f'<span style="color:#1f9a3e">✓ {escape(result["item"])}</span>'
+                             f' <span style="color:#5f6f8a">→ {escape(label)}</span>')
+            else:
+                lines.append(f'<span style="color:#c62828">✗ {escape(result["item"])} — ไม่พบใน Lyche</span>')
+        missing = sum(not r['found'] for r in results)
+        lines.append('<b style="color:#1f9a3e">ตรงกับ Lyche ครบทุกข้อ</b>' if not missing
+                     else f'<b style="color:#c62828">ไม่พบ {missing} ข้อ — แก้ชื่อข้อก่อนรัน</b>')
+        self.check_result.setText('<br>'.join(lines))
+
+    @property
+    def settings(self):
+        on = self.enabled.isChecked()
+        settings = {'banner_manual': on, 'banner_manual_items': ', '.join(manual_items(self.items.toPlainText()))}
+        if on:
+            settings['export_mode'] = 'sheets'  # Banner Manual exports with Analysis Axis only (user rule)
+        return settings
+
+    def accept(self):
+        if self.enabled.isChecked() and not manual_items(self.items.toPlainText()):
+            self.message.setText('เปิด Banner Manual แล้ว กรุณาใส่ข้ออย่างน้อย 1 ข้อ เช่น QUOTA1')
+            self.message.show()
+            self.items.setFocus()
+            self.apply_all = False
+            return
+        super().accept()
+
+    def accept_all(self):
+        self.apply_all = True
+        self.accept()
+
+
 class HiddenTextDelegate(QStyledItemDelegate):
     """Column 0 keeps the Banner name as item text (queue data) but the row's dropdown shows it;
     paint background/selection only so the two never overlap."""
@@ -6156,9 +6462,8 @@ class HiddenTextDelegate(QStyledItemDelegate):
 
 
 class StepDelegate(QStyledItemDelegate):
-    """Step 1-3 cells drawn as clickable chips (gear + setting, or a dashed 'ตั้งค่า' when off) so it
-    is obvious they open the post-processing settings."""
-    gear = None
+    """Step / Banner Manual cells: a compact chip with the setting when on, a faint dash when off (a
+    dashed '+' while hovered). One gear per row (GearDelegate) is the obvious way into the settings."""
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -6167,33 +6472,55 @@ class StepDelegate(QStyledItemDelegate):
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
         on = text not in ('', 'Off')
         hover = bool(option.state & QStyle.State_MouseOver)
-        rect = option.rect.adjusted(6, 8, -6, -8)
+        rect = option.rect.adjusted(4, 9, -4, -9)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        if on:
-            fill, border, color = ('#e0d4fb' if hover else '#ece5fb'), '#c9b6f3', QColor('#5b34b8')
-            pen = QPen(QColor(border), 1)
-        else:
-            fill, color = ('#eef4fd' if hover else '#ffffff'), QColor('#1a5fd0' if hover else '#8b97ab')
-            pen = QPen(QColor('#8fb3e8' if hover else '#c3d0e4'), 1, Qt.DashLine)
-        painter.setPen(pen)
-        painter.setBrush(QColor(fill))
-        painter.drawRoundedRect(rect, 9, 9)
         font = QFont(option.font)
         painter.setFont(font)
-        painter.setPen(color)
         metrics = QFontMetrics(font)
-        icon = 14 if on else 0
-        gap = 6 if on else 0
-        label = metrics.elidedText(text if on else '＋ ตั้งค่า', Qt.ElideRight, rect.width() - 16 - icon - gap)
-        width = icon + gap + metrics.horizontalAdvance(label)
-        x = rect.center().x() - width // 2
         if on:
-            if StepDelegate.gear is None:
-                StepDelegate.gear = QIcon(f'{ASSETS}/gear.svg')
-            StepDelegate.gear.paint(painter, QRect(x, rect.center().y() - icon // 2 + 1, icon, icon))
-        painter.drawText(QRect(x + icon + gap, rect.y(), width - icon - gap + 2, rect.height()),
-                         Qt.AlignLeft | Qt.AlignVCenter, label)
+            label = metrics.elidedText(text, Qt.ElideRight, rect.width() - 14)
+            chip = QRect(0, rect.y(), min(rect.width(), metrics.horizontalAdvance(label) + 18), rect.height())
+            chip.moveCenter(rect.center())
+            painter.setPen(QPen(QColor('#c9b6f3'), 1))
+            painter.setBrush(QColor('#e0d4fb' if hover else '#ece5fb'))
+            painter.drawRoundedRect(chip, 8, 8)
+            painter.setPen(QColor('#5b34b8'))
+            painter.drawText(chip, Qt.AlignCenter, label)
+        elif hover:
+            chip = QRect(0, rect.y(), min(rect.width(), 44), rect.height())
+            chip.moveCenter(rect.center())
+            painter.setPen(QPen(QColor('#8fb3e8'), 1, Qt.DashLine))
+            painter.setBrush(QColor('#eef4fd'))
+            painter.drawRoundedRect(chip, 8, 8)
+            painter.setPen(QColor('#1a5fd0'))
+            painter.drawText(chip, Qt.AlignCenter, '＋')
+        else:
+            painter.setPen(QColor('#b4bfd1'))
+            painter.drawText(rect, Qt.AlignCenter, '–')
+        painter.restore()
+
+
+class GearDelegate(QStyledItemDelegate):
+    """The row's single gear: opens its Step settings."""
+    gear = None
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ''
+        widget = opt.widget
+        (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+        if GearDelegate.gear is None:
+            GearDelegate.gear = QIcon(f'{ASSETS}/gear.svg')
+        hover = bool(option.state & QStyle.State_MouseOver)
+        box = QRect(0, 0, 30, 30)
+        box.moveCenter(option.rect.center())
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor('#c9b6f3' if hover else '#d9cdf6'), 1))
+        painter.setBrush(QColor('#e0d4fb' if hover else '#f3eefc'))
+        painter.drawRoundedRect(box, 8, 8)
+        GearDelegate.gear.paint(painter, box.adjusted(7, 7, -7, -7))
         painter.restore()
 
 
@@ -6474,19 +6801,24 @@ class App(MacWindowMixin, QMainWindow):
         self.button('นำเข้า Excel', self.import_excel, row, kind='plain')
         self.button('ส่งออก Excel', self.export_excel, row, kind='plain', tip='บันทึกคิวเป็นไฟล์ Excel (นำเข้ากลับได้)')
         queue.addLayout(row)
-        self.table = QTableWidget(0, 6 + len(STEP_COLUMNS))
+        self.table = QTableWidget(0, GEAR_COLUMN + 1)
         self.table.setItemDelegateForColumn(0, HiddenTextDelegate(self.table))
         self.step_delegate = StepDelegate(self.table)
-        for column in STEP_COLUMNS:
+        for column in (*STEP_COLUMNS, MANUAL_COLUMN):
             self.table.setItemDelegateForColumn(column, self.step_delegate)
+        self.table.setItemDelegateForColumn(GEAR_COLUMN, GearDelegate(self.table))
         self.table.setHorizontalHeaderLabels(['Banner', 'ชื่อไฟล์ผลลัพธ์', 'Filter', 'Base', 'สถานะ', 'รายละเอียด',
-                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)]])
+                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)], 'Banner Manual', ''])
         # Columns 6+ (the Steps, Export last) are appended so every other column index stays the
         # same; they are only *shown* between Base and สถานะ. Column 5 (detail) keeps its data for
         # the run summary / queue export but is hidden: progress is shown in the log below.
         header = self.table.horizontalHeader()
         for position, column in enumerate(STEP_COLUMNS, 4):
             header.moveSection(header.visualIndex(column), position)
+        header.moveSection(header.visualIndex(MANUAL_COLUMN), 1)  # right after Banner
+        self.table.horizontalHeaderItem(MANUAL_COLUMN).setToolTip(
+            'Banner Manual · ใส่ข้อเป็น Banner แทน Banner จาก History\nคลิกที่ช่องในแถวเพื่อตั้งค่า')
+        self.table.horizontalHeaderItem(GEAR_COLUMN).setToolTip('ตั้งค่า Step 1–4 ของแถว')
         self.table.setColumnHidden(5, True)
         for number, (column, name) in enumerate(zip(STEP_COLUMNS, STEP_NAMES), 1):
             self.table.horizontalHeaderItem(column).setToolTip(f'Step {number} · {name}\nคลิกที่ช่องในแถวเพื่อตั้งค่า')
@@ -6505,9 +6837,12 @@ class App(MacWindowMixin, QMainWindow):
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.setWordWrap(False)  # one line per cell; long Sig groups end with … (full text in the tooltip)
-        for index, width in enumerate([165, 140, 110, 60, 90, 300, 125, 160, 110, 155]):
+        # Compact widths so every column fits the window (user request); the file name takes what is left.
+        for index, width in enumerate([150, 160, 104, 52, 76, 300, 88, 112, 80, 88, 136, 46]):
             self.table.setColumnWidth(index, width)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(GEAR_COLUMN, QHeaderView.Fixed)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.itemChanged.connect(self.edited)
         self.log = QPlainTextEdit()
         self.log.setObjectName('log')
@@ -6643,7 +6978,7 @@ class App(MacWindowMixin, QMainWindow):
                 item.setData(Qt.UserRole, job.id)
                 item.setData(Qt.UserRole + 1, post_settings(job))
             self.table.setItem(row, col, item)
-        for column in STEP_COLUMNS:
+        for column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN):
             step_item = QTableWidgetItem()
             step_item.setFlags(step_item.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, column, step_item)
@@ -6669,12 +7004,19 @@ class App(MacWindowMixin, QMainWindow):
             item.setText(text or 'Off')  # StepDelegate draws the chip
             item.setTextAlignment(Qt.AlignCenter)
             item.setToolTip(tip)
+        manual = manual_text(post)
+        item = self.table.item(row, MANUAL_COLUMN)
+        item.setText(manual or 'Off')
+        item.setTextAlignment(Qt.AlignCenter)
+        self.table.item(row, GEAR_COLUMN).setToolTip('ตั้งค่า Step 1–4 ของแถวนี้\n' + post_summary(post))
+        item.setToolTip(('Banner Manual: ' + manual if manual else 'Banner Manual ปิดอยู่ (ใช้ Banner จาก History)')
+                        + '\nคลิกเพื่อตั้งค่า Banner Manual')
 
     def eventFilter(self, obj, event):
         if hasattr(self, 'table') and obj is self.table.viewport():
             if event.type() == QEvent.MouseMove:
                 index = self.table.indexAt(event.position().toPoint())
-                on_chip = index.isValid() and index.column() in STEP_COLUMNS and not self.busy
+                on_chip = index.isValid() and index.column() in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
                 obj.setCursor(Qt.PointingHandCursor if on_chip else Qt.ArrowCursor)
             elif event.type() == QEvent.Leave:
                 obj.unsetCursor()
@@ -6687,12 +7029,14 @@ class App(MacWindowMixin, QMainWindow):
         return super().eventFilter(obj, event)
 
     def cell_double_clicked(self, row, column):
-        if column in (0, 4, 5, *STEP_COLUMNS) and not self.busy:  # columns 1-3 keep double-click-to-edit
+        if column == MANUAL_COLUMN and not self.busy:
+            self.edit_post(row, manual=True)
+        elif column in (0, 4, 5, *STEP_COLUMNS) and not self.busy:  # columns 1-3 keep double-click-to-edit
             self.edit_post(row)
 
     def cell_clicked(self, row, column):
-        if column in STEP_COLUMNS and not self.busy and not QApplication.keyboardModifiers():
-            self.edit_post(row)
+        if column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy and not QApplication.keyboardModifiers():
+            self.edit_post(row, manual=column == MANUAL_COLUMN)
 
     def edit_selected_post(self):
         """Toolbar '⚙ ตั้งค่า Step': the selected rows (all get the same settings), else the first row."""
@@ -6702,32 +7046,35 @@ class App(MacWindowMixin, QMainWindow):
         rows = self.selected_rows() or [0]
         self.edit_post(rows[0], rows)
 
-    def edit_post(self, row, rows=None):
-        """Post-processing settings of a row (or of `rows`, e.g. a multi-row selection)."""
+    def edit_post(self, row, rows=None, manual=False):
+        """Post-processing settings (or Banner Manual) of a row, or of `rows` (a multi-row selection)."""
         if getattr(self, '_editing_post', False):  # a click and a double-click on the same chip
             return
         self._editing_post = True
         try:
-            self._edit_post(row, rows)
+            self._edit_post(row, rows, manual)
         finally:
             self._editing_post = False
 
-    def _edit_post(self, row, rows=None):
+    def _edit_post(self, row, rows=None, manual=False):
         item = self.table.item(row, 0)
         current = item.data(Qt.UserRole + 1) or {}
         name = self.table.item(row, 1).text() or item.text() or f'แถว {row + 1}'
         if rows and len(rows) > 1:
             name = f'{len(rows)} แถวที่เลือก'
-        dialog = PostProcessDialog(self, name, current)
+        dialog = BannerManualDialog(self, name, current, self.check_manual_items) if manual \
+            else PostProcessDialog(self, name, current)
         if dialog.exec() != QDialog.Accepted:
             return
         rows = range(self.table.rowCount()) if dialog.apply_all else (rows or [row])
         for target in rows:
             before = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
-            if before == dialog.settings:
+            after = {**before, **dialog.settings}  # each dialog changes only its own keys
+            after['export_mode'] = export_mode(after)  # e.g. 'apply to all' onto a Banner Manual row
+            if before == after:
                 continue
             self.table.blockSignals(True)
-            self.table.item(target, 0).setData(Qt.UserRole + 1, dict(dialog.settings))
+            self.table.item(target, 0).setData(Qt.UserRole + 1, after)
             self.table.item(target, 4).setText('รอรัน')  # the output would change: run the row again
             self.table.item(target, 5).setText('')
             self.table.blockSignals(False)
@@ -6857,7 +7204,7 @@ class App(MacWindowMixin, QMainWindow):
                     cell.fill = PatternFill('solid', fgColor=bg)
             # dropdowns so the settings can be edited in Excel and still import correctly
             last = max(len(jobs) + 1, 200)
-            for fields, choices in ((('total_na', 'total_na_empty_rows', 'del_sig', 'cut_percent'), 'เปิด,ปิด'),
+            for fields, choices in ((('banner_manual', 'total_na', 'total_na_empty_rows', 'del_sig', 'cut_percent'), 'เปิด,ปิด'),
                                     (('del_sig_mode',), 'Crosstab ธรรมดา,Matrix'),
                                     (('del_sig_beside',), 'Sig ปกติ,Sig ข้าง'),
                                     (('cut_percent_mode',), 'N + %,N Only,% Only'),
@@ -6866,12 +7213,12 @@ class App(MacWindowMixin, QMainWindow):
                 sheet.add_data_validation(rule)
                 for field in fields:
                     rule.add(f'{columns[field]}2:{columns[field]}{last}')
-            widths = {'history': 16, 'output': 26, 'filter': 18, 'base': 8, 'del_sig_groups': 26,
+            widths = {'history': 16, 'banner_manual_items': 22, 'output': 26, 'filter': 18, 'base': 8, 'del_sig_groups': 26,
                       'del_sig_mode': 17, 'del_sig_beside': 13, 'cut_percent_mode': 13, 'export_mode': 13,
                       'สถานะ': 11, 'รายละเอียด': 60}
             for key, letter in columns.items():
                 sheet.column_dimensions[letter].width = widths.get(key, 13)
-            sheet.freeze_panes = 'C2'
+            sheet.freeze_panes = 'E2'  # Banner, Banner Manual (on/off, items), output name
             sheet.auto_filter.ref = sheet.dimensions
             book.save(filename)
         except PermissionError:
@@ -6993,6 +7340,18 @@ class App(MacWindowMixin, QMainWindow):
             return
         self.launch('load', banner=name)
 
+    def check_manual_items(self, items, callback):
+        """Banner Manual 'เช็คกับ Lyche': a background worker searches each item in Lyche's item list;
+        `callback(results, error)` gets [{'item', 'found', 'label'}] or an error text."""
+        if self.busy:
+            callback(None, 'โปรแกรมกำลังทำงานอยู่ รอให้เสร็จก่อน')
+            return
+        if not self.window_combo.currentData():
+            callback(None, 'ค้นหาและเลือกหน้าต่าง Lyche ก่อน')
+            return
+        self.check_callback, self.check_results, self.check_error = callback, None, ''
+        self.launch('check_items', items=items)
+
     def start_run(self):
         self.table.clearFocus()
         if self.validate(False):
@@ -7018,7 +7377,8 @@ class App(MacWindowMixin, QMainWindow):
         self.run_message = ''
         self.run_event = ''
         self.set_busy(True)
-        self.state.setText({'windows': 'กำลังค้นหาหน้าต่าง…', 'banners': 'กำลังดึง Banner…', 'load': 'กำลังโหลด Banner…', 'run': 'กำลังรันคิว • F8 หยุดได้ทุกเมื่อ'}[action])
+        self.state.setText({'windows': 'กำลังค้นหาหน้าต่าง…', 'banners': 'กำลังดึง Banner…', 'load': 'กำลังโหลด Banner…',
+                            'check_items': 'กำลังเช็คข้อกับ Lyche…', 'run': 'กำลังรันคิว • F8 หยุดได้ทุกเมื่อ'}[action])
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(ROOT))
         self.process.readyReadStandardOutput.connect(self.read_output)
@@ -7027,7 +7387,7 @@ class App(MacWindowMixin, QMainWindow):
         self.process.errorOccurred.connect(self.process_error)
         program, arguments = onefile.worker_command(str(request))  # ONEFILE: this file with --worker
         self.process.start(program, arguments)
-        if action in ('run', 'load'):
+        if action in ('run', 'load', 'check_items'):
             import ctypes
             self.user_window = ctypes.windll.user32.GetForegroundWindow()  # where the user is now
             self.focus_guard.start()
@@ -7062,7 +7422,7 @@ class App(MacWindowMixin, QMainWindow):
                 self.window_combo.blockSignals(False)
                 self.write_log(f'พบ {len(event["items"])} หน้าต่าง Lyche')
                 if event.get('opened'):  # Lyche grabbed focus when it opened
-                    if self.action in ('run', 'load') and getattr(self, 'user_window', None):
+                    if self.action in ('run', 'load', 'check_items') and getattr(self, 'user_window', None):
                         QTimer.singleShot(0, lambda: self.activate_window(self.user_window))  # back to the user's work
                     else:
                         QTimer.singleShot(0, self.bring_to_front)
@@ -7070,6 +7430,8 @@ class App(MacWindowMixin, QMainWindow):
                 self.freeze_screen()
             elif kind == 'unfreeze':
                 self.unfreeze_screen()
+            elif kind == 'items_checked':
+                self.check_results = event['results']
             elif kind == 'banners':
                 self.update_banner_choices(event['names'])
                 if event.get('raise_app'):
@@ -7099,6 +7461,8 @@ class App(MacWindowMixin, QMainWindow):
                 self.write_log(event['text'])
                 if kind != 'log' and self.action == 'run':
                     self.run_message, self.run_event = event['text'], kind  # shown in the run summary, not a second popup
+                elif kind == 'error' and self.action == 'check_items':
+                    self.check_error = event['text']  # shown in the Banner Manual dialog, not a second popup
                 elif kind == 'error':
                     self.error(event['text'])
 
@@ -7142,6 +7506,10 @@ class App(MacWindowMixin, QMainWindow):
             QTimer.singleShot(0, lambda: self.show_run_summary(code))
         if code == 0 and self.action == 'windows':
             QTimer.singleShot(0, self.after_scan)
+        if self.action == 'check_items' and getattr(self, 'check_callback', None):
+            callback, self.check_callback = self.check_callback, None
+            error = self.check_error or ('' if self.check_results is not None else 'Worker สิ้นสุดก่อนได้ผล ดูรายละเอียดในบันทึก')
+            QTimer.singleShot(0, lambda: callback(self.check_results, error))
 
     def after_scan(self):
         """After looking for Lyche: none → ask to open it; several → ask which one; one → Get Banner."""

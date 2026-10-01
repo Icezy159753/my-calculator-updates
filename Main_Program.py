@@ -59,18 +59,24 @@ def _fast_launch_submodule():
         full_module_name = module_name
 
     try:
-        if known.entry_point == "__main__":
-            # One-file apps may deliberately reject import and own their CLI dispatch.
+        if full_module_name == "All_Programs.158_AutoLychee_OneFile" or known.entry_point == "__main__":
+            # Auto Lychee owns its CLI and deliberately rejects ordinary imports.
+            if getattr(sys, "frozen", False) and full_module_name == "All_Programs.158_AutoLychee_OneFile":
+                import subprocess
+                executable = os.path.join(getattr(sys, "_MEIPASS", base_dir), "AutoLychee", "AutoLychee.exe")
+                if not os.path.isfile(executable):
+                    raise FileNotFoundError(f"ไม่พบโปรแกรมย่อย: {executable}")
+                child_env = os.environ.copy()
+                child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+                child_env.pop("MAIN_PROGRAM_SCRIPT_MODULE", None)
+                raise SystemExit(subprocess.call([executable, *script_args], env=child_env))
             import runpy
             spec = importlib.util.find_spec(full_module_name)
             if spec is None or not spec.origin:
                 raise ImportError(f"Cannot find script '{full_module_name}'")
-            os.environ["MAIN_PROGRAM_SCRIPT_MODULE"] = full_module_name
             sys.argv = [spec.origin, *script_args]
-            print(f"FAST_LAUNCH: Running script {spec.origin}")
             runpy.run_path(spec.origin, run_name="__main__")
             return True
-
         print(f"FAST_LAUNCH: Importing {full_module_name}")
         module = importlib.import_module(full_module_name)
         ep_name = known.entry_point
@@ -182,7 +188,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.90"
+CURRENT_VERSION = "1.1.91"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -634,11 +640,11 @@ def show_error_dialog(title, text):
 PROGRAMS = [
     {
         "id": "โปรแกรม Auto Lychee V1.0",
-        "name": "โปรแกรมช่วยรัน Lychee Auto Full Step V1.0",
-        "description": "เอาไว้ รัน Lychee ต่อเนื่อง",
+        "name": "โปรแกรม Auto Lychee V1.0",
+        "description": "BotRun TableLychee ต่อเนื่อง",
         "type": "local_py_module",
-        "module_path": "158_AutoLychee_OneFile",
-        "entry_point": "__main__", # One-file script: ใช้ CLI loader แทนการ import
+        "module_path": "158_AutoLychee_OneFile", # <--- ปรับชื่อ module_path
+        "entry_point": "__main__",
         "frozen_executable": "AutoLychee/AutoLychee.exe",
         "icon": "Autolychee.png",
         "category": "Lychee", # <--- เพิ่ม category
@@ -2106,7 +2112,6 @@ class AppLauncher(QtWidgets.QMainWindow):
                     executable = resource_path(bundled_executable)
                     if not os.path.isfile(executable):
                         raise FileNotFoundError(f"ไม่พบโปรแกรมย่อย: {executable}")
-                    # Start with fresh PyInstaller state and the child's own Qt runtime.
                     child_env = os.environ.copy()
                     child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
                     child_env.pop("MAIN_PROGRAM_SCRIPT_MODULE", None)

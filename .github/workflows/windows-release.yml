@@ -29,6 +29,7 @@ jobs:
           python -m pip install PySide6==6.9.0 pywinauto==0.6.9 comtypes==1.4.10
           python -m pip install pyinstaller
           python -c "import PyQt6; import PyQt6.QtCore; print('PyQt6 OK')"
+          python -m unittest test_autolychee_packaging -v
 
       - name: Restore Test3.json from secret
         shell: pwsh
@@ -83,6 +84,13 @@ jobs:
           print(post.stderr)
           if post.returncode != 0:
               raise SystemExit("Frozen Auto Lychee post-process startup failed")
+          routed = subprocess.run(["dist/Main_Program/Main_Program.exe", "--run-module",
+                                   "158_AutoLychee_OneFile", "--entry-point", "run_this_app", "--check"],
+                                  capture_output=True, text=True, encoding="utf-8", timeout=120)
+          print(routed.stdout)
+          print(routed.stderr)
+          if routed.returncode != 0:
+              raise SystemExit("Frozen Launcher Auto Lychee routing failed")
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
