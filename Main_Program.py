@@ -32,12 +32,13 @@ def _fast_launch_submodule():
 
     import argparse
     import importlib
+    import importlib.util
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--run-module")
     parser.add_argument("--entry-point", default="main")
     parser.add_argument("--working-dir", default=None)
-    known, _ = parser.parse_known_args(sys.argv[1:])
+    known, script_args = parser.parse_known_args(sys.argv[1:])
 
     if not known.run_module:
         return False
@@ -58,6 +59,18 @@ def _fast_launch_submodule():
         full_module_name = module_name
 
     try:
+        if known.entry_point == "__main__":
+            # One-file apps may deliberately reject import and own their CLI dispatch.
+            import runpy
+            spec = importlib.util.find_spec(full_module_name)
+            if spec is None or not spec.origin:
+                raise ImportError(f"Cannot find script '{full_module_name}'")
+            os.environ["MAIN_PROGRAM_SCRIPT_MODULE"] = full_module_name
+            sys.argv = [spec.origin, *script_args]
+            print(f"FAST_LAUNCH: Running script {spec.origin}")
+            runpy.run_path(spec.origin, run_name="__main__")
+            return True
+
         print(f"FAST_LAUNCH: Importing {full_module_name}")
         module = importlib.import_module(full_module_name)
         ep_name = known.entry_point
@@ -169,7 +182,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.88"
+CURRENT_VERSION = "1.1.89"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -619,6 +632,17 @@ def show_error_dialog(title, text):
 
 # --- กำหนดรายการโปรแกรม (เพิ่ม "category" และปรับ "module_path") ---
 PROGRAMS = [
+    {
+        "id": "โปรแกรม Auto Lychee V1.0",
+        "name": "โปรแกรมช่วยรัน Lychee Auto Full Step V1.0",
+        "description": "เอาไว้ รัน Lychee ต่อเนื่อง",
+        "type": "local_py_module",
+        "module_path": "158_AutoLychee_OneFile",
+        "entry_point": "__main__", # One-file script: ใช้ CLI loader แทนการ import
+        "icon": "Autolychee.png",
+        "category": "Lychee", # <--- เพิ่ม category
+        "enabled": True
+    },
     {
         "id": "โปรแกรมสร้าง Promt แปะ Eng Full AI",
         "name": "โปรแกรม GetValue+Promt แปะ Eng Full AI Beta",
@@ -2078,6 +2102,8 @@ class AppLauncher(QtWidgets.QMainWindow):
             try:
                 cmd = [sys.executable]
                 if not getattr(sys, "frozen", False):
+                    if entry_point == "__main__":
+                        cmd += ["-X", "utf8"]
                     cmd.append(os.path.abspath(__file__))
                 cmd += [
                     "--run-module", module_path,
