@@ -216,6 +216,21 @@ def _run_app() -> None:
     namespace['main']()
 
 
+def _smoke_test() -> None:
+    """Check frozen dependencies and construct the GUI without running Lychee jobs."""
+    _check()
+    _write_assets()
+    namespace = {'__name__': 'app', '__file__': str(SINGLE_FILE)}
+    exec(_compile('app'), namespace)
+    application = namespace['QApplication']([str(SINGLE_FILE)])
+    application.setStyle('Fusion')
+    window = namespace['App']()
+    application.processEvents()
+    window.deleteLater()
+    application.processEvents()
+    print('Auto Lychee GUI smoke test OK', flush=True)
+
+
 def _main() -> None:
     _sys.modules.setdefault('onefile', _sys.modules[__name__])  # sections read paths from here
     _sys.meta_path.insert(0, _SectionImporter())
@@ -232,7 +247,13 @@ def _main() -> None:
     elif args[:1] == ['--install']:
         raise SystemExit(_pip(['--upgrade', *PACKAGES.values()]))
     elif args[:1] == ['--check']:
+        if FROZEN:
+            _bind_stdio()
         _check()
+    elif args == ['--smoke-test']:
+        if FROZEN:
+            _bind_stdio()
+        _smoke_test()
     elif args[:1] == ['--build-exe']:
         _build_exe()
     else:

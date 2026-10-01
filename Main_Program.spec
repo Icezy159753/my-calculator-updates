@@ -7,7 +7,11 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 site_packages = sysconfig.get_paths()["purelib"]
+autolychee_exe = os.path.join("dist", "AutoLychee.exe")
+if not os.path.isfile(autolychee_exe):
+    raise FileNotFoundError("Build Auto Lychee first: pyinstaller AutoLychee.spec")
 datas = [
+    (autolychee_exe, "AutoLychee"),
     (os.path.join(site_packages, "savReaderWriter"), "savReaderWriter"),
     (os.path.join(site_packages, "sv_ttk"), "sv_ttk"),
     ("Icon", "Icon"),
@@ -66,7 +70,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PyQt5'],
+    excludes=['PyQt5', 'PySide2', 'PySide6'],
     noarchive=False,
     optimize=0,
 )

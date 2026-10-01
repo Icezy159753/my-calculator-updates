@@ -182,7 +182,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.89"
+CURRENT_VERSION = "1.1.90"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -639,6 +639,7 @@ PROGRAMS = [
         "type": "local_py_module",
         "module_path": "158_AutoLychee_OneFile",
         "entry_point": "__main__", # One-file script: ใช้ CLI loader แทนการ import
+        "frozen_executable": "AutoLychee/AutoLychee.exe",
         "icon": "Autolychee.png",
         "category": "Lychee", # <--- เพิ่ม category
         "enabled": True
@@ -2100,6 +2101,18 @@ class AppLauncher(QtWidgets.QMainWindow):
 
         def _do_popen():
             try:
+                bundled_executable = program_info.get("frozen_executable")
+                if getattr(sys, "frozen", False) and bundled_executable:
+                    executable = resource_path(bundled_executable)
+                    if not os.path.isfile(executable):
+                        raise FileNotFoundError(f"ไม่พบโปรแกรมย่อย: {executable}")
+                    # Start with fresh PyInstaller state and the child's own Qt runtime.
+                    child_env = os.environ.copy()
+                    child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+                    child_env.pop("MAIN_PROGRAM_SCRIPT_MODULE", None)
+                    self._pending_popen = subprocess.Popen(
+                        [executable], cwd=os.path.dirname(executable), env=child_env)
+                    return
                 cmd = [sys.executable]
                 if not getattr(sys, "frozen", False):
                     if entry_point == "__main__":

@@ -26,6 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements_ttk.lock.txt
           python -m pip install PyQt6==6.9.0 PyQt6-Qt6==6.9.0 PyQt6_sip==13.10.2
+          python -m pip install PySide6==6.9.0 pywinauto==0.6.9 comtypes==1.4.10
           python -m pip install pyinstaller
           python -c "import PyQt6; import PyQt6.QtCore; print('PyQt6 OK')"
 
@@ -53,9 +54,37 @@ jobs:
           $json = @{ api_key = $env:OPENROUTER_API_KEY } | ConvertTo-Json
           Set-Content -Path "openrouter.json" -Value $json -Encoding UTF8
 
+      - name: Build Auto Lychee EXE
+        run: |
+          pyinstaller --noconfirm AutoLychee.spec
+
       - name: Build EXE
         run: |
           pyinstaller Main_Program.spec
+
+      - name: Verify packaged Auto Lychee EXE
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          AUTOLYCHEE_DATA: ${{ runner.temp }}/autolychee-smoke
+        run: |
+          @'
+          import subprocess
+          executable = "dist/Main_Program/_internal/AutoLychee/AutoLychee.exe"
+          result = subprocess.run([executable, "--smoke-test"],
+                                  capture_output=True, text=True, encoding="utf-8", timeout=120)
+          print(result.stdout)
+          print(result.stderr)
+          if result.returncode != 0 or "Auto Lychee GUI smoke test OK" not in result.stdout:
+              raise SystemExit("Frozen Auto Lychee smoke test failed")
+          post = subprocess.run([executable, "--post"], input="",
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+          print(post.stdout)
+          print(post.stderr)
+          if post.returncode != 0:
+              raise SystemExit("Frozen Auto Lychee post-process startup failed")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build updater
         run: |
@@ -65,6 +94,7 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $ver = $tag.TrimStart("v")
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           if (Test-Path dist\\Main_Program.zip) { Remove-Item dist\\Main_Program.zip }
           if (Test-Path "dist\\Main_Program_full_$ver.zip") { Remove-Item "dist\\Main_Program_full_$ver.zip" }
           Compress-Archive -Path dist\\Main_Program\\* -DestinationPath "dist\\Main_Program_full_$ver.zip"
@@ -111,7 +141,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/Main_Program.zip
-            dist/Main_Program_full_*.zip
+            dist/Main_Program_full_${{ env.RELEASE_VERSION }}.zip
             dist/Main_Program_patch_*.bsdiff
             dist/updater.exe
 
