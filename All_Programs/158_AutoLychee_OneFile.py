@@ -208,21 +208,6 @@ def _run_app() -> None:
     namespace['main']()
 
 
-def _smoke_test() -> None:
-    """Load all sections and construct the GUI without running survey jobs."""
-    _check()
-    _write_assets()
-    namespace = {'__name__': 'app', '__file__': str(SINGLE_FILE)}
-    exec(_compile('app'), namespace)
-    application = namespace['QApplication']([str(SINGLE_FILE)])
-    application.setStyle('Fusion')
-    window = namespace['App']()
-    application.processEvents()
-    window.deleteLater()
-    application.processEvents()
-    print('Auto Lychee GUI smoke test OK', flush=True)
-
-
 def _main() -> None:
     _sys.modules.setdefault('onefile', _sys.modules[__name__])  # sections read paths from here
     _sys.meta_path.insert(0, _SectionImporter())
@@ -239,13 +224,7 @@ def _main() -> None:
     elif args[:1] == ['--install']:
         raise SystemExit(_pip(['--upgrade', *PACKAGES.values()]))
     elif args[:1] == ['--check']:
-        if FROZEN:
-            _bind_stdio()
         _check()
-    elif args == ['--smoke-test']:
-        if FROZEN:
-            _bind_stdio()
-        _smoke_test()
     elif args[:1] == ['--build-exe']:
         _build_exe()
     else:
@@ -302,15 +281,76 @@ class Job:
     banner_manual_items: str = ''  # e.g. 'QUOTA1, QUOTA6' (commas, spaces or new lines between items)
 
 
-def parse_filter(value: str):
-    value = value.strip()
+MAX_FILTER_ROWS = 30  # Lyche's Filter Condition Settings has 30 condition rows (counted live)
+VARIABLE = r'[A-Za-z_][A-Za-z0-9_]*(?:\(\d+\))?'  # also loop children such as NEW_NA1(3)
+FILTER_HELP = ('Filter ต้องเป็น - หรือ ตัวแปร = code เช่น QUOTA6 = 1, QUOTA0 = 1-5,7 · ^= คือ Exclude · '
+               'หลายเงื่อนไขต่อด้วย AND / OR เช่น QUOTA0 = 1-4 AND QUOTA6 ^= 1')
+
+
+def expand_codes(text: str) -> list[str]:
+    """'1-5,7' → ['1', '2', '3', '4', '5', '7'] (order kept, duplicates dropped)."""
+    codes = []
+    for part in re.split(r'\s*,\s*', text.strip()):
+        single = re.fullmatch(r'-?\d+', part)
+        span = re.fullmatch(r'(\d+)\s*-\s*(\d+)', part)
+        if single:
+            values = [int(part)]
+        elif span and int(span.group(1)) <= int(span.group(2)) and int(span.group(2)) - int(span.group(1)) < 500:
+            values = range(int(span.group(1)), int(span.group(2)) + 1)
+        else:
+            raise ValueError(f'code "{part}" ไม่ถูกต้อง — ใช้ 1 หรือ 1-5 หรือ 1-5,7')
+        codes += [str(v) for v in values if str(v) not in codes]
+    return codes
+
+
+def compact_codes(codes) -> str:
+    """['1', '2', '3', '7'] → '1-3,7' (runs of 3+ become ranges)."""
+    numbers = [int(c) for c in codes]
+    parts, start = [], 0
+    while start < len(numbers):
+        end = start
+        while end + 1 < len(numbers) and numbers[end + 1] == numbers[end] + 1:
+            end += 1
+        if end - start >= 2:
+            parts.append(f'{numbers[start]}-{numbers[end]}')
+            start = end + 1
+        else:
+            parts.append(str(numbers[start]))
+            start += 1
+    return ','.join(parts)
+
+
+def parse_filters(value: str) -> list[dict]:
+    """'-' / '' → []. Otherwise conditions joined by AND / OR (left to right, as Lyche without brackets):
+    [{'variable', 'condition': Include|Exclude, 'codes': [...], 'join': 'AND'|'OR'|''}] — `join` links the
+    condition to the NEXT one (Lyche's AND / OR under its row)."""
+    value = (value or '').strip()
     if value in ('', '-'):
-        return None
-    match = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)\s*(\^=|!=|<>|=)\s*(-?\d+)', value)
-    if not match:
-        raise ValueError('Filter ต้องเป็น - หรือ ตัวแปร = code / ตัวแปร ^= code เช่น QUOTA6 ^= 1')
-    var, operator, code = match.groups()
-    return var, 'Include' if operator == '=' else 'Exclude', str(int(code))
+        return []
+    pieces = re.split(r'\s+(AND|OR)\s+', value, flags=re.I)
+    conditions = []
+    for index in range(0, len(pieces), 2):
+        match = re.fullmatch(rf'({VARIABLE})\s*(\^=|!=|<>|=)\s*(-?\d+(?:\s*-\s*\d+)?(?:\s*,\s*-?\d+(?:\s*-\s*\d+)?)*)',
+                             pieces[index].strip())
+        if not match:
+            raise ValueError(FILTER_HELP)
+        variable, operator, codes = match.groups()
+        join = pieces[index + 1].upper() if index + 1 < len(pieces) else ''
+        conditions.append({'variable': variable, 'condition': 'Include' if operator == '=' else 'Exclude',
+                           'codes': expand_codes(codes), 'join': join})
+    if len(conditions) > MAX_FILTER_ROWS:
+        raise ValueError(f'Filter ได้สูงสุด {MAX_FILTER_ROWS} เงื่อนไข')
+    return conditions
+
+
+def format_filter(conditions) -> str:
+    """Inverse of parse_filters: 'QUOTA0 = 1-4 AND QUOTA6 ^= 1' ('-' when empty)."""
+    text = ''
+    for index, item in enumerate(conditions):
+        text += f"{item['variable']} {'=' if item['condition'] == 'Include' else '^='} {compact_codes(item['codes'])}"
+        if index + 1 < len(conditions):
+            text += f" {item.get('join') or 'AND'} "
+    return text or '-'
 
 
 def manual_items(text: str) -> list[str]:
@@ -349,7 +389,7 @@ def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
             if name.casefold() in seen:
                 raise ValueError('ชื่อไฟล์ซ้ำกับแถวก่อนหน้า')
             seen.add(name.casefold())
-            parse_filter(job.filter)
+            parse_filters(job.filter)
             if job.base and (not job.base.isdigit() or int(job.base) < 1):
                 raise ValueError('Base ต้องเป็นจำนวนเต็มบวก หรือเว้นว่าง')
             if job.del_sig and not re.search(r'[A-Za-z]', job.del_sig_groups or ''):
@@ -928,6 +968,7 @@ from pathlib import Path
 sys.coinit_flags = 0  # UI Automation uses MTA; STA can stall WPF providers.
 warnings.filterwarnings('ignore', message='Apply externally defined coinit_flags.*', category=UserWarning)
 import comtypes.client
+from _ctypes import COMError  # what comtypes raises when a UIA element is gone
 comtypes.client.gen_dir = None  # No generated code in the system Python installation.
 from pywinauto import Desktop
 from pywinauto.keyboard import send_keys
@@ -936,7 +977,7 @@ from pywinauto.uia_element_info import UIAElementInfo
 from pywinauto.uia_defines import IUIA, NoPatternInterfaceError
 import win32gui
 import win32process
-from core import parse_filter
+from core import VARIABLE, parse_filters
 
 
 class Stopped(Exception):
@@ -967,6 +1008,101 @@ def windows():
     return result
 
 
+class _FLASHWINFO(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.UINT), ('hwnd', wintypes.HWND), ('dwFlags', wintypes.DWORD),
+                ('uCount', wintypes.UINT), ('dwTimeout', wintypes.DWORD)]
+
+
+def stop_flash(hwnd):
+    """FlashWindowEx(FLASHW_STOP): no blinking taskbar button for a window we keep off-screen."""
+    try:
+        info = _FLASHWINFO(ctypes.sizeof(_FLASHWINFO), hwnd, 0, 0, 0)
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+    except Exception:
+        pass
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
+
+
+def ms_since_input():
+    """Milliseconds since the last keyboard/mouse input anywhere on the desktop."""
+    info = _LASTINPUTINFO(ctypes.sizeof(_LASTINPUTINFO), 0)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return 10 ** 9
+    return (ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF
+
+
+def user_can_see(hwnd):
+    try:
+        return win32gui.IsWindowVisible(hwnd) and not win32gui.IsIconic(hwnd) and win32gui.GetWindowRect(hwnd)[0] > -15000
+    except win32gui.error:
+        return False
+
+
+class FocusGuard:
+    """Keep the window the user works in at the front during a BG run (user rule 2026-10-02: BG must not
+    disturb other work). Any foreground change that did NOT follow the user's own keyboard/mouse input
+    (within 400 ms) is undone within one poll (5 ms) — whoever caused it: a parked Lyche dialog, a hidden
+    Excel window of the post-processing, Auto Lychee's own window getting the activation when another window
+    closes (all seen live 2026-10-03). A change that follows user input is the user switching windows: that
+    window becomes the one to protect (only if it is on screen — never a parked or invisible window).
+    `hold()` → True while a bot step needs Lyche active (it gives the focus back itself); input in the
+    0.8 s after a hold is the bot's own synthetic click, not the user's."""
+    def __init__(self, pid=0, hold=None, initial=None):
+        self.pid, self.hold = pid, hold
+        foreground = ctypes.windll.user32.GetForegroundWindow()
+        def usable(hwnd):
+            return bool(hwnd) and win32gui.IsWindow(hwnd) and win32process.GetWindowThreadProcessId(hwnd)[1] != pid
+        # `initial`: the user's window when Run was pressed (live 2026-10-03: by the time the guard starts Lyche
+        # may already hold the foreground — opening Cross Tabulation — and nothing would be protected).
+        self.user_window = initial if usable(initial) else foreground if usable(foreground) and user_can_see(foreground) else None
+        self.returns = 0
+        self._last = foreground
+        self._held_until = 0.0
+        self._stop = None
+        self._thread = None
+
+    def __enter__(self):
+        import threading
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='focus-guard', daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._thread.join(1)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                self.check()
+            except Exception:
+                pass
+            time.sleep(.005)
+
+    def check(self):
+        foreground = ctypes.windll.user32.GetForegroundWindow()
+        now = time.monotonic()
+        if self.hold and self.hold():
+            self._held_until = now + .8
+            self._last = foreground
+            return
+        if not foreground:
+            return
+        if foreground != self._last:
+            self._last = foreground
+            if now > self._held_until and ms_since_input() < 400 and user_can_see(foreground):
+                self.user_window = foreground  # the user switched windows
+                return
+        if foreground == self.user_window or not self.user_window or not win32gui.IsWindow(self.user_window):
+            return
+        give_back_foreground(self.user_window, settle=0)
+        self.returns += 1
+
+
 def user_foreground(pid):
     """The window the user is working in right now, unless it is a Lyche window."""
     hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -975,13 +1111,13 @@ def user_foreground(pid):
     return hwnd
 
 
-def give_back_foreground(hwnd):
+def give_back_foreground(hwnd, settle=.1):
     """Return the foreground to the user's window right after a step that needed Lyche active."""
     if hwnd and win32gui.IsWindow(hwnd) and ctypes.windll.user32.GetForegroundWindow() != hwnd:
-        force_foreground(hwnd)
+        force_foreground(hwnd, settle)
 
 
-def force_foreground(hwnd):
+def force_foreground(hwnd, settle=.1):
     """Give an (off-screen) Lyche dialog the foreground so posted keys reach it. Windows only lets
     the foreground thread do this, so borrow its input queue with AttachThreadInput."""
     user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
@@ -997,7 +1133,8 @@ def force_foreground(hwnd):
     finally:
         for t in attached:
             user32.AttachThreadInput(current, t, False)
-    time.sleep(.1)
+    if settle:
+        time.sleep(settle)
 
 
 def launchers():
@@ -1037,6 +1174,7 @@ def open_cross_tabulation(emit, timeout=120):
             time.sleep(.1)  # poll fast so the new window is minimised before it draws
         return None
     pid = win32process.GetWindowThreadProcessId(launchers[0][0])[1]
+    user_window = user_foreground(pid)  # Lyche activates the new window: hand the focus straight back
     # Park the new window off-screen the moment it shows (2 ms poller), then minimise it without an
     # animation and give it back its normal on-screen restore position — nothing pops up.
     with HideLycheDialogs(pid) as hider:
@@ -1074,6 +1212,7 @@ def open_cross_tabulation(emit, timeout=120):
             win32gui.SetWindowPlacement(handle, (placement[0], 7, placement[2], placement[3], normal))  # SW_SHOWMINNOACTIVE
             on = ctypes.c_int(0)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(handle, 3, ctypes.byref(on), 4)
+        give_back_foreground(user_window, settle=0)
     return opened
 
 
@@ -1100,6 +1239,7 @@ class HideLycheDialogs:
         self._stop = None
         self._poller = None
         self._burst_until = 0.0
+        self._hiding = set()  # windows whose park (SetWindowPos) is in flight on a helper thread
         import threading
         self._paused = threading.Event()
         self._suspended = threading.Event()  # set: park nothing (see suspend)
@@ -1229,12 +1369,27 @@ class HideLycheDialogs:
             rect = win32gui.GetWindowRect(hwnd)
             if rect[0] > -15000:
                 self.original.setdefault(hwnd, rect)
-            detected = time.time()
+            if rect[0] <= -15000 or hwnd in self._hiding:
+                return
+            # SetWindowPos waits for Lyche's UI thread. While Lyche generates an export that thread is busy
+            # for seconds (live: the One Sheet 'Table Setting' window) and a direct call froze this poller
+            # — and with it the focus guard — for the whole export. So each park runs on its own thread.
+            self._hiding.add(hwnd)
+            import threading
+            threading.Thread(target=self._park, args=(hwnd, source), name='lyche-park', daemon=True).start()
+        except Exception:
+            pass
+
+    def _park(self, hwnd, source):
+        detected = time.time()
+        try:
             if self.hide(hwnd):
                 self.parked.append((round(detected, 3), round(time.time() - detected, 3), source,
                                     win32gui.GetWindowText(hwnd)[:30] or win32gui.GetClassName(hwnd)))
         except Exception:
             pass
+        finally:
+            self._hiding.discard(hwnd)
 
     def hide(self, hwnd):
         """Park a Lyche window off-screen. The move waits for Lyche's UI thread (66-242 ms measured
@@ -1250,6 +1405,11 @@ class HideLycheDialogs:
             if win32gui.GetWindowRect(hwnd)[0] <= -15000:
                 return False  # already parked (avoids LOCATIONCHANGE recursion)
             win32gui.SetWindowPos(hwnd, 0, -20000, -20000, 0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE NOZORDER NOACTIVATE
+            # A parked modal box that is denied the foreground makes Windows blink Lyche's taskbar button
+            # (user notices it while working elsewhere): cancel the blink on the box and on its owner.
+            for target in (hwnd, win32gui.GetWindow(hwnd, 4) or 0, *self.also):  # GW_OWNER
+                if target:
+                    stop_flash(target)
             return True
         except win32gui.error:
             return False
@@ -1263,6 +1423,9 @@ class Lyche:
     def __init__(self, handle: int, control_dir: Path, emit, timeout=900, background=True):
         self.background = background  # UIA patterns only, Lyche kept off-screen (see background_session)
         self.hider = None
+        self.focus_guard = None  # FocusGuard while background_session runs
+        self.user_window_hint = None  # the user's window when Run was pressed (from the app)
+        self.last_user_window = None  # the window the last FocusGuard protected
         self.matrix = False  # the last run_export was a Matrix History (worker: Del Sig in Matrix mode)
         self._freeze_depth = 0  # frozen_screen nesting (one freeze/unfreeze for the outermost only)
         self.handle = handle
@@ -1337,7 +1500,9 @@ class Lyche:
                 result = fn()
                 if result:
                     return result
-            except (LookupError, RuntimeError) as exc:
+            except (LookupError, RuntimeError, COMError) as exc:
+                # COMError: a Lyche window vanished while UIA was reading it (live 2026-10-03: the 'Do not copy
+                # or paste' warning closing during the Saved. wait) — transient, keep polling
                 last = exc
             time.sleep(poll)
         raise TimeoutError(f'รอ {label} เกิน {timeout} วินาที' + (f': {last}' if last else ''))
@@ -1465,9 +1630,14 @@ class Lyche:
         transitions(True)
         switch = sys.getswitchinterval()
         try:
-            with HideLycheDialogs(self.pid, also=(handle,)) as hider:
-                self.hider = hider
-                if was_iconic and keep_minimised:
+            with HideLycheDialogs(self.pid, also=(handle,)) as hider, \
+                    FocusGuard(self.pid, (self.control_dir / 'hold-focus').exists,
+                               self.last_user_window or self.user_window_hint) as guard:
+                self.hider, self.focus_guard = hider, guard
+                if was_iconic and (keep_minimised or os.environ.get('LYCHE_RESTORE_MINIMISED') != '1'):
+                    # A minimised window stays minimised: UIA, the ribbon drop-downs (popup_cloak) and the
+                    # dialogs all work that way (live 2026-10-02), and restoring it put it on screen for a
+                    # moment. LYCHE_RESTORE_MINIMISED=1 brings the old behaviour back.
                     pass
                 elif was_iconic or was_max:
                     # Ribbon drop-downs (Tabulate All) do not open while minimised, so bring the
@@ -1488,12 +1658,13 @@ class Lyche:
                     self.close_leftover_dialogs()  # an invisible modal dialog would lock Lyche for the user
                     raise
                 finally:
-                    self.emit('log', text=f'ทำงานเบื้องหลัง: ซ่อนหน้าต่าง Lyche {len(hider.parked)} ครั้ง')
+                    self.last_user_window = guard.user_window
+                    self.emit('log', text=f'ทำงานเบื้องหลัง: ซ่อนหน้าต่าง Lyche {len(hider.parked)} ครั้ง · คืนโฟกัสให้ผู้ใช้ {guard.returns} ครั้ง')
                     if os.environ.get('LYCHE_PARK_DEBUG'):
                         self.emit('log', text=f'parked: {hider.parked}')
         finally:
             sys.setswitchinterval(switch)
-            self.hider = None
+            self.hider = self.focus_guard = None
             # The hook is gone now, so putting the window back is not undone by it.
             if win32gui.IsWindow(handle):
                 if was_iconic:
@@ -1533,7 +1704,80 @@ class Lyche:
             return self.find(self.main(), name=item, required=False)
         self.click(self.wait(lookup, item))
 
+    @contextmanager
+    def popup_cloak(self):
+        """Keep Lyche's next drop-down popups off the user's eyes WITHOUT parking them: the parker is
+        suspended (parking a popup closes the drop-down — the real reason menus needed the foreground
+        before), and a watcher makes every new untitled Lyche window invisible (WS_EX_LAYERED, alpha 1 —
+        WPF popups accept that, the main window does not) within ~1 ms of appearing. The popup still
+        clamps itself onto the monitor (0,0), where UIA keeps working on it. Live 2026-10-02: Tabulate All
+        opened and invoked this way, popup invisible after 24 ms, foreground never changed."""
+        if not self.background:
+            yield []
+            return
+        import threading
+        seen, log, stop = set(), [], threading.Event()
+        pid, main = self.pid, self.handle
+        def watch():
+            t0 = time.monotonic()
+            while not stop.is_set():
+                def collect(hwnd, _):
+                    if hwnd in seen or hwnd == main or not win32gui.IsWindowVisible(hwnd):
+                        return
+                    if win32process.GetWindowThreadProcessId(hwnd)[1] == pid and not win32gui.GetWindowText(hwnd):
+                        seen.add(hwnd)
+                        try:
+                            ex = win32gui.GetWindowLong(hwnd, -20)
+                            win32gui.SetWindowLong(hwnd, -20, ex | 0x00080000 | 0x00000080)  # LAYERED | TOOLWINDOW
+                            ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 1, 0x2)  # LWA_ALPHA 1/255
+                            log.append((round((time.monotonic() - t0) * 1000), win32gui.GetWindowRect(hwnd)[:2]))
+                        except Exception:
+                            pass
+                try:
+                    win32gui.EnumThreadWindows(win32process.GetWindowThreadProcessId(main)[0], collect, None)
+                except win32gui.error:
+                    win32gui.EnumWindows(collect, None)
+                time.sleep(.0005)
+        thread = threading.Thread(target=watch, name='lyche-popup-cloak', daemon=True)
+        suspend = self.hider.suspend() if self.hider else nullcontext()
+        with suspend:
+            thread.start()
+            try:
+                yield log
+            finally:
+                stop.set()
+                thread.join(1)
+
     def menu_background(self, aid, item):
+        """Open a ribbon (split) button's drop-down with ExpandCollapse and Invoke the item — without
+        touching the user's foreground window (user rule 2026-10-02: BG must not disturb other work).
+        See popup_cloak. Falls back to the old foreground way if the item does not show up."""
+        root = self.main()
+        control = self.find(root, aid=aid)
+        self.checkpoint()
+        found = None
+        with self.popup_cloak() as cloak:
+            try:
+                control.iface_expand_collapse.Expand()
+            except Exception:
+                self.press(control)
+            try:
+                found = self.wait(lambda: self._menu_item(item), item, 3, poll=.05)
+            except TimeoutError:
+                found = None
+            if found is not None:
+                self.press(found)
+                if os.environ.get('LYCHE_FOCUS_DEBUG'):
+                    self.emit('log', text=f'เมนู {item}: ไม่แย่งโฟกัส popup={cloak}')
+                return
+            try:
+                control.iface_expand_collapse.Collapse()
+            except Exception:
+                pass
+        self.emit('log', text=f'เมนู {item} ไม่เปิดแบบไม่แย่งโฟกัส — ใช้วิธีเดิม (โฟกัสชั่วครู่)')
+        self._menu_background_foreground(aid, item)
+
+    def _menu_background_foreground(self, aid, item):
         """Open a ribbon (split) button's drop-down with ExpandCollapse and Invoke the item.
         A WPF ribbon drop-down closes at once unless its window is active (live failure on Beppu:
         Expand left the state at Collapsed), so the off-screen window gets the foreground first."""
@@ -1651,6 +1895,92 @@ class Lyche:
             self._freeze_depth = 0
             self.emit('unfreeze')
             flag.unlink(missing_ok=True)
+
+    def _popup_item(self, item):
+        """A ribbon drop-down's ListItem copy of `item` inside one of Lyche's untitled popup windows (the
+        drop-down is its own HWND), whatever UIA says about 'offscreen' (the owner is parked)."""
+        condition = self.api.CreateAndCondition(self.api.CreatePropertyCondition(30005, item),
+                                                self.api.CreatePropertyCondition(30003, 50007))
+        handles = []
+        def collect(handle, _):
+            if handle != self.handle and win32gui.IsWindowVisible(handle) and not win32gui.GetWindowText(handle) \
+                    and win32process.GetWindowThreadProcessId(handle)[1] == self.pid:
+                handles.append(handle)
+        win32gui.EnumWindows(collect, None)
+        for handle in handles:
+            box = win32gui.GetWindowRect(handle)
+            if box[0] < -15000:
+                continue  # parked: a click cannot reach it
+            try:
+                found = self.api.ElementFromHandle(handle).FindAll(4, condition)
+            except Exception:
+                continue
+            for index in range(found.Length):
+                element = found.GetElement(index)
+                try:
+                    rect = element.CurrentBoundingRectangle
+                    if element.CurrentIsEnabled and rect.right > rect.left and box[0] <= rect.left and rect.right <= box[2]:
+                        return UIAWrapper(UIAElementInfo(element))
+                except Exception:
+                    pass
+        return None
+
+    def gallery_click(self, aid, item, expect=None):
+        """BG: click a ribbon gallery item (they react to a real click only) with nothing on screen but a
+        ~100 ms cursor flick and ~0.3 s of foreground — no screen freeze, the window stays parked.
+        Live 2026-10-02: Expand while the owner is parked and the popup is NOT parked → WPF clamps the
+        drop-down onto the monitor at (0,0); popup_cloak makes it invisible within ~25 ms; the owner has to
+        be made foreground AFTER the drop-down is open (before → it opens next to the parked owner, out of
+        reach) and a real click on the popup's ListItem copy then works (without the foreground it did not;
+        UIA patterns, posted mouse/keys never did). Falls back to menu_click_on_screen (screen freeze)."""
+        import win32api
+        hold = self.control_dir / 'hold-focus'  # the app's focus guard waits meanwhile
+        hold.touch()
+        user_window = user_foreground(self.pid)
+        cursor = win32api.GetCursorPos()
+        started = time.monotonic()
+        clicked = False
+        try:
+            with self.popup_cloak() as cloak:
+                control = self.find(self.main(), aid=aid)
+                self.checkpoint()
+                try:
+                    control.iface_expand_collapse.Expand()
+                except Exception:
+                    self.press(control)
+                try:
+                    found = self.wait(lambda: self._popup_item(item), item, 4, poll=.05)
+                except TimeoutError:
+                    found = None
+                if found is not None:
+                    force_foreground(self.handle)
+                    time.sleep(.12)
+                    self.checkpoint()
+                    found.click_input()  # the cursor flicks to the (invisible) item and back, ~0.1 s
+                    win32api.SetCursorPos(cursor)
+                    clicked = True
+                else:
+                    try:
+                        control.iface_expand_collapse.Collapse()
+                    except Exception:
+                        pass
+        finally:
+            try:
+                win32api.SetCursorPos(cursor)
+            except Exception:
+                pass
+            give_back_foreground(user_window)
+            hold.unlink(missing_ok=True)
+        if clicked and expect:  # the window the click opens (parked by the hider as soon as it shows)
+            end = time.monotonic() + 8
+            while time.monotonic() < end and not self.dialog(expect, visible_only=False):
+                time.sleep(.05)
+            clicked = bool(self.dialog(expect, visible_only=False))
+        if clicked:
+            self.emit('log', text=f'คลิกเมนู {item} โดยไม่แช่จอ ({(time.monotonic() - started) * 1000:.0f} ms, popup {cloak})')
+            return
+        self.emit('log', text=f'เมนู {item} แบบไม่แช่จอไม่สำเร็จ — ใช้วิธีแช่จอ')
+        self.menu_click_on_screen(aid, item, expect)
 
     def menu_click_on_screen(self, aid, item, expect=None):
         """BG mode, for ribbon gallery items that react to a real click only. Live (2026-10-01) Matrix
@@ -1984,6 +2314,29 @@ class Lyche:
                 self.click(self.find(search_panel, aid='btnNext'))
         return None, ''
 
+    def item_list(self):
+        """Every item (variable) in the settings window's item list as [code, label], in Lyche's order — for the
+        Filter dialog's search. Read through UIA page by page (~500 items in ~12 s, verified live); the window
+        is neither moved nor restored, the list is scrolled back to the top afterwards."""
+        root = self.settings()
+        tree = self.find(root, aid='treeListViewQ')
+        cell = self.api.CreatePropertyCondition(30003, 50020)
+        items, seen = [], set()
+        for page in self.scan_pages(tree, lambda: self.all(tree, kind=50029)):
+            for row in page:
+                found = row.element_info.element.FindFirst(4, cell)
+                text = ' '.join(found.CurrentName.split()) if found else ''
+                code, _, label = text.partition(' ')
+                if label and text != 'Item List' and code.casefold() not in seen and re.fullmatch(VARIABLE, code):
+                    seen.add(code.casefold())
+                    items.append([code, label[:160]])
+        try:
+            tree.iface_scroll.SetScrollPercent(-1, 0)
+        except Exception:
+            pass
+        self.emit('log', text=f'ดึงรายชื่อตัวแปรจาก Lyche ได้ {len(items)} ตัว')
+        return items
+
     def check_items(self, items):
         """Banner Manual 'เช็คกับ Lyche': which items exist in the project's item list. Search only — the
         Banner is not touched; the search box is cleared afterwards."""
@@ -2057,6 +2410,52 @@ class Lyche:
             raise RuntimeError(f'เลือก {value} ไม่สำเร็จ (ได้ "{current}")')
 
     def choose_combo_background(self, combo, value, options):
+        """Expand the combo and Select() the wanted item through UIA — no focus, no keys (user rule
+        2026-10-02). Live: once a category is selected, the expanded ComboBox exposes one ListItem per option
+        (name 'System.Data.DataRowView', a Text child with the option text) and SelectionItem.Select picks
+        it even while the popup is parked off-screen; verified by the row label (not(...)). The caller still
+        checks that label. Falls back to the old posted-keys way if the items do not show up."""
+        self.checkpoint()
+        item = None
+        cloak = self.popup_cloak()  # parking the drop-down closes it (live: no items within 3 s) — keep it, invisible
+        cloak.__enter__()
+        # A WPF drop-down closes when its window is deactivated: the focus guard (which hands the foreground
+        # straight back to the user) must wait the ~0.2 s from Expand to Select; then the user gets it back.
+        hold = self.control_dir / 'hold-focus'
+        hold.touch()
+        user_window = (self.focus_guard.user_window if self.focus_guard else None) or user_foreground(self.pid)
+        try:
+            combo.iface_expand_collapse.Expand()
+        except Exception:
+            pass
+        def option():
+            for candidate in combo.descendants():
+                if candidate.element_info.control_type == 'ListItem':
+                    texts = [t.window_text().strip() for t in candidate.descendants() if t.element_info.control_type == 'Text']
+                    if texts and texts[0].casefold() == value.casefold():
+                        return candidate
+            return None
+        try:
+            item = self.wait(option, f'ตัวเลือก {value}', 3, poll=.1)
+            item.iface_selection_item.Select()
+            time.sleep(.2)
+        except Exception as exc:
+            self.emit('log', text=f'dropdown ไม่แสดงตัวเลือก {value} ({type(exc).__name__}) — ใช้วิธีเดิม (โฟกัสชั่วครู่)')
+            item = None
+        try:
+            if combo.iface_expand_collapse.CurrentExpandCollapseState:
+                combo.iface_expand_collapse.Collapse()
+        except Exception:
+            pass
+        finally:
+            cloak.__exit__(None, None, None)
+            hold.unlink(missing_ok=True)
+            give_back_foreground(user_window, settle=0)
+        if item is None:
+            return self._choose_combo_keys(combo, value, options)
+        self.emit('log', text=f'เลือก {value} (UIA ไม่แย่งโฟกัส — ตรวจจากป้ายเงื่อนไขหลังเพิ่ม)')
+
+    def _choose_combo_keys(self, combo, value, options):
         """Lyche's condition items expose no names (live runs fell back to arrow keys), so pick
         by position: expand, Select() the n-th list item, collapse. The added Filter label is
         checked for not(...) afterwards, which catches a wrong pick."""
@@ -2106,7 +2505,11 @@ class Lyche:
         self.emit('log', text=f'เลือก {value} (เบื้องหลัง — ตรวจจากป้ายเงื่อนไขหลังเพิ่ม)')
 
     def set_filter(self, expression, expected_base=''):
-        parsed = parse_filter(expression)
+        """Filter Condition Settings as a user would: clear every row, then per condition (row 1, 2, …):
+        search the variable, select its codes in Category (several codes = multi-select), Include /
+        Exclude, the row's ->; then AND / OR under each row; Done. Checked: every row's label, Lyche's
+        condition text ('1 AND 2 OR 3'), Filter on/off and the expected Base."""
+        conditions = parse_filters(expression)
         root = self.settings()
         if self.background:
             # The split button's own Invoke opens Filter Settings (verified live); its drop-down
@@ -2118,65 +2521,47 @@ class Lyche:
             self.menu('cmbFilter', 'Filter Settings')
         dialog = self.wait(lambda: self.dialog('Filter Condition Settings'), 'หน้าต่าง Filter')
         # Clear every existing row before selecting a new condition.
-        for button in self.all(dialog, aid='btnClear'):
+        for index, button in enumerate(self.all(dialog, aid='btnClear')):
             if button.is_enabled():
-                self.click(button)
+                # rows below the first few are outside the dialog's visible area: Invoke, not a mouse click
+                (self.click if index < 6 else self.press)(button)
         if any(x.is_enabled() for x in self.all(dialog, aid='btnClear')):
             raise RuntimeError('ล้าง Filter เดิมไม่สำเร็จ')
-        if parsed:
-            variable, condition, code = parsed
+        for index, item in enumerate(conditions):
+            self.filter_row(dialog, index, item)
+        for index, item in enumerate(conditions[:-1]):  # AND / OR become usable once the next row is set
+            box = self.all(dialog, aid='btnSelect')[index].parent()
+            radio = self.find(box, aid='rdoOr' if item['join'] == 'OR' else 'rdoAnd')
             self.checkpoint()
-            self.find(dialog, aid='txtKeyWord').set_edit_text(variable)
-            self.click(self.find(dialog, aid='btnSearch'))
-            def variable_row():
-                grid = self.find(dialog, aid='treeListViewQ')
-                for row in self.all(grid, kind=50029):
-                    values = [x.window_text().strip() for x in self.all(row, kind=50020)]
-                    if any(v.split(' ', 1)[0].casefold() == variable.casefold() for v in values):
-                        return row
-                return None
-            row = self.wait(variable_row, variable)
-            self.checkpoint()
-            row.select()
-            def code_row():
-                grid = self.find(dialog, aid='treeListViewC')
-                for page in self.scan_pages(grid, lambda: self.all(grid, kind=50029)):
-                    for item in page:
-                        values = [x.window_text().strip() for x in self.all(item, kind=50020)]
-                        if values and values[0] == code:
-                            return item
-                return None
-            category = self.wait(code_row, f'code {code}')
-            self.checkpoint()
-            category.select()
-            attempts = 2 if self.background else 1
-            for attempt in range(attempts):
-                if condition == 'Exclude':  # Include is Lyche's default; only ^= needs the dropdown
-                    self.choose_combo(dialog, 'comboBoxCondType', condition,
-                                      ('Include', 'Exclude', 'Include Not Applicable', 'Exclude Not Applicable'))
-                arrow = self.find(dialog, aid='btnSelect')
-                self.click(arrow)
-                first = arrow.parent()
-                self.wait(lambda: self.find(first, aid='btnClear').is_enabled(), 'เพิ่ม Filter')
-                label = ' '.join(x.window_text() for x in self.all(first, kind=50020))
-                if variable.casefold() not in label.casefold():
-                    raise RuntimeError('ตรวจชื่อ Filter ที่เลือกไม่ได้')
-                if ('not(' in label.replace(' ', '').lower()) == (condition == 'Exclude'):
-                    break
-                if attempt == attempts - 1:
-                    raise RuntimeError('Include/Exclude ไม่ตรงกับรายการรัน')
-                # Background key posting missed: clear the wrong condition and pick again.
-                self.emit('log', text='เงื่อนไข Include/Exclude ไม่ตรง — ล้างแล้วเลือกใหม่')
-                self.click(self.find(first, aid='btnClear'))
-                self.wait(lambda: not self.find(first, aid='btnClear').is_enabled(), 'ล้างเงื่อนไข')
-                category.select()
+            if not radio.iface_selection_item.CurrentIsSelected:
+                radio.iface_selection_item.Select()
+        if len(conditions) > 1:
+            want = ' '.join(f"{i + 1} {c['join']}" if c['join'] else str(i + 1) for i, c in enumerate(conditions))
+            def joined():
+                text = ' '.join(self.find(dialog, aid='txtCondition').iface_value.CurrentValue.split())
+                return text.upper() == want.upper() or None
+            try:
+                self.wait(joined, 'เงื่อนไข AND / OR', 5)
+            except TimeoutError:
+                got = self.find(dialog, aid='txtCondition').iface_value.CurrentValue
+                raise RuntimeError(f'AND / OR ไม่ตรง: ต้องการ {want} แต่ Lyche เป็น {got}') from None
         self.click(self.find(dialog, aid='rbnOK'))
-        self.wait(lambda: not self.dialog('Filter Condition Settings'), 'Done Filter')
+        def done():
+            # 3+ conditions: Lyche asks 'Without priority in (brackets), conditions will be processed in order
+            # from left to right. OK?' — that is what the queue's Filter means (no brackets): Yes.
+            for handle in self.visible_dialogs('Confirm'):
+                box = self.wrapper(handle)
+                text = ' '.join(' '.join(x.window_text() for x in self.all(box, kind=50020)).split())
+                if 'Without priority in (brackets)' in text:
+                    self.press(self.find(box, name='Yes', kind=50000))
+                    self.emit('log', text='Lyche: ไม่มีวงเล็บ ทำเงื่อนไขจากซ้ายไปขวา OK? → Yes')
+            return not self.dialog('Filter Condition Settings')
+        self.wait(done, 'Done Filter')
         root = self.main()
         filter_text = self.text(root, 'lblFilterValue')
-        if not parsed and filter_text.lower() != 'off':
+        if not conditions and filter_text.lower() != 'off':
             raise RuntimeError('Filter ยังไม่เป็น Off')
-        if parsed and filter_text.lower() == 'off':
+        if conditions and filter_text.lower() == 'off':
             raise RuntimeError('Filter ยังไม่เปิดใช้งาน')
         sample = self.text(root, 'lblSample')
         digits = re.search(r'([\d,]+)\s+respondents', sample)
@@ -2185,6 +2570,94 @@ class Lyche:
             raise RuntimeError(f'Base ไม่ตรง: ต้องการ {expected_base}, อ่านได้ {actual}')
         self.emit('log', text=f'Filter {expression or "-"} | {sample}')
         return actual  # respondents after the filter (shown as the row's Base)
+
+    @staticmethod
+    def add_to_selection(item):
+        """Add a list item to a multi-select list without dropping the others (see filter_row)."""
+        try:
+            from comtypes.gen.UIAutomationClient import IUIAutomationLegacyIAccessiblePattern
+            legacy = item.element_info.element.GetCurrentPattern(10018).QueryInterface(IUIAutomationLegacyIAccessiblePattern)
+            legacy.Select(8)  # SELFLAG_ADDSELECTION
+        except Exception:
+            item.iface_selection_item.AddToSelection()
+
+    def filter_row(self, dialog, index, item):
+        """One Filter condition into row `index` (0 = row 1): variable, its codes, Include / Exclude, ->."""
+        variable, condition, codes = item['variable'], item['condition'], item['codes']
+        self.checkpoint()
+        row, _ = self.find_item(dialog, variable)  # exact code (D1 is not ND1), Next past other hits
+        if row is None:
+            raise RuntimeError(f'Filter: ไม่พบตัวแปร {variable} ใน Lyche')
+        self.checkpoint()
+        row.select()
+        grid = self.find(dialog, aid='treeListViewC')
+        def select_codes():
+            # Several codes = Select the first, then add the rest. Live: UIA AddToSelection on this list can
+            # replace the selection (only the last code stayed), LegacyIAccessible Select(SELFLAG_ADDSELECTION)
+            # keeps it — so add that way and check each one is really selected.
+            wanted, chosen = set(codes), []
+            for page in self.scan_pages(grid, lambda: self.all(grid, kind=50029)):
+                for category in page:
+                    values = [x.window_text().strip() for x in self.all(category, kind=50020)]
+                    if values and values[0] in wanted and values[0] not in chosen:
+                        if not chosen:
+                            category.iface_selection_item.Select()
+                        else:
+                            self.add_to_selection(category)
+                        chosen.append(values[0])
+            if len(chosen) != len(codes):
+                return None
+            selected = set()
+            for category in self.all(grid, kind=50029):
+                values = [x.window_text().strip() for x in self.all(category, kind=50020)]
+                if values and category.iface_selection_item.CurrentIsSelected:
+                    selected.add(values[0])
+            if not wanted <= selected and len(codes) <= len(self.all(grid, kind=50029)):  # all rows drawn: must hold
+                return None
+            return chosen
+        missing = []
+        def all_codes():
+            chosen = select_codes()
+            if chosen is None:
+                found = set()
+                for category in self.all(grid, kind=50029):
+                    values = [x.window_text().strip() for x in self.all(category, kind=50020)]
+                    found.update(values[:1])
+                missing[:] = [c for c in codes if c not in found]
+            return chosen
+        try:
+            self.wait(all_codes, f'code {",".join(codes)} ของ {variable}', 10)
+        except TimeoutError:
+            raise RuntimeError(f'Filter: ไม่พบ code {", ".join(missing) or ",".join(codes)} ของ {variable} ใน Lyche') from None
+        attempts = 2 if self.background else 1
+        for attempt in range(attempts):
+            if condition == 'Exclude':  # Include is Lyche's default; only ^= needs the dropdown
+                self.choose_combo(dialog, 'comboBoxCondType', condition,
+                                  ('Include', 'Exclude', 'Include Not Applicable', 'Exclude Not Applicable'))
+            arrow = self.all(dialog, aid='btnSelect')[index]
+            (self.click if index < 6 else self.press)(arrow)  # rows 7+ are scrolled out of view
+            box = arrow.parent()
+            self.wait(lambda: self.find(box, aid='btnClear').is_enabled(), f'เพิ่ม Filter แถว {index + 1}')
+            def row_label():  # Lyche fills the label a moment after the button turns on
+                text = ' '.join(x.window_text() for x in self.all(box, kind=50020))
+                return text if variable.casefold() in text.casefold() and text.lower().count(' or ') + 1 >= len(codes) else None
+            try:
+                label = self.wait(row_label, f'ป้าย Filter แถว {index + 1}', 5)
+            except TimeoutError:
+                label = ' '.join(x.window_text() for x in self.all(box, kind=50020))
+                if variable.casefold() not in label.casefold():
+                    raise RuntimeError(f'ตรวจชื่อ Filter แถว {index + 1} ไม่ได้') from None
+                raise RuntimeError(f'Filter แถว {index + 1}: เลือก code ไม่ครบ {len(codes)} ตัว ({label.strip()[:80]})') from None
+            if ('not(' in label.replace(' ', '').lower()) == (condition == 'Exclude'):
+                return
+            if attempt == attempts - 1:
+                raise RuntimeError('Include/Exclude ไม่ตรงกับรายการรัน')
+            # Background key posting missed: clear the wrong condition and pick again.
+            self.emit('log', text='เงื่อนไข Include/Exclude ไม่ตรง — ล้างแล้วเลือกใหม่')
+            self.click(self.find(box, aid='btnClear'))
+            self.wait(lambda: not self.find(box, aid='btnClear').is_enabled(), 'ล้างเงื่อนไข')
+            row.select()
+            self.wait(select_codes, f'code {",".join(codes)} ของ {variable}', 10)
 
     def fill_filename(self, save, target: str):
         """Type the full path like a user; the Save As dialog ignored ValuePattern-only changes."""
@@ -2272,7 +2745,9 @@ class Lyche:
         # Export all (Matrix / One Sheet) in the background: keep the app's screen freeze on while Lyche
         # pops its boxes (user request: no flashes) — from the menu click to the Save As dialog, then
         # again around Save until 'Do not copy or paste…' is answered. Nested freezes are one freeze.
-        frozen = self.frozen_screen if (export_all and self.background) else nullcontext
+        # No screen freeze any more (user rule 2026-10-02: BG must not disturb other work): the gallery is
+        # clicked with the window off-screen (gallery_click); every dialog is parked by the hider within ms.
+        frozen = nullcontext
         with frozen():
             # In the background an Invoke that lands while Lyche is still finishing can be ignored:
             # press again (up to 3 times) until "Open file?" appears. A modal prompt blocks repeats.
@@ -2294,7 +2769,10 @@ class Lyche:
             if no is None:
                 raise RuntimeError('ไม่พบปุ่ม No ใน Open file?')
             self.click(no)
-            save = self.wait(lambda: (self.ack_copy_warning(), self.dialog('Save As'))[1], 'Save As')
+            # Lyche can take a while to show Save As when the machine is busy (live 2026-10-03: ~20 s for a
+            # Matrix export while the previous row's Delete Total + NA ran in Excel) — wait like for a step.
+            save = self.wait(lambda: (self.ack_copy_warning(), self.dialog('Save As'))[1], 'Save As',
+                             max(120, min(self.timeout, 600)))
         self.fill_filename(save, str(destination.resolve()))
         if destination.exists():
             raise FileExistsError('มีไฟล์ถูกสร้างขึ้นระหว่างรัน หยุดก่อนบันทึกทับ')
@@ -2316,7 +2794,7 @@ class Lyche:
         generated?' with Yes when it is asked (user rule); then the Export All Setting ticks + OK."""
         opened = ('Export All Setting', 'Warning')
         if self.background:  # these gallery items react to a real click only (see menu_click_on_screen)
-            self.menu_click_on_screen('rbnOutputExcel', item, expect=opened)
+            self.gallery_click('rbnOutputExcel', item, expect=opened)
         else:
             self.menu('rbnOutputExcel', item)
         def next_dialog():
@@ -2414,6 +2892,9 @@ class Lyche:
             self.settings()
         if self.hider:
             self.hider.burst(5)
+        # When the window closes Windows activates the next window (live: Auto Lychee's own window, which then
+        # kept the focus for the rest of the run) — remember where the user is and give it back afterwards.
+        user_window = (self.focus_guard.user_window if self.focus_guard else None) or user_foreground(self.pid)
         try:
             self.wrapper(handle).iface_window.Close()
         except Exception:
@@ -2421,6 +2902,9 @@ class Lyche:
         end = time.monotonic() + 20
         while time.monotonic() < end:
             if not win32gui.IsWindow(handle):
+                if self.background:
+                    time.sleep(.15)
+                    give_back_foreground(user_window, settle=0)
                 self.emit('log', text='ปิดหน้าต่าง Cross Tabulation แล้ว')
                 return
             confirm = self.dialog('Confirm -', visible_only=False)
@@ -5474,7 +5958,7 @@ import os
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -5761,7 +6245,11 @@ def main():
             return
         fresh = not windows()  # resolve_handle is about to open Cross Tabulation
         bot = Lyche(resolve_handle(config, windows, open_cross_tabulation), Path(config['control_dir']), emit,
-                    config.get('timeout', 900), background=config.get('background', True))
+                    config.get('timeout', 900),
+                    # Reading Lyche's variable list / checking Banner Manual items only reads: always in the
+                    # background, also in Preview mode (user request) — Preview would restore the window.
+                    background=config.get('background', True) or config['action'] in ('items', 'check_items'))
+        bot.user_window_hint = config.get('user_window')  # where the user was when they pressed Run
         source = config.get('source', 'Personal')
         if config['action'] == 'banners':
             # Shared History exists only on the Lyche server: read it from the Import History list.
@@ -5772,21 +6260,25 @@ def main():
         elif config['action'] == 'load':
             with bot.background_session():
                 bot.load(config['banner'], source)
-        elif config['action'] == 'check_items':
-            # Banner Manual 'เช็คกับ Lyche': search the item list only (the Banner is not changed). UIA search
-            # works with the window as it is (verified live), so nothing pops up (user request): a window on
-            # screen is not moved at all; a minimised one (also one just opened) stays minimised, and the
-            # parker hides it if Lyche shows it by itself — for 2 s more after a fresh open — then it is
-            # minimised again.
+        elif config['action'] in ('check_items', 'items'):
+            # Banner Manual 'เช็คกับ Lyche' (search only, the Banner is not changed) / the Filter dialog's
+            # variable list (read only). UIA works with the window as it is (verified live), so nothing pops
+            # up (user request): a window on screen is not moved at all; a minimised one (also one just
+            # opened) stays minimised, and the parker hides it if Lyche shows it by itself — for 2 s more
+            # after a fresh open — then it is minimised again.
             import win32gui
+            work = (lambda: bot.check_items(config['items'])) if config['action'] == 'check_items' else bot.item_list
             if bot.background and win32gui.IsIconic(bot.handle):
                 with bot.background_session(keep_minimised=True):
-                    results = bot.check_items(config['items'])
+                    results = work()
                     if fresh:
                         time.sleep(2)
             else:
-                results = bot.check_items(config['items'])
-            emit('items_checked', results=results)
+                results = work()
+            if config['action'] == 'check_items':
+                emit('items_checked', results=results)
+            else:
+                emit('items', items=results)
         elif config['action'] == 'run':
             jobs = [Job(**job) for job in config['jobs']]
             folder = Path(config['folder'])
@@ -5828,14 +6320,18 @@ def main():
                     else:
                         emit('status', id=job.id, status='OK', detail=detail, base=base)
                     current = None
-                try:  # user request: close the Cross Tabulation window once the queue is done
+                try:  # user rule: close the Cross Tabulation window right after the last row of the run
                     bot.close_window()
                 except Exception as exc:
                     emit('log', text=f'ปิดหน้าต่าง Cross Tabulation ไม่ได้: {exc}')
             if post:
                 if post.pending:
                     emit('log', text=f'Lyche รันครบแล้ว — รอขั้นหลังรันอีก {len(post.pending)} แถว')
-                post.wait(bot.checkpoint)
+                from driver import FocusGuard  # Excel of the post-processing can take the focus too
+                with (FocusGuard(bot.pid, (Path(config['control_dir']) / 'hold-focus').exists,
+                                 bot.last_user_window or bot.user_window_hint)
+                      if bot.background else nullcontext()):
+                    post.wait(bot.checkpoint)
                 post.close()
                 post = None
             emit('log', text='เสร็จครบทุกแถวที่รอรัน')
@@ -5892,16 +6388,17 @@ import onefile  # ONEFILE: the loader at the top of this file (paths, how to sta
 FROZEN = onefile.FROZEN  # running as an exe built with --build-exe
 
 from PySide6.QtCore import Qt, QEvent, QProcess, QTimer, QLockFile, QLocale, QRect, QSize
-from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut, QTextCursor
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut, QStandardItem,
+                           QStandardItemModel, QTextCursor)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QPlainTextEdit, QSplitter,
     QAbstractItemView, QSpinBox, QDialog, QFrame, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem,
+    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu,
 )
 from chrome import MacWindowMixin
-from core import Job, manual_items, save_json, read_jobs, validate_jobs
+from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -5994,7 +6491,7 @@ QSpinBox::down-arrow { image: url(ASSETS/chevron-down.svg); width: 10px; height:
 QTableWidget { background: #ffffff; border: 1px solid #d5e0ef; border-radius: 8px; outline: 0; selection-background-color: #dbe9fb; selection-color: #1e2a44; }
 QTableWidget::item { border-bottom: 1px solid #edf2f9; padding-left: 8px; }
 QTableWidget::item:selected { background: #dbe9fb; color: #1e2a44; }
-QTableWidget QComboBox { border: none; background: transparent; padding-left: 8px; }
+QTableWidget QComboBox { border: none; background: transparent; padding: 0 0 0 8px; min-height: 0; }
 QTableWidget QComboBox QLineEdit { border: none; background: transparent; padding: 0; }
 QTableWidget QLineEdit { border: 1px solid #2a8de9; border-radius: 5px; padding: 2px 6px; }
 QHeaderView { background: #2a8de9; border: none; border-top-left-radius: 8px; border-top-right-radius: 8px; }
@@ -6014,6 +6511,21 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QToolTip { background: #1e2a44; color: #ffffff; border: none; border-radius: 6px; padding: 5px 8px; }
 QMessageBox { background: #eef3fa; }
 '''.replace('ASSETS', ASSETS)
+
+
+def ms_since_input():
+    """Milliseconds since the last keyboard/mouse input on the desktop (same as driver.ms_since_input; the app
+    must not import driver — its COM apartment set-up clashes with Qt's)."""
+    if sys.platform != 'win32':
+        return 10 ** 9
+    import ctypes
+    from ctypes import wintypes
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return 10 ** 9
+    return (ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF
 
 
 class FreezeOverlay(QWidget):
@@ -6116,11 +6628,13 @@ def sheet_layout(dialog, width):
     return layout
 
 
-def dialog_buttons(dialog, layout):
+def dialog_buttons(dialog, layout, all_rows=True):
     """'ใช้กับทุกแถว' · 'ยกเลิก' · 'ตกลง' row shared by the settings dialogs."""
     buttons = QHBoxLayout()
     buttons.setSpacing(8)
+    show_all_rows = all_rows
     all_rows = QPushButton('ใช้กับทุกแถว')
+    all_rows.setVisible(show_all_rows)
     all_rows.setObjectName('secondary')
     cancel = QPushButton('ยกเลิก')
     cancel.setObjectName('secondary')
@@ -6322,10 +6836,153 @@ class PostProcessDialog(QDialog):
         self.accept()
 
 
-class BannerManualDialog(QDialog):
-    """Banner Manual of a row: Lyche item codes that replace the History's Banner (in this order).
-    The run does what a user would: Banner 'Clear all' → Yes, then per item: search → select → To Banner."""
-    def __init__(self, parent, name, settings, checker=None):
+class VariableSearch:
+    """Variable boxes that search Lyche's variable list (App.variable_items, cached per project): a status
+    line with 'ดึงตัวแปรใหม่', and one shared completer showing variable names only. Used by FilterDialog
+    and BannerManualDialog; `items_loaded` is called once a list arrives."""
+    FIELD = ('QLineEdit, QComboBox { background: #ffffff; border: 1px solid #c3d0e4; border-radius: 6px; '
+             'padding: 3px 8px; min-height: 18px; } QLineEdit:focus, QComboBox:focus { border: 1px solid #2a8de9; } '
+             'QLineEdit:disabled { background: #f3f6fb; color: #8b97ab; }')
+
+    def init_variable_search(self, layout, items_provider):
+        self.items_provider = items_provider  # App.variable_items(callback, refresh)
+        self.known = {}  # code (casefold) -> code, from Lyche's item list
+        source = QHBoxLayout()
+        source.setSpacing(8)
+        self.items_status = QLabel('')
+        self.items_status.setStyleSheet('color: #5f6f8a; font-size: 12px;')
+        self.items_status.setWordWrap(True)
+        source.addWidget(self.items_status, 1)
+        self.refresh_button = QPushButton('ดึงตัวแปรใหม่')
+        self.refresh_button.setObjectName('secondary')
+        self.refresh_button.setCursor(Qt.PointingHandCursor)
+        self.refresh_button.setToolTip('อ่านรายชื่อตัวแปรจาก Lyche อีกครั้ง (เบื้องหลัง ไม่ขยับหน้าต่าง Lyche ~10 วินาที)')
+        self.refresh_button.clicked.connect(lambda: self.load_items(refresh=True))
+        source.addWidget(self.refresh_button)
+        layout.addLayout(source)
+        self.model = QStandardItemModel(self)
+        self.completer = QCompleter(self.model, self)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchContains)  # any part of the variable name
+        self.completer.setMaxVisibleItems(12)
+        popup = self.completer.popup()
+        popup.setMinimumWidth(190)
+        popup.setStyleSheet(  # the app's look instead of the default dark list
+            'QListView { background: #ffffff; border: 1px solid #c9b6f3; padding: 4px; outline: 0; '
+            'font-size: 13px; color: #1e2a44; } '
+            'QListView::item { padding: 6px 10px; border-radius: 6px; margin: 1px 0; } '
+            'QListView::item:hover { background: #f3eefc; color: #3f2a8a; } '
+            'QListView::item:selected { background: #e5dbfb; color: #5b34b8; font-weight: 600; } '
+            'QScrollBar:vertical { background: #f4f7fc; width: 8px; margin: 2px; border-radius: 4px; } '
+            'QScrollBar::handle:vertical { background: #c9b6f3; border-radius: 4px; min-height: 24px; } '
+            'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }')
+        self.completer.activated[str].connect(self.pick_variable)
+
+    def items_loaded(self):
+        pass
+
+    def load_items(self, refresh=False):
+        if self.items_provider is None:
+            self.items_status.setText('')
+            self.refresh_button.hide()
+            return
+        self.refresh_button.setEnabled(False)
+        self.items_status.setText('กำลังดึงรายชื่อตัวแปรจาก Lyche (เบื้องหลัง ไม่ขยับหน้าต่าง Lyche ~10 วินาที)…')
+        self.items_status.setStyleSheet('color: #1f6fd1; font-size: 12px;')
+        self.items_provider(self.set_items, refresh)
+
+    def set_items(self, data, error=''):
+        try:
+            self.refresh_button.setEnabled(True)
+        except RuntimeError:  # the dialog was closed (and deleted) meanwhile
+            return
+        if error or not data:
+            self.items_status.setText(f'ค้นหาตัวแปรจาก Lyche ไม่ได้: {error or "ไม่มีข้อมูล"} — พิมพ์ชื่อตัวแปรเองได้')
+            self.items_status.setStyleSheet('color: #b26a00; font-size: 12px;')
+            return
+        items = data['items']
+        self.known = {code.casefold(): code for code, _ in items}
+        self.model.clear()
+        for code, label in items:  # the list shows variable names only (user request); the question is the tooltip
+            entry = QStandardItem(code)
+            entry.setToolTip(label)
+            self.model.appendRow(entry)
+        self.items_status.setText(f'ตัวแปรจาก Lyche {len(items)} ตัว · ดึงเมื่อ {data.get("time", "")} · '
+                                  'พิมพ์ชื่อตัวแปรเพื่อค้นหา')
+        self.items_status.setStyleSheet('color: #1f9a3e; font-size: 12px;')
+        self.items_loaded()
+
+    def pick_variable(self, text):
+        """A pick from the search list (a variable name)."""
+        widget = self.completer.widget()
+        code = text.split(' ', 1)[0]
+        if isinstance(widget, QLineEdit):
+            QTimer.singleShot(0, lambda: widget.setText(code))
+
+
+def syntax_bar(dialog, layout, what):
+    """'คัดลอก … / วาง …' under a dialog's rows: the setting as text on the clipboard, to paste into another
+    row's dialog (or the queue's right-click menu, or Excel). Calls dialog.copy_syntax / dialog.paste_syntax."""
+    line = QHBoxLayout()
+    line.setSpacing(8)
+    for text, slot, tip in ((f'⧉  คัดลอก {what}', dialog.copy_syntax, f'คัดลอก {what} ของแถวนี้เป็นข้อความ ไปวางที่แถวอื่น'),
+                            (f'📋  วาง {what}', dialog.paste_syntax, f'วาง {what} ที่คัดลอกไว้ (แทนค่าในหน้านี้)')):
+        button = QPushButton(text)
+        button.setObjectName('secondary')
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tip)
+        button.clicked.connect(slot)
+        line.addWidget(button)
+    line.addStretch(1)
+    layout.addLayout(line)
+    dialog.syntax_note = QLabel('')  # its own line: copied / pasted text can be long
+    dialog.syntax_note.setStyleSheet('color: #1f9a3e; font-size: 12px;')
+    dialog.syntax_note.setWordWrap(True)
+    layout.addWidget(dialog.syntax_note)
+
+
+def syntax_note(dialog, text, ok=True):
+    dialog.syntax_note.setStyleSheet(f'color: {"#1f9a3e" if ok else "#c62828"}; font-size: 12px;')
+    dialog.syntax_note.setText(text)
+
+
+def banner_manual_from_text(text):
+    """Clipboard text → Banner Manual items; ValueError when it is not a list of variable names."""
+    items = manual_items(text)
+    bad = [item for item in items if not re.fullmatch(VARIABLE, item)]
+    if not items or bad:
+        raise ValueError('ข้อความที่คัดลอกไว้ไม่ใช่รายชื่อตัวแปร Banner Manual (เช่น QUOTA6, QUOTA1)')
+    return items
+
+
+def rows_area(name):
+    """A transparent scrolling column for numbered rows (Filter / Banner Manual); returns (scroll, layout)."""
+    widget = QWidget()
+    widget.setObjectName(name)
+    widget.setStyleSheet(f'QWidget#{name} {{ background: transparent; }}')  # not the buttons inside
+    rows = QVBoxLayout(widget)
+    rows.setContentsMargins(0, 0, 8, 0)
+    rows.setSpacing(2)
+    rows.addStretch(1)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setStyleSheet(f'QScrollArea {{ background: transparent; border: none; }} '
+                         f'QScrollArea > QWidget > QWidget#{name} {{ background: transparent; }}')
+    scroll.viewport().setAutoFillBackground(False)
+    scroll.setWidget(widget)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    return scroll, rows
+
+
+class BannerManualDialog(VariableSearch, QDialog):
+    """Banner Manual of a row: Lyche item codes that replace the History's Banner (in this order), one per row
+    (5 rows, ＋ เพิ่มแถว), each box searching Lyche's variable list. The run does what a user would: Banner
+    'Clear all' → Yes, then per item: search → select → To Banner."""
+    MAX_ROWS = 30
+    DEFAULT_ROWS = 5
+
+    def __init__(self, parent, name, settings, checker=None, items_provider=None):
         super().__init__(parent)
         self.apply_all = False
         self.checker = checker  # App.check_manual_items(items, callback): 'เช็คกับ Lyche'
@@ -6337,30 +6994,33 @@ class BannerManualDialog(QDialog):
         target.setStyleSheet('color: #5f6f8a;')
         target.setWordWrap(True)
         layout.addWidget(target)
-        layout.addSpacing(4)
+        self.init_variable_search(layout, items_provider)
         card = QFrame()
-        card.setStyleSheet('QFrame { background: #f4f7fc; border: 1px solid #d5e0ef; border-radius: 12px; } '
+        card.setObjectName('card2')
+        card.setStyleSheet('QFrame#card2 { background: #f4f7fc; border: 1px solid #d5e0ef; border-radius: 12px; } '
                            'QLabel, QCheckBox { border: none; background: transparent; }')
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setContentsMargins(16, 14, 10, 14)
         inner.setSpacing(8)
         self.enabled = QCheckBox('ใช้ Banner Manual')
         self.enabled.setStyleSheet('font-size: 15px; font-weight: 700;')
         self.enabled.setChecked(bool(settings.get('banner_manual')))
         inner.addWidget(self.enabled)
-        caption = QLabel('ข้อที่จะใส่ เรียงตามลำดับ Banner · หลายข้อคั่นด้วย , หรือขึ้นบรรทัดใหม่')
+        caption = QLabel('ตัวแปรละแถว เรียงตามลำดับ Banner (บนลงล่าง) · พิมพ์เพื่อค้นหาตัวแปรจาก Lyche')
         caption.setStyleSheet('color: #4a5a78; font-size: 12px; font-weight: 600;')
         caption.setWordWrap(True)
         inner.addWidget(caption)
-        self.items = QPlainTextEdit('\n'.join(manual_items(settings.get('banner_manual_items', ''))))
-        self.items.setPlaceholderText('เช่น\nQUOTA1\nQUOTA6')
-        self.items.setFixedHeight(112)
-        # its own style: the card's 'QFrame' rule would otherwise apply (QPlainTextEdit is a QFrame)
-        self.items.setStyleSheet('QPlainTextEdit { background: #ffffff; border: 1px solid #c3d0e4; border-radius: 7px; '
-                                 'padding: 4px 6px; font-size: 13px; } QPlainTextEdit:focus { border: 1px solid #2a8de9; } '
-                                 'QPlainTextEdit:disabled { background: #f3f6fb; color: #8b97ab; }')
-        self.items.setTabChangesFocus(True)
-        inner.addWidget(self.items)
+        self.scroll, self.rows_layout = rows_area('manualRows')
+        inner.addWidget(self.scroll)
+        self.add_button = QPushButton('＋  เพิ่มแถว')
+        self.add_button.setObjectName('secondary')
+        self.add_button.setCursor(Qt.PointingHandCursor)
+        self.add_button.clicked.connect(lambda: self.add_row(focus=True))
+        add_line = QHBoxLayout()
+        add_line.addSpacing(26)
+        add_line.addWidget(self.add_button)
+        add_line.addStretch(1)
+        inner.addLayout(add_line)
         check_row = QHBoxLayout()
         check_row.setSpacing(10)
         self.check_button = QPushButton('เช็คกับ Lyche')
@@ -6375,26 +7035,102 @@ class BannerManualDialog(QDialog):
         self.check_result.setStyleSheet('font-size: 12px;')
         check_row.addWidget(self.check_result, 1)
         inner.addLayout(check_row)
-        self.items.textChanged.connect(lambda: self.check_result.setText(''))  # an old result no longer applies
         how = QLabel('ตอนรัน: Clear all Banner เดิม → Yes → ค้นหาทีละข้อ → To Banner แล้วรันต่อตามปกติ · Export แยกชีทเท่านั้น\n'
                      'ใช้กับ Banner แบบ Matrix ไม่ได้')
         how.setStyleSheet('color: #4a5a78; font-size: 12px;')
         how.setWordWrap(True)
         inner.addWidget(how)
         layout.addWidget(card)
-        self.enabled.toggled.connect(self.items.setEnabled)
-        self.enabled.toggled.connect(self.check_button.setEnabled)
-        self.items.setEnabled(self.enabled.isChecked())
-        self.check_button.setEnabled(self.enabled.isChecked())
+        syntax_bar(self, layout, 'Banner Manual')
         self.message = QLabel('')
         self.message.setStyleSheet('color: #c62828; font-size: 12px;')
+        self.message.setWordWrap(True)
         self.message.hide()
         layout.addWidget(self.message)
         layout.addSpacing(6)
         dialog_buttons(self, layout)
+        self.item_rows = []
+        existing = manual_items(settings.get('banner_manual_items', ''))
+        for _ in range(max(self.DEFAULT_ROWS, len(existing))):
+            self.add_row()
+        for edit, item in zip(self.item_rows, existing):
+            edit.setText(item)
+        self.enabled.toggled.connect(self.set_rows_enabled)
+        self.set_rows_enabled(self.enabled.isChecked())
+        self.load_items()
+
+    def add_row(self, focus=False):
+        if len(self.item_rows) >= self.MAX_ROWS:
+            return
+        box = QWidget()
+        line = QHBoxLayout(box)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        number = QLabel(str(len(self.item_rows) + 1))
+        number.setStyleSheet('color: #d0213c; font-size: 15px; font-weight: 700;')
+        number.setFixedWidth(18)
+        number.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        edit = QLineEdit()
+        edit.setPlaceholderText('ตัวแปร เช่น QUOTA1' if not self.item_rows else 'เช่น QUOTA6')
+        edit.setCompleter(self.completer)
+        edit.setStyleSheet(self.FIELD)
+        edit.textChanged.connect(self.items_edited)
+        clear = QPushButton('ล้าง')
+        clear.setObjectName('secondary')
+        clear.setCursor(Qt.PointingHandCursor)
+        clear.setFixedWidth(52)
+        clear.clicked.connect(edit.clear)
+        line.addWidget(number)
+        line.addWidget(edit, 1)
+        line.addWidget(clear)
+        self.rows_layout.insertWidget(self.rows_layout.count() - 1, box)
+        self.item_rows.append(edit)
+        self.add_button.setEnabled(len(self.item_rows) < self.MAX_ROWS and self.enabled.isChecked())
+        self.add_button.setText('＋  เพิ่มแถว' if len(self.item_rows) < self.MAX_ROWS else f'ครบ {self.MAX_ROWS} แถวแล้ว')
+        shown = min(6, len(self.item_rows))  # rows visible without scrolling; the real row height, not a guess
+        self.scroll.setFixedHeight(shown * box.sizeHint().height() + (shown - 1) * self.rows_layout.spacing() + 4)
+        if focus:
+            QTimer.singleShot(0, lambda: (self.scroll.ensureWidgetVisible(box), edit.setFocus()))
+
+    def copy_syntax(self):
+        items = self.entered()
+        if not items:
+            syntax_note(self, 'ยังไม่มีข้อให้คัดลอก', ok=False)
+            return
+        QApplication.clipboard().setText(', '.join(items))
+        syntax_note(self, f'คัดลอกแล้ว: {", ".join(items)} — เปิด Banner Manual ของแถวอื่นแล้วกด วาง')
+
+    def paste_syntax(self):
+        try:
+            items = banner_manual_from_text(QApplication.clipboard().text())
+        except ValueError as exc:
+            syntax_note(self, str(exc), ok=False)
+            return
+        self.enabled.setChecked(True)
+        while len(self.item_rows) < min(len(items), self.MAX_ROWS):
+            self.add_row()
+        for index, edit in enumerate(self.item_rows):
+            edit.setText(items[index] if index < len(items) else '')
+        syntax_note(self, f'วางแล้ว {len(items)} ข้อ: {", ".join(items)}')
+
+    def set_rows_enabled(self, on):
+        for widget in self.scroll.widget().findChildren(QWidget):
+            if isinstance(widget, (QLineEdit, QPushButton)):
+                widget.setEnabled(on)
+        self.add_button.setEnabled(on and len(self.item_rows) < self.MAX_ROWS)
+        self.check_button.setEnabled(on)
+
+    def items_edited(self, *_):
+        self.check_result.setText('')  # an old result no longer applies
+        self.message.hide()
+
+    def entered(self):
+        """The rows' items in order (empty rows skipped, duplicates dropped), in Lyche's case when known."""
+        items = manual_items(', '.join(edit.text().split(' ', 1)[0] for edit in self.item_rows if edit.text().strip()))
+        return [self.known.get(item.casefold(), item) for item in items]
 
     def check_items(self):
-        items = manual_items(self.items.toPlainText())
+        items = self.entered()
         if not items:
             self.check_result.setText('<span style="color:#c62828">ใส่ข้ออย่างน้อย 1 ข้อก่อนเช็ค</span>')
             return
@@ -6431,22 +7167,256 @@ class BannerManualDialog(QDialog):
     @property
     def settings(self):
         on = self.enabled.isChecked()
-        settings = {'banner_manual': on, 'banner_manual_items': ', '.join(manual_items(self.items.toPlainText()))}
+        settings = {'banner_manual': on, 'banner_manual_items': ', '.join(self.entered())}
         if on:
             settings['export_mode'] = 'sheets'  # Banner Manual exports with Analysis Axis only (user rule)
         return settings
 
     def accept(self):
-        if self.enabled.isChecked() and not manual_items(self.items.toPlainText()):
-            self.message.setText('เปิด Banner Manual แล้ว กรุณาใส่ข้ออย่างน้อย 1 ข้อ เช่น QUOTA1')
-            self.message.show()
-            self.items.setFocus()
-            self.apply_all = False
-            return
+        if self.enabled.isChecked():
+            items = self.entered()
+            unknown = [item for item in items if self.known and item.casefold() not in self.known]
+            if not items or unknown:
+                self.message.setText('เปิด Banner Manual แล้ว กรุณาใส่ข้ออย่างน้อย 1 ข้อ เช่น QUOTA1' if not items else
+                                     f'ไม่พบตัวแปร {", ".join(unknown)} ใน Lyche (เพิ่งเพิ่มใน Lyche? กด ดึงตัวแปรใหม่)')
+                self.message.show()
+                (self.item_rows[0] if not items else self.item_rows[0]).setFocus()
+                self.apply_all = False
+                return
         super().accept()
 
     def accept_all(self):
         self.apply_all = True
+        self.accept()
+
+
+class FilterDialog(VariableSearch, QDialog):
+    """Filter of a row, laid out like Lyche's Filter Condition Settings: numbered rows (＋ เพิ่มแถว, up to
+    Lyche's 30), each a variable, Include / Exclude and its codes (1, 1-5 or 1-5,7 = several categories
+    selected together), AND / OR under each row. The variable box searches Lyche's item list (code or
+    label). The run fills Lyche's rows in the same order; without brackets Lyche works left to right."""
+    def __init__(self, parent, name, text, items_provider=None):
+        super().__init__(parent)
+        self.apply_all = False
+        layout = sheet_layout(self, 680)
+        heading = QLabel('Filter')
+        heading.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
+        layout.addWidget(heading)
+        target = QLabel(escape(name) + '  ·  เงื่อนไขทำจากบนลงล่าง (ซ้ายไปขวา) แบบ Filter Condition Settings ของ Lyche · '
+                        'ว่างทุกแถว = ไม่กรอง')
+        target.setStyleSheet('color: #5f6f8a;')
+        target.setWordWrap(True)
+        layout.addWidget(target)
+        self.init_variable_search(layout, items_provider)
+
+        card = QFrame()
+        card.setStyleSheet('QFrame#card2 { background: #f4f7fc; border: 1px solid #d5e0ef; border-radius: 12px; } '
+                           'QLabel, QRadioButton { border: none; background: transparent; }')
+        card.setObjectName('card2')
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(12, 8, 6, 8)
+        inner.setSpacing(4)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 16, 0)
+        header.setSpacing(8)
+        header.addSpacing(26)
+        for title, stretch, width in (('ตัวแปร  (พิมพ์เพื่อค้นหา)', 3, 0), ('เงื่อนไข', 0, 100),
+                                      ('code  (1 · 1-5 · 1-5,7)', 4, 0), ('', 0, 52)):
+            caption = QLabel(title)
+            caption.setStyleSheet('color: #4a5a78; font-size: 12px; font-weight: 600;')
+            if width:
+                caption.setFixedWidth(width)
+            header.addWidget(caption, stretch)
+        inner.addLayout(header)
+        self.scroll, self.rows_layout = rows_area('filterRows')
+        inner.addWidget(self.scroll)
+        self.add_button = QPushButton('＋  เพิ่มแถว')
+        self.add_button.setObjectName('secondary')
+        self.add_button.setCursor(Qt.PointingHandCursor)
+        self.add_button.clicked.connect(lambda: self.add_row(focus=True))
+        add_line = QHBoxLayout()
+        add_line.addSpacing(26)
+        add_line.addWidget(self.add_button)
+        add_line.addStretch(1)
+        inner.addLayout(add_line)
+        layout.addWidget(card)
+        self.preview = QLabel('')
+        self.preview.setWordWrap(True)
+        layout.addWidget(self.preview)
+        syntax_bar(self, layout, 'Filter')
+        self.message = QLabel('')
+        self.message.setStyleSheet('color: #c62828; font-size: 12px;')
+        self.message.setWordWrap(True)
+        self.message.hide()
+        layout.addWidget(self.message)
+        dialog_buttons(self, layout, all_rows=False)
+
+        self.rows = []
+        try:
+            conditions = parse_filters(text)
+        except ValueError:
+            conditions = []
+            self.message.setText(f'Filter เดิม "{text}" อ่านไม่ได้ — ใส่ใหม่ในช่องด้านบน')
+            self.message.show()
+        for _ in range(7):
+            self.add_row()
+        self.fill(conditions)
+        self.load_items()
+
+    def fill(self, conditions):
+        """Put parse_filters() conditions into the rows (more rows when needed, the rest cleared)."""
+        while len(self.rows) < len(conditions):
+            self.add_row()
+        for index, (variable, condition, codes, join, _) in enumerate(self.rows):
+            item = conditions[index] if index < len(conditions) else None
+            variable.setText(item['variable'] if item else '')
+            condition.setCurrentText(item['condition'] if item else 'Include')
+            codes.setText(compact_codes(item['codes']) if item else '')
+            join.setChecked(bool(item) and item['join'] == 'OR')
+            if not join.isChecked():
+                join.group().buttons()[0].setChecked(True)
+        self.update_preview()
+
+    def copy_syntax(self):
+        try:
+            text = self.expression
+        except ValueError as exc:
+            syntax_note(self, str(exc), ok=False)
+            return
+        QApplication.clipboard().setText(text)
+        syntax_note(self, f'คัดลอกแล้ว: {text} — เปิด Filter ของแถวอื่นแล้วกด วาง')
+
+    def paste_syntax(self):
+        text = QApplication.clipboard().text().strip()
+        try:
+            conditions = parse_filters(text)
+        except ValueError:
+            syntax_note(self, 'ข้อความที่คัดลอกไว้ไม่ใช่ Filter (เช่น QUOTA0 = 1-4 AND QUOTA6 ^= 1)', ok=False)
+            return
+        self.fill(conditions)
+        syntax_note(self, f'วางแล้ว: {format_filter(conditions)}')
+
+    def add_row(self, focus=False):
+        """One more condition row (Lyche has MAX_FILTER_ROWS); the previous row gets its AND / OR."""
+        if len(self.rows) >= MAX_FILTER_ROWS:
+            return
+        index = len(self.rows)
+        box = QWidget()
+        lines = QVBoxLayout(box)
+        lines.setContentsMargins(0, 0, 0, 0)
+        lines.setSpacing(1)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        number = QLabel(str(index + 1))
+        number.setStyleSheet('color: #d0213c; font-size: 15px; font-weight: 700;')
+        number.setFixedWidth(18)
+        number.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        variable = QLineEdit()
+        variable.setPlaceholderText('เช่น QUOTA6')
+        variable.setCompleter(self.completer)
+        condition = QComboBox()
+        condition.addItems(['Include', 'Exclude'])
+        condition.setFixedWidth(100)
+        codes = QLineEdit()
+        codes.setPlaceholderText('เช่น 1 หรือ 1-5,7')
+        for widget in (variable, condition, codes):
+            widget.setStyleSheet(self.FIELD)
+        clear = QPushButton('ล้าง')
+        clear.setObjectName('secondary')
+        clear.setCursor(Qt.PointingHandCursor)
+        clear.setFixedWidth(52)
+        clear.clicked.connect(lambda _=False, v=variable, c=condition, k=codes: (v.clear(), c.setCurrentIndex(0), k.clear()))
+        line.addWidget(number)
+        line.addWidget(variable, 3)
+        line.addWidget(condition)
+        line.addWidget(codes, 4)
+        line.addWidget(clear)
+        lines.addLayout(line)
+        joins = QWidget()  # AND / OR under the row, as in Lyche; shown once a row follows
+        join_line = QHBoxLayout(joins)
+        join_line.setContentsMargins(30, 0, 0, 2)
+        join_line.setSpacing(16)
+        and_, or_ = QRadioButton('AND'), QRadioButton('OR')
+        group = QButtonGroup(box)
+        group.addButton(and_)
+        group.addButton(or_)
+        and_.setChecked(True)
+        for radio in (and_, or_):
+            radio.setStyleSheet('font-size: 12px; color: #4a5a78;')
+            join_line.addWidget(radio)
+            radio.toggled.connect(self.update_preview)
+        join_line.addStretch(1)
+        lines.addWidget(joins)
+        joins.hide()
+        if self.rows:
+            self.rows[-1][4].show()
+        variable.textChanged.connect(self.update_preview)
+        codes.textChanged.connect(self.update_preview)
+        condition.currentIndexChanged.connect(self.update_preview)
+        self.rows_layout.insertWidget(self.rows_layout.count() - 1, box)
+        self.rows.append((variable, condition, codes, or_, joins))
+        self.add_button.setEnabled(len(self.rows) < MAX_FILTER_ROWS)
+        self.add_button.setText('＋  เพิ่มแถว' if len(self.rows) < MAX_FILTER_ROWS else f'ครบ {MAX_FILTER_ROWS} แถวแล้ว (สูงสุดของ Lyche)')
+        row_height = 58
+        self.scroll.setFixedHeight(min(7, len(self.rows)) * row_height + 6)
+        if focus:
+            QTimer.singleShot(0, lambda: (self.scroll.ensureWidgetVisible(box), variable.setFocus()))
+
+    def items_loaded(self):
+        self.update_preview()
+
+    def conditions(self):
+        """The filled rows as parse_filters() items; ValueError for a half-filled row, a bad code or a
+        variable that is not in Lyche's list (when the list is loaded)."""
+        result = []
+        for index, (variable, condition, codes, join, _) in enumerate(self.rows, 1):
+            name, code_text = variable.text().strip(), codes.text().strip()
+            if not name and not code_text:
+                continue
+            name = name.split(' ', 1)[0]
+            if not re.fullmatch(VARIABLE, name):
+                raise ValueError(f'แถว {index}: ใส่ชื่อตัวแปร เช่น QUOTA6')
+            if self.known:
+                if name.casefold() not in self.known:
+                    raise ValueError(f'แถว {index}: ไม่พบตัวแปร {name} ใน Lyche (เพิ่งเพิ่มใน Lyche? กด ดึงตัวแปรใหม่)')
+                name = self.known[name.casefold()]
+            if not code_text:
+                raise ValueError(f'แถว {index}: ใส่ code เช่น 1 หรือ 1-5,7')
+            try:
+                codes_list = expand_codes(code_text)
+            except ValueError as exc:
+                raise ValueError(f'แถว {index}: {exc}') from None
+            if result:
+                result[-1]['join'] = result[-1].pop('next')
+            result.append({'variable': name.upper() if not self.known else name, 'condition': condition.currentText(),
+                           'codes': codes_list, 'join': '', 'next': 'OR' if join.isChecked() else 'AND'})
+        if result:
+            result[-1].pop('next')
+        return result
+
+    @property
+    def expression(self):
+        return format_filter(self.conditions())
+
+    def update_preview(self, *_):
+        try:
+            text = self.expression
+            self.preview.setText('Filter: ' + ('-  (ไม่กรอง)' if text == '-' else text))
+            self.preview.setStyleSheet('color: #1b3fd0; font-size: 12px; font-weight: 600;')
+        except ValueError as exc:
+            self.preview.setText(str(exc))
+            self.preview.setStyleSheet('color: #b26a00; font-size: 12px; font-weight: 600;')
+
+    def accept(self):
+        try:
+            self.expression
+        except ValueError as exc:
+            self.message.setText(str(exc))
+            self.message.show()
+            return
+        super().accept()
+
+    def accept_all(self):
         self.accept()
 
 
@@ -6470,9 +7440,9 @@ class StepDelegate(QStyledItemDelegate):
         text, opt.text = opt.text, ''
         widget = opt.widget
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
-        on = text not in ('', 'Off')
+        on = text not in ('', 'Off', '-')
         hover = bool(option.state & QStyle.State_MouseOver)
-        rect = option.rect.adjusted(4, 9, -4, -9)
+        rect = option.rect.adjusted(4, 5, -4, -5)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         font = QFont(option.font)
@@ -6513,14 +7483,14 @@ class GearDelegate(QStyledItemDelegate):
         if GearDelegate.gear is None:
             GearDelegate.gear = QIcon(f'{ASSETS}/gear.svg')
         hover = bool(option.state & QStyle.State_MouseOver)
-        box = QRect(0, 0, 30, 30)
+        box = QRect(0, 0, 24, 24)
         box.moveCenter(option.rect.center())
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(QColor('#c9b6f3' if hover else '#d9cdf6'), 1))
         painter.setBrush(QColor('#e0d4fb' if hover else '#f3eefc'))
         painter.drawRoundedRect(box, 8, 8)
-        GearDelegate.gear.paint(painter, box.adjusted(7, 7, -7, -7))
+        GearDelegate.gear.paint(painter, box.adjusted(5, 5, -5, -5))
         painter.restore()
 
 
@@ -6665,6 +7635,7 @@ class App(MacWindowMixin, QMainWindow):
         self.focus_guard = QTimer(self)
         self.focus_guard.setInterval(100)
         self.focus_guard.timeout.connect(self.keep_focus)
+
         self.build_ui()
         self.restore_settings()
         if not self.table.rowCount():
@@ -6782,7 +7753,7 @@ class App(MacWindowMixin, QMainWindow):
         section.setObjectName('section')
         row.addWidget(section)
         row.addSpacing(8)
-        row.addWidget(self.caption('Filter:  -  ไม่กรอง   ·   QUOTA6 = 1  Include   ·   QUOTA6 ^= 1  Exclude'))
+        row.addWidget(self.caption('Filter: คลิกช่อง Filter เพื่อตั้งค่า  ·  หลาย code 1-5,7  ·  AND / OR'))
         row.addStretch()
         settings_button = self.button('ตั้งค่า Step', self.edit_selected_post, row, kind='purple',
                     tip='ตั้งค่าของแถวที่เลือก: Step 1 Delete Total + NA · Step 2 Del Sig · Step 3 ตัด N / % · Step 4 Export\n'
@@ -6804,7 +7775,7 @@ class App(MacWindowMixin, QMainWindow):
         self.table = QTableWidget(0, GEAR_COLUMN + 1)
         self.table.setItemDelegateForColumn(0, HiddenTextDelegate(self.table))
         self.step_delegate = StepDelegate(self.table)
-        for column in (*STEP_COLUMNS, MANUAL_COLUMN):
+        for column in (2, *STEP_COLUMNS, MANUAL_COLUMN):  # 2 = Filter: a chip, click → FilterDialog
             self.table.setItemDelegateForColumn(column, self.step_delegate)
         self.table.setItemDelegateForColumn(GEAR_COLUMN, GearDelegate(self.table))
         self.table.setHorizontalHeaderLabels(['Banner', 'ชื่อไฟล์ผลลัพธ์', 'Filter', 'Base', 'สถานะ', 'รายละเอียด',
@@ -6824,6 +7795,8 @@ class App(MacWindowMixin, QMainWindow):
             self.table.horizontalHeaderItem(column).setToolTip(f'Step {number} · {name}\nคลิกที่ช่องในแถวเพื่อตั้งค่า')
         self.table.cellDoubleClicked.connect(self.cell_double_clicked)
         self.table.cellClicked.connect(self.cell_clicked)  # Step chips open the settings with one click
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)  # Filter / Banner Manual: copy and paste rows
+        self.table.customContextMenuRequested.connect(self.table_menu)
         self.table.setMouseTracking(True)
         self.table.viewport().installEventFilter(self)  # hand cursor over the Step chips
         self.table.setShowGrid(False)
@@ -6832,13 +7805,13 @@ class App(MacWindowMixin, QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(44)
+        self.table.verticalHeader().setDefaultSectionSize(34)  # compact queue rows (user request)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.setWordWrap(False)  # one line per cell; long Sig groups end with … (full text in the tooltip)
         # Compact widths so every column fits the window (user request); the file name takes what is left.
-        for index, width in enumerate([150, 160, 104, 52, 76, 300, 88, 112, 80, 88, 136, 46]):
+        for index, width in enumerate([150, 160, 132, 52, 76, 300, 88, 112, 80, 88, 136, 46]):
             self.table.setColumnWidth(index, width)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(GEAR_COLUMN, QHeaderView.Fixed)
@@ -6972,8 +7945,11 @@ class App(MacWindowMixin, QMainWindow):
         self.table.insertRow(row)
         for col, value in enumerate((job.history, job.output, job.filter, job.base, job.status, job.detail)):
             item = QTableWidgetItem(value)
-            if col >= 4:
+            if col >= 4 or col == 2:  # the Filter is set in its dialog (click the cell)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            if col == 2:
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setToolTip(f'Filter: {value}\nคลิกเพื่อตั้งค่า Filter')
             if col == 0:
                 item.setData(Qt.UserRole, job.id)
                 item.setData(Qt.UserRole + 1, post_settings(job))
@@ -7016,7 +7992,7 @@ class App(MacWindowMixin, QMainWindow):
         if hasattr(self, 'table') and obj is self.table.viewport():
             if event.type() == QEvent.MouseMove:
                 index = self.table.indexAt(event.position().toPoint())
-                on_chip = index.isValid() and index.column() in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
+                on_chip = index.isValid() and index.column() in (2, *STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
                 obj.setCursor(Qt.PointingHandCursor if on_chip else Qt.ArrowCursor)
             elif event.type() == QEvent.Leave:
                 obj.unsetCursor()
@@ -7029,14 +8005,87 @@ class App(MacWindowMixin, QMainWindow):
         return super().eventFilter(obj, event)
 
     def cell_double_clicked(self, row, column):
-        if column == MANUAL_COLUMN and not self.busy:
+        if column == 2 and not self.busy:
+            self.edit_filter(row)
+        elif column == MANUAL_COLUMN and not self.busy:
             self.edit_post(row, manual=True)
-        elif column in (0, 4, 5, *STEP_COLUMNS) and not self.busy:  # columns 1-3 keep double-click-to-edit
+        elif column in (0, 4, 5, *STEP_COLUMNS) and not self.busy:  # columns 1 and 3 keep double-click-to-edit
             self.edit_post(row)
 
     def cell_clicked(self, row, column):
-        if column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy and not QApplication.keyboardModifiers():
+        if column == 2 and not self.busy and not QApplication.keyboardModifiers():
+            self.edit_filter(row)
+        elif column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy and not QApplication.keyboardModifiers():
             self.edit_post(row, manual=column == MANUAL_COLUMN)
+
+    def table_menu(self, position):
+        """Right-click on a Filter / Banner Manual cell: copy this row's setting as text, or paste the copied
+        text into every selected row (the clicked row when it is not selected)."""
+        index = self.table.indexAt(position)
+        if not index.isValid() or index.column() not in (2, MANUAL_COLUMN) or self.busy:
+            return
+        row, filter_cell = index.row(), index.column() == 2
+        selected = self.selected_rows()
+        targets = selected if row in selected else [row]
+        what = 'Filter' if filter_cell else 'Banner Manual'
+        if filter_cell:
+            current = self.table.item(row, 2).text()
+        else:
+            post = self.table.item(row, 0).data(Qt.UserRole + 1) or {}
+            current = manual_text(post) or ''
+        menu = QMenu(self)
+        menu.setStyleSheet('QMenu { background: #ffffff; border: 1px solid #c9b6f3; padding: 4px; } '
+                           'QMenu::item { padding: 6px 18px; border-radius: 6px; color: #1e2a44; } '
+                           'QMenu::item:selected { background: #e5dbfb; color: #5b34b8; } '
+                           'QMenu::item:disabled { color: #a3adbf; }')
+        copy = menu.addAction(f'⧉  คัดลอก {what} แถวนี้' + (f'   ({current[:40]})' if current and current != '-' else ''))
+        copy.setEnabled(bool(current) and current != '-')
+        paste = menu.addAction(f'📋  วาง {what} ให้ ' + (f'{len(targets)} แถวที่เลือก' if len(targets) > 1 else 'แถวนี้'))
+        chosen = self.run_menu(menu, self.table.viewport().mapToGlobal(position))
+        if chosen is copy:
+            QApplication.clipboard().setText(current)
+            self.write_log(f'คัดลอก {what}: {current}')
+        elif chosen is paste:
+            text = QApplication.clipboard().text().strip()
+            try:
+                if filter_cell:
+                    text = format_filter(parse_filters(text))
+                    for target in targets:
+                        if self.table.item(target, 2).text() != text:
+                            self.table.item(target, 2).setText(text)  # itemChanged → รอรัน + autosave
+                            self.table.item(target, 2).setToolTip(f'Filter: {text}\nคลิกเพื่อตั้งค่า Filter')
+                else:
+                    items = banner_manual_from_text(text)
+                    self.apply_post(targets, {'banner_manual': True, 'banner_manual_items': ', '.join(items),
+                                              'export_mode': 'sheets'})
+                    text = ', '.join(items)
+            except ValueError as exc:
+                self.error(str(exc) if not filter_cell else
+                           'ข้อความที่คัดลอกไว้ไม่ใช่ Filter (เช่น QUOTA0 = 1-4 AND QUOTA6 ^= 1)')
+                return
+            self.write_log(f'วาง {what} "{text}" ให้ {len(targets)} แถว')
+
+    @staticmethod
+    def run_menu(menu, position):
+        return menu.exec(position)
+
+    def edit_filter(self, row):
+        """The row's Filter dialog; the new text goes into the cell (itemChanged → status back to รอรัน)."""
+        if getattr(self, '_editing_post', False):  # a click and a double-click on the same cell
+            return
+        self._editing_post = True
+        try:
+            item = self.table.item(row, 2)
+            name = self.table.item(row, 1).text() or self.table.item(row, 0).text() or f'แถว {row + 1}'
+            dialog = FilterDialog(self, name, item.text(), self.variable_items)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            text = dialog.expression
+            if text != item.text():
+                item.setText(text)
+            item.setToolTip(f'Filter: {text}\nคลิกเพื่อตั้งค่า Filter')
+        finally:
+            self._editing_post = False
 
     def edit_selected_post(self):
         """Toolbar '⚙ ตั้งค่า Step': the selected rows (all get the same settings), else the first row."""
@@ -7062,14 +8111,17 @@ class App(MacWindowMixin, QMainWindow):
         name = self.table.item(row, 1).text() or item.text() or f'แถว {row + 1}'
         if rows and len(rows) > 1:
             name = f'{len(rows)} แถวที่เลือก'
-        dialog = BannerManualDialog(self, name, current, self.check_manual_items) if manual \
+        dialog = BannerManualDialog(self, name, current, self.check_manual_items, self.variable_items) if manual \
             else PostProcessDialog(self, name, current)
         if dialog.exec() != QDialog.Accepted:
             return
-        rows = range(self.table.rowCount()) if dialog.apply_all else (rows or [row])
+        self.apply_post(range(self.table.rowCount()) if dialog.apply_all else (rows or [row]), dialog.settings)
+
+    def apply_post(self, rows, settings):
+        """Merge `settings` into each row's settings; changed rows go back to รอรัน."""
         for target in rows:
             before = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
-            after = {**before, **dialog.settings}  # each dialog changes only its own keys
+            after = {**before, **settings}  # each dialog changes only its own keys
             after['export_mode'] = export_mode(after)  # e.g. 'apply to all' onto a Banner Manual row
             if before == after:
                 continue
@@ -7340,6 +8392,34 @@ class App(MacWindowMixin, QMainWindow):
             return
         self.launch('load', banner=name)
 
+    def project_key(self):
+        title = self.window_combo.currentText()
+        return title[title.find('<') + 1:title.find('>')] if '<' in title and '>' in title else ''
+
+    def variable_items(self, callback, refresh=False):
+        """Lyche's variable list for the Filter dialog's search: from DATA/item-lists/<project>.json, or read
+        from Lyche by a background worker (action 'items'). callback({'project', 'time', 'items'}, error)."""
+        project = self.project_key()
+        if not project:
+            callback(None, 'ยังไม่ได้เลือกหน้าต่าง Lyche')
+            return
+        path = DATA / 'item-lists' / (re.sub(r'[^\w.-]+', '_', project) + '.json')
+        if not refresh and path.exists():
+            try:
+                callback(json.loads(path.read_text(encoding='utf-8')), '')
+                return
+            except (OSError, ValueError):
+                pass
+        if self.busy:
+            callback(None, 'โปรแกรมกำลังทำงานอยู่ รอให้เสร็จก่อน')
+            return
+        if not self.window_combo.currentData():
+            callback(None, 'ค้นหาและเลือกหน้าต่าง Lyche ก่อน')
+            return
+        self.items_request = (callback, path, project)
+        self.items_result, self.check_error = None, ''
+        self.launch('items')
+
     def check_manual_items(self, items, callback):
         """Banner Manual 'เช็คกับ Lyche': a background worker searches each item in Lyche's item list;
         `callback(results, error)` gets [{'item', 'found', 'label'}] or an error text."""
@@ -7370,6 +8450,9 @@ class App(MacWindowMixin, QMainWindow):
         self.control_dir.mkdir(parents=True, exist_ok=True)
         config = {**self.config(), 'action': action, 'handle': handle, 'window_title': self.window_combo.currentText(),
                   'control_dir': str(self.control_dir), **extra}
+        if sys.platform == 'win32':  # the window the user is in now: the worker's focus guard protects it
+            import ctypes
+            config['user_window'] = int(ctypes.windll.user32.GetForegroundWindow() or 0)
         request = self.control_dir / 'request.json'
         save_json(request, config)
         self.buffer = ''
@@ -7378,7 +8461,8 @@ class App(MacWindowMixin, QMainWindow):
         self.run_event = ''
         self.set_busy(True)
         self.state.setText({'windows': 'กำลังค้นหาหน้าต่าง…', 'banners': 'กำลังดึง Banner…', 'load': 'กำลังโหลด Banner…',
-                            'check_items': 'กำลังเช็คข้อกับ Lyche…', 'run': 'กำลังรันคิว • F8 หยุดได้ทุกเมื่อ'}[action])
+                            'check_items': 'กำลังเช็คข้อกับ Lyche…', 'items': 'กำลังดึงตัวแปรจาก Lyche…',
+                            'run': 'กำลังรันคิว • F8 หยุดได้ทุกเมื่อ'}[action])
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(ROOT))
         self.process.readyReadStandardOutput.connect(self.read_output)
@@ -7387,7 +8471,7 @@ class App(MacWindowMixin, QMainWindow):
         self.process.errorOccurred.connect(self.process_error)
         program, arguments = onefile.worker_command(str(request))  # ONEFILE: this file with --worker
         self.process.start(program, arguments)
-        if action in ('run', 'load', 'check_items'):
+        if action in ('run', 'load', 'check_items', 'items'):
             import ctypes
             self.user_window = ctypes.windll.user32.GetForegroundWindow()  # where the user is now
             self.focus_guard.start()
@@ -7422,7 +8506,7 @@ class App(MacWindowMixin, QMainWindow):
                 self.window_combo.blockSignals(False)
                 self.write_log(f'พบ {len(event["items"])} หน้าต่าง Lyche')
                 if event.get('opened'):  # Lyche grabbed focus when it opened
-                    if self.action in ('run', 'load', 'check_items') and getattr(self, 'user_window', None):
+                    if self.action in ('run', 'load', 'check_items', 'items') and getattr(self, 'user_window', None):
                         QTimer.singleShot(0, lambda: self.activate_window(self.user_window))  # back to the user's work
                     else:
                         QTimer.singleShot(0, self.bring_to_front)
@@ -7430,6 +8514,8 @@ class App(MacWindowMixin, QMainWindow):
                 self.freeze_screen()
             elif kind == 'unfreeze':
                 self.unfreeze_screen()
+            elif kind == 'items':
+                self.items_result = event['items']
             elif kind == 'items_checked':
                 self.check_results = event['results']
             elif kind == 'banners':
@@ -7461,7 +8547,7 @@ class App(MacWindowMixin, QMainWindow):
                 self.write_log(event['text'])
                 if kind != 'log' and self.action == 'run':
                     self.run_message, self.run_event = event['text'], kind  # shown in the run summary, not a second popup
-                elif kind == 'error' and self.action == 'check_items':
+                elif kind == 'error' and self.action in ('check_items', 'items'):
                     self.check_error = event['text']  # shown in the Banner Manual dialog, not a second popup
                 elif kind == 'error':
                     self.error(event['text'])
@@ -7506,6 +8592,18 @@ class App(MacWindowMixin, QMainWindow):
             QTimer.singleShot(0, lambda: self.show_run_summary(code))
         if code == 0 and self.action == 'windows':
             QTimer.singleShot(0, self.after_scan)
+        if self.action == 'items' and getattr(self, 'items_request', None):
+            (callback, path, project), self.items_request = self.items_request, None
+            data, error = None, self.check_error
+            if self.items_result is not None:
+                data = {'project': project, 'time': datetime.now().strftime('%d/%m %H:%M'), 'items': self.items_result}
+                try:
+                    save_json(path, data)
+                except OSError:
+                    pass
+            elif not error:
+                error = 'Worker สิ้นสุดก่อนได้ผล ดูรายละเอียดในบันทึก'
+            QTimer.singleShot(0, lambda: callback(data, error))
         if self.action == 'check_items' and getattr(self, 'check_callback', None):
             callback, self.check_callback = self.check_callback, None
             error = self.check_error or ('' if self.check_results is not None else 'Worker สิ้นสุดก่อนได้ผล ดูรายละเอียดในบันทึก')
@@ -7579,7 +8677,10 @@ class App(MacWindowMixin, QMainWindow):
             return
         lyche = win32process.GetWindowThreadProcessId(handle)[1]
         if win32process.GetWindowThreadProcessId(foreground)[1] != lyche:
-            self.user_window = foreground
+            # adopt it only when the user switched there (an automated activation — Excel of the
+            # post-processing, this window after another one closed — is not where the user works)
+            if ms_since_input() < 400 or not getattr(self, 'user_window', None):
+                self.user_window = foreground
             return
         if win32gui.GetWindowRect(foreground)[0] > -15000:
             return  # a visible Lyche window: the user is working in Lyche
