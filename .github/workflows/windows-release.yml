@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,28 +66,38 @@ jobs:
 
       - name: Verify packaged Auto Lychee EXE
         shell: pwsh
+        timeout-minutes: 10
         env:
           QT_QPA_PLATFORM: offscreen
           AUTOLYCHEE_DATA: ${{ runner.temp }}/autolychee-smoke
         run: |
           @'
           import subprocess
+
+          def run(command, timeout, **kwargs):
+              # One-file exes spawn a child that keeps the pipes open, so kill the whole tree on timeout.
+              process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, text=True, encoding="utf-8")
+              try:
+                  stdout, stderr = process.communicate(kwargs.get("input", ""), timeout=timeout)
+              except subprocess.TimeoutExpired:
+                  subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)])
+                  raise SystemExit(f"Timed out after {timeout}s: {command}")
+              return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
           executable = "dist/Main_Program/_internal/AutoLychee/AutoLychee.exe"
-          result = subprocess.run([executable, "--smoke-test"],
-                                  capture_output=True, text=True, encoding="utf-8", timeout=120)
+          result = run([executable, "--smoke-test"], timeout=120)
           print(result.stdout)
           print(result.stderr)
           if result.returncode != 0 or "Auto Lychee GUI smoke test OK" not in result.stdout:
               raise SystemExit("Frozen Auto Lychee smoke test failed")
-          post = subprocess.run([executable, "--post"], input="",
-                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+          post = run([executable, "--post"], timeout=60, input="")
           print(post.stdout)
           print(post.stderr)
           if post.returncode != 0:
               raise SystemExit("Frozen Auto Lychee post-process startup failed")
-          routed = subprocess.run(["dist/Main_Program/Main_Program.exe", "--run-module",
-                                   "158_AutoLychee_OneFile", "--entry-point", "run_this_app", "--check"],
-                                  capture_output=True, text=True, encoding="utf-8", timeout=120)
+          routed = run(["dist/Main_Program/Main_Program.exe", "--run-module",
+                        "158_AutoLychee_OneFile", "--entry-point", "run_this_app", "--check"], timeout=120)
           print(routed.stdout)
           print(routed.stderr)
           if routed.returncode != 0:

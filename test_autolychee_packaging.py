@@ -78,6 +78,12 @@ class AutoLycheePackagingTests(unittest.TestCase):
             run.assert_called_once_with(str(ROOT / 'All_Programs/158_AutoLychee_OneFile.py'), run_name='__main__')
         namespace['_fast_show_error'].assert_not_called()
 
+    def test_autolychee_keeps_ci_smoke_test_flag(self):
+        # CI runs AutoLychee.exe --smoke-test; without this branch the GUI starts and never exits.
+        source = (ROOT / 'All_Programs/158_AutoLychee_OneFile.py').read_text(encoding='utf-8')
+        self.assertIn("elif args == ['--smoke-test']:", source)
+        self.assertIn("print('Auto Lychee GUI smoke test OK', flush=True)", source)
+
     def test_frozen_fast_path_opens_separate_exe(self):
         tree = ast.parse((ROOT / 'Main_Program.py').read_text(encoding='utf-8-sig'))
         method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_fast_launch_submodule')
