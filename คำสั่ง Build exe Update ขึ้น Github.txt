@@ -20,15 +20,15 @@ git push origin main --tags
 
 ****New2026 - ลำดับที่ถูกต้องสำหรับ Build Version ใหม่****
 
-# ตั้ง CURRENT_VERSION = "1.1.93" ใน Main_Program.py
+# ตั้ง CURRENT_VERSION = "1.1.94" ใน Main_Program.py
 git add -A
-git commit -m "Bump version to 1.1.93"
+git commit -m "Bump version to 1.1.94"
 git push origin main
-git tag v1.1.93
-git push origin v1.1.93
+git tag v1.1.94
+git push origin v1.1.94
 
 # หากไม่มี Build เริ่มอัตโนมัติ
-gh workflow run windows-release.yml --repo Icezy159753/my-calculator-updates --ref v1.1.93
+gh workflow run windows-release.yml --repo Icezy159753/my-calculator-updates --ref v1.1.94
 
 # Build ในเครื่อง: ต้องสร้าง Auto Lychee ก่อน Main Program
 pyinstaller --noconfirm AutoLychee.spec

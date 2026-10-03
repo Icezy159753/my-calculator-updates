@@ -7080,6 +7080,24 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.set_rows_enabled(self.enabled.isChecked())
         self.load_items()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fit_height()
+
+    def fit_height(self):
+        """Grow to the height the wrapped labels need: Qt opens the sheet at its minimum height, which pushed
+        ＋ เพิ่มแถว over row 5 (more so once the check result lines appear)."""
+        try:
+            self.layout().activate()  # pick up label text set just before
+            need = self.heightForWidth(self.width())
+        except RuntimeError:  # the dialog was closed (and deleted) meanwhile
+            return
+        if need > self.height():
+            self.resize(self.width(), need)
+
+    def items_loaded(self):
+        QTimer.singleShot(0, self.fit_height)
+
     def add_row(self, focus=False):
         if len(self.item_rows) >= self.MAX_ROWS:
             return
@@ -7184,6 +7202,7 @@ class BannerManualDialog(VariableSearch, QDialog):
         lines.append('<b style="color:#1f9a3e">ตรงกับ Lyche ครบทุกข้อ</b>' if not missing
                      else f'<b style="color:#c62828">ไม่พบ {missing} ข้อ — แก้ชื่อข้อก่อนรัน</b>')
         self.check_result.setText('<br>'.join(lines))
+        QTimer.singleShot(0, self.fit_height)  # room for the result lines
 
     @property
     def settings(self):
@@ -7201,6 +7220,7 @@ class BannerManualDialog(VariableSearch, QDialog):
                 self.message.setText('เปิด Banner Manual แล้ว กรุณาใส่ข้ออย่างน้อย 1 ข้อ เช่น QUOTA1' if not items else
                                      f'ไม่พบตัวแปร {", ".join(unknown)} ใน Lyche (เพิ่งเพิ่มใน Lyche? กด ดึงตัวแปรใหม่)')
                 self.message.show()
+                QTimer.singleShot(0, self.fit_height)
                 (self.item_rows[0] if not items else self.item_rows[0]).setFocus()
                 self.apply_all = False
                 return
