@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from release_files import digest, inventory, make_file_package, safe_name
+from release_files import digest, inventory, make_file_package, safe_name, protected
 
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / 'build/release'
@@ -87,6 +87,31 @@ def extract_package(package, target):
         raise RuntimeError('Previous full package has no launcher')
 
 
+def reconstruct_base_files(current_files, manifest, from_version, to_version):
+    """Reverse a verified delta's hashes to retain direct updates for older users."""
+    if (manifest.get('schema') != 1 or manifest.get('from') != from_version
+            or manifest.get('to') != to_version or not isinstance(manifest.get('files'), list)):
+        raise ValueError('Invalid bridge manifest')
+    result = {name: dict(info) for name, info in current_files.items()}
+    seen = set()
+    for entry in manifest['files']:
+        name = safe_name(entry['path'])
+        if protected(name) or name.casefold() in seen:
+            raise ValueError('Invalid bridge file path')
+        seen.add(name.casefold())
+        before, after = entry['before'], entry['after']
+        if any(value is not None and (not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value))
+               for value in (before, after)) or before == after:
+            raise ValueError('Invalid bridge checksums')
+        if current_files.get(name, {}).get('sha256') != after:
+            raise ValueError('Bridge does not match previous release')
+        if before is None:
+            result.pop(name, None)
+        else:
+            result[name] = {'sha256': before, 'size': 0}
+    return result
+
+
 def prepare(repo, version):
     if not re.fullmatch(r'\d+\.\d+\.\d+', version or ''):
         raise ValueError('A numeric release version is required')
@@ -114,6 +139,24 @@ def prepare(repo, version):
                 old_manifest = read_json(BUILD / 'previous-manifest.json')
             old_files = inventory(BUILD / 'previous')
             (BUILD / 'previous-files.json').write_text(json.dumps(old_files), encoding='utf-8')
+            # Retain the oldest migration base and two recent bases. No older full
+            # download is needed: reverse the already published delta hashes.
+            bases = sorted((name for name in assets if re.fullmatch(
+                rf'Main_Program_files_\d+\.\d+\.\d+_to_{re.escape(previous)}\.zip', name)),
+                key=lambda name: tuple(map(int, name.split('_')[3].split('.'))))
+            bases = list(dict.fromkeys(bases[:1] + bases[-2:]))
+            plan['bridges'] = []
+            for name in bases:
+                base = name.split('_')[3]
+                bridge_zip = BUILD / name
+                download(assets[name], bridge_zip)
+                with zipfile.ZipFile(bridge_zip) as archive:
+                    if archive.getinfo('manifest.json').file_size > 8 * 1024 * 1024:
+                        raise ValueError('Bridge manifest too large')
+                    bridge = json.loads(archive.read('manifest.json'))
+                base_files = reconstruct_base_files(old_files, bridge, base, previous)
+                (BUILD / f'bridge-{base}.json').write_text(json.dumps(base_files), encoding='utf-8')
+                plan['bridges'].append(base)
             # Reuse only an exact input match, with verified previous artifacts.
             if old_manifest and old_manifest.get('schema') == 1 and old_manifest.get('version') == previous:
                 if old_files != old_manifest.get('files'):
@@ -183,8 +226,12 @@ def package():
     files = inventory(installed)
     if plan['previous']:
         delta = DIST / f"Main_Program_files_{plan['previous']}_to_{version}.zip"
-        make_file_package(read_json(BUILD / 'previous-files.json'), installed, plan['previous'], version, delta)
+        make_file_package(read_json(BUILD / 'previous-files.json'), installed, plan['previous'], version, delta, files)
         print(f'File update: {delta.stat().st_size} bytes; full: {full.stat().st_size} bytes')
+        for base in plan.get('bridges', []):
+            bridge = DIST / f'Main_Program_files_{base}_to_{version}.zip'
+            make_file_package(read_json(BUILD / f'bridge-{base}.json'), installed, base, version, bridge, files)
+            print(f'Bridge update {base}: {bridge.stat().st_size} bytes')
     manifest = {'schema': 1, 'version': version, 'inputs': plan['inputs'], 'files': files,
                 'updater_sha256': digest(DIST / 'updater.exe'), 'git_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}
     (DIST / 'release_manifest.json').write_text(json.dumps(manifest, sort_keys=True), encoding='utf-8')

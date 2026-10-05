@@ -214,8 +214,8 @@ def inventory(root):
             for p in sorted(Path(root).rglob('*')) if p.is_file() and not protected(p.relative_to(root).as_posix())}
 
 
-def make_file_package(old_files, new_root, from_version, to_version, output):
-    new_files = inventory(new_root)
+def make_file_package(old_files, new_root, from_version, to_version, output, new_files=None):
+    new_files = inventory(new_root) if new_files is None else new_files
     changes = []
     for name in sorted(set(old_files) | set(new_files)):
         if protected(name):

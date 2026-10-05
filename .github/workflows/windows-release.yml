@@ -9,7 +9,7 @@ on:
       preview_version:
         description: 'Next version to validate (does not publish a release)'
         required: true
-        default: '1.1.100'
+        default: '1.1.101'
         type: string
 
 permissions:
@@ -38,6 +38,9 @@ jobs:
           $releaseVersion = "${{ github.ref_name }}".TrimStart('v')
           if ("${{ github.event_name }}" -eq "workflow_dispatch") { $releaseVersion = "${{ inputs.preview_version }}" }
           python release_build.py prepare --repo "${{ github.repository }}" --version $releaseVersion
+
+      - name: Ensure pip cache directory for reuse-only builds
+        run: python -c "import pathlib, subprocess, sys; pathlib.Path(subprocess.check_output([sys.executable, '-m', 'pip', 'cache', 'dir'], text=True).strip()).mkdir(parents=True, exist_ok=True)"
 
       - name: Run release tests
         run: python -m unittest test_autolychee_packaging test_update_cache test_release_files test_release_build -v

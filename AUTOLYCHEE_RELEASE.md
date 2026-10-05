@@ -140,7 +140,8 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
 - AutoLychee เปลี่ยน: build AutoLychee แล้วแทนโฟลเดอร์ `_internal/AutoLychee` ทั้งชุด; Main ไม่จำเป็นต้อง rebuild
 - `Main_Program_files_<from>_to_<to>.zip` มี manifest และไฟล์เปลี่ยนพร้อม SHA-256
   updater ใหม่รองรับ arguments เดิม และค้นแพ็กเกจนี้ได้เองแม้ Main บนเครื่องผู้ใช้ยังเป็นรุ่นเก่า
-  ไม่ต้องมี cache ZIP ฐาน; เครื่องที่ข้ามเวอร์ชันหรือไฟล์ฐานไม่ตรงจะใช้ Full Package
+  ไม่ต้องมี cache ZIP ฐาน; เก็บแพ็กเกจตรงจากฐานรุ่นแรกและสองฐานล่าสุดสำหรับเครื่องที่ข้ามเวอร์ชัน
+  ถ้าไม่มีแพ็กเกจสำหรับฐานที่ติดตั้งหรือไฟล์ฐานไม่ตรงจะใช้ Full Package
 - ก่อนแทนไฟล์ ต้องตรวจ checksum/เส้นทางทั้งหมดและสำรองไฟล์ก่อนเปลี่ยน
   journal อยู่ที่ `_internal/update-transactions`; ถ้า rollback ไม่สำเร็จห้ามลบ backup
   updater ครั้งถัดไปต้องกู้คืน transaction ก่อนเริ่มอัปเดตใหม่
@@ -151,5 +152,8 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
   ต้องได้ checksum ของ managed files เหมือน full release ใหม่ก่อนอัปโหลด
 - ไม่มี bsdiff ของ ZIP ทั้งชุดในรีลีสใหม่; Full ZIP และ updater.exe ยังต้องมีเพื่อรองรับเครื่องเดิม
 - `workflow_dispatch` ใช้สำหรับ preview เท่านั้น ไม่เผยแพร่ release หรือส่ง Telegram
-  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.100`
+  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.101`
   ให้ใช้เลขมากกว่ารีลีสล่าสุด แล้วตรวจขั้น Select build components และเวลางานเพื่อยืนยันความเร็วจริง
+
+- ตั้งแต่ v1.1.100 Main reuse updater.exe เมื่อ SHA-256 ตรงกับ asset digest ของ GitHub
+  ดาวน์โหลดลงไฟล์ชั่วคราวและตรวจ EXE/checksum ก่อนแทนไฟล์เดิม

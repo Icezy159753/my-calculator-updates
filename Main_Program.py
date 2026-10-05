@@ -239,7 +239,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.99"
+CURRENT_VERSION = "1.1.100"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:
@@ -270,6 +270,45 @@ def get_updates_dir(app_dir):
 def get_cached_package_path(app_dir, version):
     from update_cache import find_cached_package
     return find_cached_package(app_dir, version)
+
+
+def ensure_updater_executable(url, target, expected_digest=None):
+    """Reuse the exact released updater, or download/verify before atomic replacement."""
+    import hashlib
+    import tempfile
+    import urllib.request
+    checksum = expected_digest[7:] if isinstance(expected_digest, str) and expected_digest.startswith('sha256:') else None
+    if checksum is not None and (len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum)):
+        raise ValueError('Invalid updater checksum')
+
+    def file_digest(path):
+        value = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                value.update(chunk)
+        return value.hexdigest()
+
+    if checksum and os.path.isfile(target) and file_digest(target) == checksum:
+        return False
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(target), suffix='.download', delete=False) as output:
+            temporary = output.name
+            with urllib.request.urlopen(url, timeout=90) as response:
+                for chunk in iter(lambda: response.read(1024 * 1024), b''):
+                    output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        with open(temporary, 'rb') as stream:
+            if stream.read(2) != b'MZ':
+                raise ValueError('Downloaded updater is not a Windows executable')
+        if checksum and file_digest(temporary) != checksum:
+            raise ValueError('Updater checksum mismatch')
+        os.replace(temporary, target)
+        return True
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.remove(temporary)
 
 def _normalize_tag_version(tag):
     if not tag:
@@ -367,6 +406,7 @@ def check_for_updates(app_window, notify_only=False):
                 # -------------------------
                 # หา URL ของไฟล์ updater.exe, patch และไฟล์ zip จาก release ล่าสุด
                 updater_url = None
+                updater_digest = None
                 app_url = None
                 patch_url = None
                 patch_name = f"Main_Program_patch_{CURRENT_VERSION}_to_{latest_version}.bsdiff"
@@ -376,6 +416,7 @@ def check_for_updates(app_window, notify_only=False):
                 for asset in latest_release['assets']:
                     if asset['name'] == 'updater.exe':
                         updater_url = asset['browser_download_url']
+                        updater_digest = asset.get('digest')
                     if asset['name'] == patch_name:
                         patch_url = asset['browser_download_url']
                     if asset['name'] == full_name:
@@ -396,12 +437,8 @@ def check_for_updates(app_window, notify_only=False):
 
                 # ดาวน์โหลด updater.exe
                 updater_path = os.path.join(os.path.dirname(get_executable_path()), 'updater.exe')
-                print(f"Downloading updater from {updater_url} to {updater_path}")
-                with requests.get(updater_url, stream=True) as r:
-                    r.raise_for_status()
-                    with open(updater_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
+                updater_downloaded = ensure_updater_executable(updater_url, updater_path, updater_digest)
+                log_update_event('Updater downloaded and verified' if updater_downloaded else 'Reusing verified updater')
                 if not os.path.exists(updater_path) or os.path.getsize(updater_path) == 0:
                     log_update_event("Updater download failed or zero-size file.")
                     show_message(app_window, "Error", "ดาวน์โหลด updater ไม่สำเร็จ", QtWidgets.QMessageBox.Icon.Critical)

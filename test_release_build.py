@@ -9,6 +9,10 @@ import unittest
 from unittest.mock import patch
 from unittest.mock import Mock
 import sys
+import hashlib
+import io
+import zipfile
+from release_files import inventory, make_file_package, apply_file_update
 
 import release_build as build
 
@@ -108,6 +112,68 @@ class ReleaseBuildTests(unittest.TestCase):
         exec(compile(ast.Module(body=[function], type_ignores=[]), '<startup recovery>', 'exec'), namespace)
         self.assertTrue(namespace['_recover_interrupted_update']())
         error.assert_called_once()
+
+    def test_bridge_reconstructs_added_changed_deleted_and_combines_updates(self):
+        old, middle, new = [self.root / name for name in ('old', 'middle', 'new')]
+        for folder in (old, middle, new):
+            folder.mkdir()
+        for folder, values in ((old, {'changed': b'old', 'deleted': b'delete', 'same': b'same'}),
+                               (middle, {'changed': b'middle', 'added': b'add', 'same': b'same'}),
+                               (new, {'changed': b'new', 'same': b'same', 'deleted': b'readded'})):
+            for name, value in values.items():
+                (folder / name).write_bytes(value)
+        first = self.root / 'first.zip'
+        make_file_package(inventory(old), middle, '1.1.96', '1.1.99', first)
+        with zipfile.ZipFile(first) as archive:
+            manifest = json.loads(archive.read('manifest.json'))
+        reconstructed = build.reconstruct_base_files(inventory(middle), manifest, '1.1.96', '1.1.99')
+        self.assertEqual({k:v['sha256'] for k,v in reconstructed.items()},
+                         {k:v['sha256'] for k,v in inventory(old).items()})
+        combined = self.root / 'combined.zip'
+        make_file_package(reconstructed, new, '1.1.96', '1.1.100', combined, inventory(new))
+        apply_file_update(old, combined, '1.1.96', '1.1.100')
+        self.assertEqual(inventory(old), inventory(new))
+        manifest['files'][0]['after'] = '0' * 64
+        with self.assertRaises(ValueError):
+            build.reconstruct_base_files(inventory(middle), manifest, '1.1.96', '1.1.99')
+
+    def updater_helper(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'ensure_updater_executable')
+        namespace = {'os': os}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<updater download>', 'exec'), namespace)
+        return namespace['ensure_updater_executable']
+
+    def test_identical_updater_skips_download(self):
+        target = self.root / 'updater.exe'
+        target.write_bytes(b'MZexisting')
+        checksum = 'sha256:' + hashlib.sha256(target.read_bytes()).hexdigest()
+        with patch('urllib.request.urlopen') as network:
+            self.assertFalse(self.updater_helper()('https://example.com/updater.exe', str(target), checksum))
+            network.assert_not_called()
+
+    def test_updater_download_is_verified_before_replacement(self):
+        target = self.root / 'updater.exe'
+        target.write_bytes(b'MZold')
+        content = b'MZnew'
+        checksum = 'sha256:' + hashlib.sha256(content).hexdigest()
+        with patch('urllib.request.urlopen', return_value=io.BytesIO(content)):
+            self.assertTrue(self.updater_helper()('https://example.com/updater.exe', str(target), checksum))
+        self.assertEqual(target.read_bytes(), content)
+
+    def test_invalid_or_interrupted_download_preserves_updater(self):
+        target = self.root / 'updater.exe'
+        target.write_bytes(b'MZold')
+        for content in (b'MZwrong', b'not an exe'):
+            with patch('urllib.request.urlopen', return_value=io.BytesIO(content)):
+                with self.assertRaises(ValueError):
+                    self.updater_helper()('https://example.com/updater.exe', str(target), 'sha256:' + '0'*64)
+            self.assertEqual(target.read_bytes(), b'MZold')
+        with patch('urllib.request.urlopen', side_effect=OSError('network interrupted')):
+            with self.assertRaises(OSError):
+                self.updater_helper()('https://example.com/updater.exe', str(target))
+        self.assertEqual(target.read_bytes(), b'MZold')
+        self.assertFalse(list(self.root.glob('*.download')))
 
 
 if __name__ == '__main__':
