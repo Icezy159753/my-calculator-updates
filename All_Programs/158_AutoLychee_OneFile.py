@@ -300,6 +300,15 @@ class Job:
     # codes, in order (Clear all → Yes, then search each item → To Banner). The Stub stays the History's.
     banner_manual: bool = False
     banner_manual_items: str = ''  # e.g. 'QUOTA1, QUOTA6' (commas, spaces or new lines between items)
+    report_type: str = 'N%'
+
+    def __post_init__(self):
+        if not step3_allowed(self.report_type):
+            self.cut_percent = False
+
+
+def step3_allowed(report_type):
+    return report_type != '%'
 
 
 MAX_FILTER_ROWS = 30  # Lyche's Filter Condition Settings has 30 condition rows (counted live)
@@ -395,6 +404,12 @@ def output_name(value: str) -> str:
     return value + '.xlsx'
 
 
+def job_output_name(job: Job) -> str:
+    stem = output_name(job.output)[:-5]
+    stem = re.sub(r'\s+(?:N\s*%|%)$', '', stem, flags=re.I).rstrip()
+    return output_name(f'{stem} {job.report_type}')
+
+
 def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
     if not jobs:
         raise ValueError('เพิ่มรายการรันอย่างน้อยหนึ่งแถว')
@@ -404,9 +419,11 @@ def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
     pending = 0
     for index, job in enumerate(jobs, 1):
         try:
+            if job.report_type not in ('N%', '%'):
+                raise ValueError('Type ต้องเป็น N% หรือ %')
             if not job.history.strip():
                 raise ValueError('ยังไม่ได้ระบุ Banner จาก History')
-            name = output_name(job.output)
+            name = job_output_name(job)
             if name.casefold() in seen:
                 raise ValueError('ชื่อไฟล์ซ้ำกับแถวก่อนหน้า')
             seen.add(name.casefold())
@@ -454,6 +471,7 @@ QUEUE_COLUMNS = (
     ('Banner Manual', 'banner_manual'),
     ('Banner Manual ข้อ', 'banner_manual_items'),
     ('ชื่อไฟล์ผลลัพธ์', 'output'),
+    ('Type', 'report_type'),
     ('Filter', 'filter'),
     ('Base', 'base'),
     ('Step 1 Delete Total + NA', 'total_na'),
@@ -492,6 +510,8 @@ def _setting_value(field: str, text: str):
     if not text:
         return getattr(Job(), field)
     folded = text.strip().casefold()
+    if field == 'report_type':
+        return text.strip().upper()
     if field == 'del_sig_mode':
         return 'MATRIX' if 'matrix' in folded else 'NORMAL'
     if field == 'del_sig_beside':
@@ -546,6 +566,8 @@ def read_jobs(rows, default_history='') -> list[Job]:
                     setattr(job, field, _setting_value(field, value))
             if not job.total_na:
                 job.total_na_empty_rows = False
+            if not step3_allowed(job.report_type):
+                job.cut_percent = False
             jobs.append(job)
             continue
         if len(values) == 2:
@@ -6003,7 +6025,7 @@ from contextlib import contextmanager, nullcontext
 import traceback
 from datetime import datetime
 from pathlib import Path
-from core import Job, manual_items, output_name, validate_jobs
+from core import Job, manual_items, output_name, job_output_name, validate_jobs
 
 
 _emit_lock = threading.Lock()
@@ -6345,7 +6367,7 @@ def main():
                         loaded = wanted
                     base = bot.set_filter(job.filter, job.base)
                     emit('status', id=job.id, status='กำลังรัน', detail='Tabulate / Export')
-                    path = folder / output_name(job.output)
+                    path = folder / job_output_name(job)
                     # the row's last Step; Banner Manual rows export with Analysis Axis only (user rule:
                     # a One Sheet export of a manual Banner said Saved but left no file)
                     bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not job.banner_manual)
@@ -6436,10 +6458,10 @@ from PySide6.QtWidgets import (
     QPushButton, QToolButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QPlainTextEdit, QSplitter,
     QAbstractItemView, QAbstractButton, QSpinBox, QDialog, QFrame, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu, QProgressBar,
+    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu, QProgressBar, QListView,
 )
 from chrome import MacWindowMixin
-from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs
+from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -6524,7 +6546,11 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid #2a8de9; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { background: #f3f6fb; color: #8b97ab; }
 QComboBox::drop-down { border: none; width: 26px; }
 QComboBox::down-arrow { image: url(ASSETS/chevron-down.svg); width: 12px; height: 12px; }
-QComboBox QAbstractItemView { background: #ffffff; border: 1px solid #c9d6ea; border-radius: 7px; padding: 4px; outline: 0; selection-background-color: #2a8de9; selection-color: #ffffff; }
+QFrame#comboPopup { background: #ffffff; border: 1px solid #c9d6ea; border-radius: 9px; padding: 4px; }
+QComboBox QAbstractItemView { background: #ffffff; color: #1e2a44; border: none; padding: 3px; outline: 0; selection-background-color: #e5efff; selection-color: #193d86; }
+QComboBox QAbstractItemView::item { min-height: 24px; padding: 4px 8px; border: none; border-radius: 5px; }
+QComboBox QAbstractItemView::item:hover { background: #f1f6ff; }
+QComboBox QAbstractItemView::item:selected { background: #e5efff; color: #193d86; }
 QSpinBox::up-button, QSpinBox::down-button { border: none; width: 20px; background: transparent; }
 QSpinBox::up-arrow { image: url(ASSETS/chevron-up.svg); width: 10px; height: 10px; }
 QSpinBox::down-arrow { image: url(ASSETS/chevron-down.svg); width: 10px; height: 10px; }
@@ -6534,6 +6560,9 @@ QTableWidget::item { border-bottom: 1px solid #edf2f9; padding-left: 8px; }
 QTableWidget::item:selected { background: #dbe9fb; color: #1e2a44; }
 QTableWidget QComboBox { border: none; background: transparent; padding: 0 0 0 8px; min-height: 0; }
 QTableWidget QComboBox QLineEdit { border: none; background: transparent; padding: 0; }
+QTableWidget QComboBox:disabled { background: transparent; color: #34506f; border: none; }
+QTableWidget QComboBox QLineEdit:disabled { background: transparent; color: #34506f; border: none; }
+QTableWidget QComboBox::down-arrow:disabled { image: none; }
 QTableWidget QLineEdit { border: 1px solid #2a8de9; border-radius: 5px; padding: 2px 6px; }
 QHeaderView { background: #2a8de9; border: none; border-top-left-radius: 8px; border-top-right-radius: 8px; }
 QHeaderView::section { background: #2a8de9; color: #ffffff; border: none; border-right: 1px solid #4ea1ee; padding: 7px 8px; font-size: 12px; font-weight: 700; }
@@ -6586,7 +6615,7 @@ class FreezeOverlay(QWidget):
 # Per-row settings kept on the row's column-0 item: the Steps, plus Banner Manual (its own column/dialog).
 MANUAL_KEYS = ('banner_manual', 'banner_manual_items')
 POST_KEYS = ('total_na', 'total_na_empty_rows', 'del_sig', 'del_sig_groups', 'del_sig_mode', 'del_sig_beside',
-             'cut_percent', 'cut_percent_mode', 'export_mode') + MANUAL_KEYS
+             'cut_percent', 'cut_percent_mode', 'export_mode', 'report_type') + MANUAL_KEYS
 CUT_MODES = (('both', 'N + %'), ('count', 'N Only'), ('percent', '% Only'))
 EXPORT_MODES = (('sheets', 'แยกชีท'), ('onesheet', 'One Sheet'))
 
@@ -6595,6 +6624,8 @@ def post_settings(job):
     """The post-processing part of a Job as a plain dict (stored on the row's column-0 item)."""
     post = {key: getattr(job, key) for key in POST_KEYS}
     post['export_mode'] = export_mode(post)  # e.g. an imported queue with Banner Manual + One Sheet
+    if not step3_allowed(post['report_type']):
+        post['cut_percent'] = False
     return post
 
 
@@ -6606,6 +6637,7 @@ STEP_NAMES = ('Delete Total + NA', 'Del Sig (ตัด Sig)', 'ตัด N / %',
 # A new Step would take this index: move Banner Manual to the end then.
 MANUAL_COLUMN = 6 + len(STEP_COLUMNS)
 GEAR_COLUMN = MANUAL_COLUMN + 1  # one gear per row (shown last): opens the row's Step settings
+TYPE_COLUMN = GEAR_COLUMN + 1
 
 
 def export_mode(post):
@@ -6694,6 +6726,31 @@ def dialog_buttons(dialog, layout, all_rows=True):
     buttons.addWidget(ok)
     layout.addLayout(buttons)
     return all_rows, cancel, ok
+
+
+class StyledComboBox(QComboBox):
+    """Use a regular themed list instead of the platform menu/delegate and its dark popup frame."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        view = QListView()
+        view.setFrameShape(QFrame.NoFrame)
+        view.setUniformItemSizes(True)
+        self.setView(view)
+        self.setMaxVisibleItems(12)
+        popup = view.window()
+        popup.setObjectName('comboPopup')
+        popup.setWindowFlags(popup.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup.setAttribute(Qt.WA_TranslucentBackground)
+
+    def showPopup(self):
+        # The closed control may be compact; its popup must still show full Banner/project names.
+        metrics = QFontMetrics(self.view().font())
+        needed = max((metrics.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0) + 48
+        available = self.screen().availableGeometry().width() - 24
+        self.view().setMinimumWidth(min(max(self.width(), needed), available))
+        self.view().setTextElideMode(Qt.ElideNone)
+        self.view().setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        super().showPopup()
 
 
 class PostProcessDialog(QDialog):
@@ -6791,7 +6848,8 @@ class PostProcessDialog(QDialog):
         cut.setSpacing(16)
         self.cut_percent = QCheckBox('3  ตัด N / %')
         self.cut_percent.setStyleSheet('font-size: 15px; font-weight: 700;')
-        self.cut_percent.setChecked(bool(settings.get('cut_percent')))
+        cut_allowed = step3_allowed(settings.get('report_type', 'N%'))
+        self.cut_percent.setChecked(cut_allowed and bool(settings.get('cut_percent')))
         self.cut_percent.setToolTip('สร้างไฟล์ใหม่ข้างไฟล์ Banner (ชื่อ “ชื่อไฟล์ N” / “ชื่อไฟล์ %”) ไฟล์เดิมยังอยู่')
         cut.addWidget(self.cut_percent)
         cut.addStretch(1)
@@ -6808,6 +6866,9 @@ class PostProcessDialog(QDialog):
             cut.addWidget(radio)
         if self.cut_group.checkedButton() is None:
             self.cut_radios['both'].setChecked(True)
+        cut_card.setEnabled(cut_allowed)
+        if not cut_allowed:
+            cut_card.setToolTip('Type % ไม่ใช้ Step 3 เพราะเป็นตารางเปอร์เซ็นต์อยู่แล้ว')
         layout.addWidget(cut_card)
 
         # Export — always the LAST Step (user rule): add new Steps above this card. One compact row.
@@ -7576,7 +7637,7 @@ class FilterDialog(VariableSearch, QDialog):
         variable = QLineEdit()
         variable.setPlaceholderText('เช่น QUOTA6')
         variable.setCompleter(self.completer)
-        condition = QComboBox()
+        condition = StyledComboBox()
         condition.addItems(['Include', 'Exclude'])
         condition.setFixedWidth(100)
         codes = QLineEdit()
@@ -7691,6 +7752,13 @@ class HiddenTextDelegate(QStyledItemDelegate):
         opt.text = ''
         widget = opt.widget
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+        if index.data(Qt.UserRole + 6):
+            painter.save()
+            painter.fillRect(option.rect.adjusted(1, 1, -1, -1), QColor('#f0f2f6'))
+            painter.setPen(QColor('#a7b1c0'))
+            painter.drawText(option.rect, Qt.AlignCenter, '—')
+            painter.restore()
+            return
 
 
 QUEUE_CHECK_ROLE = Qt.UserRole + 5
@@ -8137,7 +8205,7 @@ class App(MacWindowMixin, QMainWindow):
         label = self.caption('หน้าต่าง Lyche')
         label.setFixedWidth(104)
         row.addWidget(label)
-        self.window_combo = QComboBox()
+        self.window_combo = StyledComboBox()
         self.window_combo.setPlaceholderText('เลือกหน้าต่าง Lyche')
         self.window_combo.setMinimumWidth(420)
         row.addWidget(self.window_combo, 1)
@@ -8148,11 +8216,11 @@ class App(MacWindowMixin, QMainWindow):
         label = self.caption('Import History')
         label.setFixedWidth(104)
         row.addWidget(label)
-        self.source = QComboBox()
+        self.source = StyledComboBox()
         self.source.addItems(['Personal', 'Shared'])
         self.source.setFixedWidth(118)
         row.addWidget(self.source)
-        self.banner = QComboBox()
+        self.banner = StyledComboBox()
         self.banner.setEditable(True)
         self.banner.setMinimumWidth(210)
         self.banner.setPlaceholderText('เลือก Banner')
@@ -8188,14 +8256,14 @@ class App(MacWindowMixin, QMainWindow):
         self.button('นำเข้า Excel', self.import_excel, row, kind='plain')
         self.button('ส่งออก Excel', self.export_excel, row, kind='plain', tip='บันทึกคิวเป็นไฟล์ Excel (นำเข้ากลับได้)')
         queue.addLayout(row)
-        self.table = QTableWidget(0, GEAR_COLUMN + 1)
+        self.table = QTableWidget(0, TYPE_COLUMN + 1)
         self.table.setItemDelegateForColumn(0, HiddenTextDelegate(self.table))
         self.step_delegate = StepDelegate(self.table)
         for column in (2, *STEP_COLUMNS, MANUAL_COLUMN):  # 2 = Filter: a chip, click → FilterDialog
             self.table.setItemDelegateForColumn(column, self.step_delegate)
         self.table.setItemDelegateForColumn(GEAR_COLUMN, GearDelegate(self.table))
         self.table.setHorizontalHeaderLabels(['Banner', 'ชื่อไฟล์ผลลัพธ์', 'Filter', 'Base', 'สถานะ', 'รายละเอียด',
-                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)], 'Banner Manual', ''])
+                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)], 'Banner Manual', '', 'Type'])
         # Columns 6+ (the Steps, Export last) are appended so every other column index stays the
         # same; they are only *shown* between Base and สถานะ. Column 5 (detail) keeps its data for
         # the run summary / queue export but is hidden: progress is shown in the log below.
@@ -8203,6 +8271,7 @@ class App(MacWindowMixin, QMainWindow):
         for position, column in enumerate(STEP_COLUMNS, 4):
             header.moveSection(header.visualIndex(column), position)
         header.moveSection(header.visualIndex(MANUAL_COLUMN), 1)  # right after Banner
+        header.moveSection(header.visualIndex(TYPE_COLUMN), 3)  # after output filename
         self.table.horizontalHeaderItem(MANUAL_COLUMN).setToolTip(
             'Banner Manual · ใส่ข้อเป็น Banner แทน Banner จาก History\nคลิกที่ช่องในแถวเพื่อตั้งค่า')
         self.table.horizontalHeaderItem(GEAR_COLUMN).setToolTip('ตั้งค่า Step 1–4 ของแถว')
@@ -8247,11 +8316,13 @@ class App(MacWindowMixin, QMainWindow):
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.setWordWrap(False)  # one line per cell; long Sig groups end with … (full text in the tooltip)
-        # Compact widths so every column fits the window (user request); the file name takes what is left.
-        for index, width in enumerate([150, 160, 132, 52, 76, 300, 88, 112, 80, 88, 136, 46]):
+        # Leave more space for filenames: compact the short labels/settings before stretching that column.
+        for index, width in enumerate([120, 240, 84, 48, 60, 300, 80, 90, 72, 72, 102, 38]):
             self.table.setColumnWidth(index, width)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(GEAR_COLUMN, QHeaderView.Fixed)
+        self.table.setColumnWidth(TYPE_COLUMN, 72)
+        self.table.horizontalHeader().setSectionResizeMode(TYPE_COLUMN, QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.itemChanged.connect(self.edited)
         self.log = QPlainTextEdit()
@@ -8382,6 +8453,8 @@ class App(MacWindowMixin, QMainWindow):
         self.table.insertRow(row)
         for col, value in enumerate((job.history, job.output, job.filter, job.base, job.status, job.detail)):
             item = QTableWidgetItem(value)
+            if col == 1:
+                item.setToolTip(value)  # full filename remains readable when it exceeds the column width
             if col >= 4 or col == 2:  # the Filter is set in its dialog (click the cell)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             if col == 2:
@@ -8391,13 +8464,13 @@ class App(MacWindowMixin, QMainWindow):
                 item.setData(Qt.UserRole, job.id)
                 item.setData(Qt.UserRole + 1, post_settings(job))
             self.table.setItem(row, col, item)
-        for column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN):
+        for column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN, TYPE_COLUMN):
             step_item = QTableWidgetItem()
             step_item.setFlags(step_item.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, column, step_item)
         self.show_post(row)
         self.table.blockSignals(False)
-        combo = QComboBox(self.table)
+        combo = StyledComboBox(self.table)
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.NoInsert)
         combo.addItems(self.banner_names)
@@ -8407,7 +8480,23 @@ class App(MacWindowMixin, QMainWindow):
         combo.lineEdit().setProperty('job_id', job.id)
         combo.currentTextChanged.connect(lambda text, job_id=job.id: self.banner_changed(job_id, text))
         self.table.setCellWidget(row, 0, combo)
+        type_combo = StyledComboBox(self.table)
+        type_combo.addItems(['N%', '%'])
+        type_combo.setCurrentText(job.report_type)
+        type_combo.setToolTip('Type ของตาราง · Type % จะปิด Step 3 ตัด N / %')
+        type_combo.setStyleSheet('QComboBox { padding: 0 0 0 6px; font-weight: 600; } '
+                                'QComboBox::drop-down { width: 20px; }')
+        type_combo.currentTextChanged.connect(lambda value, job_id=job.id: self.type_changed(job_id, value))
+        self.table.setCellWidget(row, TYPE_COLUMN, type_combo)
         self.color_status(row)
+
+    def type_changed(self, job_id, value):
+        if self.busy:
+            return
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).data(Qt.UserRole) == job_id:
+                self.apply_post([row], {'report_type': value})
+                break
 
     def show_post(self, row):
         post = self.table.item(row, 0).data(Qt.UserRole + 1) or {}
@@ -8417,6 +8506,15 @@ class App(MacWindowMixin, QMainWindow):
             item.setText(text or 'Off')  # StepDelegate draws the chip
             item.setTextAlignment(Qt.AlignCenter)
             item.setToolTip(tip)
+            locked = column == STEP_COLUMNS[2] and not step3_allowed(post.get('report_type', 'N%'))
+            item.setData(Qt.UserRole + 6, locked)
+            if locked:
+                item.setToolTip('Type % ไม่ใช้ Step 3 ตัด N / %')
+        combo = self.table.cellWidget(row, TYPE_COLUMN)
+        if combo:
+            combo.blockSignals(True)
+            combo.setCurrentText(post.get('report_type', 'N%'))
+            combo.blockSignals(False)
         manual = manual_text(post)
         item = self.table.item(row, MANUAL_COLUMN)
         item.setText(manual or 'Off')
@@ -8430,6 +8528,7 @@ class App(MacWindowMixin, QMainWindow):
             if event.type() == QEvent.MouseMove:
                 index = self.table.indexAt(event.position().toPoint())
                 on_chip = index.isValid() and index.column() in (2, *STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
+                on_chip = on_chip and not bool(index.data(Qt.UserRole + 6))
                 obj.setCursor(Qt.PointingHandCursor if on_chip else Qt.ArrowCursor)
             elif event.type() == QEvent.Leave:
                 obj.unsetCursor()
@@ -8442,6 +8541,8 @@ class App(MacWindowMixin, QMainWindow):
         return super().eventFilter(obj, event)
 
     def cell_double_clicked(self, row, column):
+        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(Qt.UserRole + 6):
+            return
         if column == 2 and not self.busy:
             self.edit_filter(row)
         elif column == MANUAL_COLUMN and not self.busy:
@@ -8450,6 +8551,8 @@ class App(MacWindowMixin, QMainWindow):
             self.edit_post(row)
 
     def cell_clicked(self, row, column):
+        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(Qt.UserRole + 6):
+            return
         if column == 2 and not self.busy and not QApplication.keyboardModifiers():
             self.edit_filter(row)
         elif column in (*STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy and not QApplication.keyboardModifiers():
@@ -8561,6 +8664,8 @@ class App(MacWindowMixin, QMainWindow):
             before = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
             after = {**before, **settings}  # each dialog changes only its own keys
             after['export_mode'] = export_mode(after)  # e.g. 'apply to all' onto a Banner Manual row
+            if not step3_allowed(after.get('report_type', 'N%')):
+                after['cut_percent'] = False
             if before == after:
                 continue
             if (self.table.item(target, MANUAL_COLUMN).data(QUEUE_CHECK_ROLE)
@@ -8832,6 +8937,7 @@ class App(MacWindowMixin, QMainWindow):
                                     (('del_sig_mode',), 'Crosstab ธรรมดา,Matrix'),
                                     (('del_sig_beside',), 'Sig ปกติ,Sig ข้าง'),
                                     (('cut_percent_mode',), 'N + %,N Only,% Only'),
+                                    (('report_type',), 'N%,%'),
                                     (('export_mode',), 'แยกชีท,One Sheet')):
                 rule = DataValidation(type='list', formula1=f'"{choices}"', allow_blank=True)
                 sheet.add_data_validation(rule)
@@ -8860,6 +8966,8 @@ class App(MacWindowMixin, QMainWindow):
         recheck = item.column() == 2 and bool(item.data(QUEUE_CHECK_ROLE))
         if item.column() < 4:
             self.table.blockSignals(True)
+            if item.column() == 1:
+                item.setToolTip(item.text())
             self.table.item(item.row(), 4).setText('รอรัน')
             self.table.item(item.row(), 5).setText('')
             self.table.blockSignals(False)
