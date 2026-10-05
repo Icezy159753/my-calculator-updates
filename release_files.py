@@ -72,6 +72,13 @@ def _write_json(path, data):
     os.replace(temporary, path)
 
 
+def _durable_copy(source, target):
+    with open(source, 'rb') as incoming, open(target, 'wb') as outgoing:
+        shutil.copyfileobj(incoming, outgoing)
+        outgoing.flush()
+        os.fsync(outgoing.fileno())
+
+
 def _rollback(root, transaction, journal):
     try:
         for entry in reversed(journal['entries']):
@@ -91,7 +98,7 @@ def _rollback(root, transaction, journal):
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temporary = target.with_name(target.name + '.rollback-tmp')
-                shutil.copyfile(backup, temporary)
+                _durable_copy(backup, temporary)
                 os.replace(temporary, target)
         _write_json(transaction / 'journal.json', {**journal, 'state': 'rolled-back'})
     except Exception as error:
@@ -164,6 +171,8 @@ def apply_file_update(root, package, current_version, target_version):
                     stage.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, open(stage, 'wb') as output:
                         shutil.copyfileobj(source, output)
+                        output.flush()
+                        os.fsync(output.fileno())
                     if digest(stage) != after:
                         raise UpdateRejected(f'Payload checksum mismatch: {name}')
             members = archive.namelist()
@@ -174,7 +183,7 @@ def apply_file_update(root, package, current_version, target_version):
             if entry.get('before') is not None:
                 backup = destination(transaction / 'backup', entry['path'])
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(destination(root, entry['path']), backup)
+                _durable_copy(destination(root, entry['path']), backup)
                 if digest(backup) != entry['before']:
                     raise UpdateRejected('Installed file changed during preparation')
         entries = sorted(entries, key=lambda e: e['path'] == '_internal/release_version.json')

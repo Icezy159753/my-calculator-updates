@@ -25,6 +25,44 @@ if getattr(sys, 'frozen', False):
 # เมื่อถูกเรียกด้วย --run-module จะ import เฉพาะ module ที่ต้องการแล้ว exit ทันที
 # ไม่ต้องโหลด PyQt6, pandas, numpy, matplotlib ฯลฯ ที่ไม่ได้ใช้
 # =============================================================================
+def _recover_interrupted_update():
+    """Exit before loading UI/runtime modules if installation recovery is pending."""
+    if not getattr(sys, 'frozen', False):
+        return False
+    import json
+    from pathlib import Path
+    installation = Path(sys.executable).resolve().parent
+    pending = installation / '_internal/update-transactions'
+    if not pending.exists():
+        return False
+    needs_recovery = False
+    for journal in pending.glob('*/journal.json'):
+        try:
+            state = json.loads(journal.read_text(encoding='utf-8')).get('state')
+        except (OSError, ValueError):
+            state = 'applying'
+        if state not in ('prepared', 'committed', 'rolled-back'):
+            needs_recovery = True
+            break
+    if not needs_recovery:
+        return False
+    updater = installation / 'updater.exe'
+    if not updater.is_file():
+        _fast_show_error('กู้คืนการอัปเดต', 'การอัปเดตครั้งก่อนขาดตอน กรุณาวาง updater.exe รุ่นล่าสุดในโฟลเดอร์โปรแกรมเพื่อกู้คืนก่อนเปิดใช้งาน')
+        return True
+    import subprocess
+    environment = os.environ.copy()
+    environment['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+    environment.pop('MAIN_PROGRAM_SCRIPT_MODULE', None)
+    try:
+        subprocess.Popen([str(updater), str(os.getpid()), str(installation),
+                          Path(sys.executable).name, 'recovery', '--recover-only'],
+                         cwd=installation, env=environment)
+    except OSError as error:
+        _fast_show_error('กู้คืนการอัปเดต', f'เปิด updater เพื่อกู้คืนไม่สำเร็จ: {error}')
+    return True
+
+
 def _fast_launch_submodule():
     """Fast path: ตรวจ --run-module แล้วรันตรงๆ โดยข้าม import หนักทั้งหมด"""
     if "--run-module" not in sys.argv:
@@ -129,6 +167,8 @@ def _fast_show_error(title, message):
 if __name__ == "__main__":
     from multiprocessing import freeze_support
     freeze_support()
+    if _recover_interrupted_update():
+        sys.exit(0)
     if _fast_launch_submodule():
         sys.exit(0)
 # =============================================================================
@@ -199,7 +239,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.98"
+CURRENT_VERSION = "1.1.99"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:

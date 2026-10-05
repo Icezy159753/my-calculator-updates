@@ -17,6 +17,7 @@ import re
 import json
 import getpass
 import socket
+from pathlib import Path
 from update_cache import find_cached_package, store_cached_package
 from release_files import (apply_file_update, recover_pending, RollbackFailed, protected,
                            extract_full_package, install_full_update)
@@ -81,6 +82,7 @@ class UpdaterApp:
 
         # รับ arguments จากโปรแกรมหลัก
         self.running_from_temp = False
+        self.recover_only = '--recover-only' in sys.argv
         self.ready_file_path = None
         if "--run-from-temp" in sys.argv:
             self.running_from_temp = True
@@ -102,6 +104,9 @@ class UpdaterApp:
         idx = 0
         while idx < len(args):
             arg = args[idx]
+            if arg == '--recover-only':
+                idx += 1
+                continue
             if skip_next:
                 skip_next = False
                 idx += 1
@@ -271,6 +276,8 @@ class UpdaterApp:
             return
 
     def _wait_for_process_exit(self, timeout=30):
+        if self.parent_pid <= 0:
+            return True
         start_time = time.time()
         while psutil.pid_exists(self.parent_pid):
             if time.time() - start_time > timeout:
@@ -600,6 +607,10 @@ class UpdaterApp:
             temp_dir = tempfile.mkdtemp(prefix="Main_Program_update_tmp_", dir=work_dir)
             self._kill_processes_in_app_dir(self.app_dir)
             recover_pending(self.app_dir)
+            if self.recover_only:
+                os.startfile(os.path.join(self.app_dir, self.exe_name))
+                self.root.quit()
+                return
             if self._try_file_update(temp_dir):
                 new_exe = os.path.join(self.app_dir, self.exe_name)
                 try:
@@ -900,11 +911,30 @@ if __name__ == "__main__":
     # --- เพิ่มเข้ามา: ตรวจสอบว่ามี arguments ส่งมาหรือไม่ก่อนรัน ---
     # ป้องกัน Error เวลาเผลอดับเบิ้ลคลิกไฟล์ .py โดยตรง
     raw_args = sys.argv[1:]
+    if not raw_args:
+        installation = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        pending = os.path.join(installation, '_internal', 'update-transactions')
+        interrupted = False
+        if os.path.isdir(pending):
+            for journal in Path(pending).glob('*/journal.json'):
+                try:
+                    state = json.loads(journal.read_text(encoding='utf-8')).get('state')
+                except (OSError, ValueError):
+                    state = 'applying'
+                if state not in ('prepared', 'committed', 'rolled-back'):
+                    interrupted = True
+                    break
+        if interrupted:
+            sys.argv += ['0', installation, 'Main_Program.exe', 'recovery', '--recover-only']
+            raw_args = sys.argv[1:]
     clean_args = []
     skip_next = False
     idx = 0
     while idx < len(raw_args):
         arg = raw_args[idx]
+        if arg == '--recover-only':
+            idx += 1
+            continue
         if skip_next:
             skip_next = False
             idx += 1

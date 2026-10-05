@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
+import sys
 
 import release_build as build
 
@@ -79,6 +81,33 @@ class ReleaseBuildTests(unittest.TestCase):
         namespace = {'sys': SimpleNamespace(frozen=True, _MEIPASS=str(self.root), executable='launcher.exe'), 'os': os}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), '<version metadata>', 'exec'), namespace)
         self.assertEqual(namespace['CURRENT_VERSION'], '1.1.98')
+
+    def test_launcher_requests_recovery_before_loading_ui(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_recover_interrupted_update')
+        executable = self.root / 'Main_Program.exe'
+        (self.root / 'updater.exe').write_bytes(b'updater fixture')
+        journal = self.root / '_internal/update-transactions/update-1/journal.json'
+        journal.parent.mkdir(parents=True)
+        journal.write_text('{"state":"applying"}', encoding='utf-8')
+        namespace = {'sys': SimpleNamespace(frozen=True, executable=str(executable)), 'os': os, '_fast_show_error': Mock()}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<startup recovery>', 'exec'), namespace)
+        with patch('subprocess.Popen') as launch:
+            self.assertTrue(namespace['_recover_interrupted_update']())
+        self.assertIn('--recover-only', launch.call_args.args[0])
+        self.assertEqual(launch.call_args.kwargs['env']['PYINSTALLER_RESET_ENVIRONMENT'], '1')
+
+    def test_missing_recovery_updater_prevents_partial_installation_start(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_recover_interrupted_update')
+        journal = self.root / '_internal/update-transactions/update-1/journal.json'
+        journal.parent.mkdir(parents=True)
+        journal.write_text('{"state":"applying"}', encoding='utf-8')
+        error = Mock()
+        namespace = {'sys': SimpleNamespace(frozen=True, executable=str(self.root/'Main_Program.exe')), 'os': os, '_fast_show_error': error}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<startup recovery>', 'exec'), namespace)
+        self.assertTrue(namespace['_recover_interrupted_update']())
+        error.assert_called_once()
 
 
 if __name__ == '__main__':

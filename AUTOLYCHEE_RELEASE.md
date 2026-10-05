@@ -128,7 +128,7 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
    (CI ตั้งให้ขั้น verify หมดเวลาที่ 10 นาที และทั้งงานหมดเวลาที่ 60 นาที)
 5. ถ้า build fail: `gh run view <run-id> --log-failed` แล้วสรุปสาเหตุให้ผู้ใช้เป็นภาษาไทย
 
-## 7. ระบบอัปเดตไฟล์เฉพาะที่เปลี่ยน (เริ่ม v1.1.98)
+## 7. ระบบอัปเดตไฟล์เฉพาะที่เปลี่ยน (เริ่ม v1.1.99)
 
 - `release_build.py prepare` ดาวน์โหลดชุดเต็มล่าสุดและตรวจ checksum กับ `release_manifest.json`
   ใช้ fingerprint ของ source/spec/dependencies เพื่อตัดสินใจ build Main, AutoLychee และ updater แยกกัน
@@ -144,10 +144,12 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
 - ก่อนแทนไฟล์ ต้องตรวจ checksum/เส้นทางทั้งหมดและสำรองไฟล์ก่อนเปลี่ยน
   journal อยู่ที่ `_internal/update-transactions`; ถ้า rollback ไม่สำเร็จห้ามลบ backup
   updater ครั้งถัดไปต้องกู้คืน transaction ก่อนเริ่มอัปเดตใหม่
+  Main รุ่นใหม่ตรวจ journal ก่อนโหลด GUI และเรียก `updater.exe --recover-only` เพื่อคืนไฟล์
+  ถ้า Main เปิดไม่ได้ ให้ดับเบิลคลิก updater.exe ในโฟลเดอร์ติดตั้งเพื่อกู้คืนจาก backup
 - ไม่ลบไฟล์งานนอกแพ็กเกจ และรักษา Test3.json, openrouter.json, Itemdef - Format.xlsx ที่มีอยู่
 - CI ตรวจ source ของโปรแกรมทั้ง 91 ไฟล์, smoke test EXE, updater EXE self-test และทดลองอัปจาก full release ก่อนหน้า
   ต้องได้ checksum ของ managed files เหมือน full release ใหม่ก่อนอัปโหลด
 - ไม่มี bsdiff ของ ZIP ทั้งชุดในรีลีสใหม่; Full ZIP และ updater.exe ยังต้องมีเพื่อรองรับเครื่องเดิม
 - `workflow_dispatch` ใช้สำหรับ preview เท่านั้น ไม่เผยแพร่ release หรือส่ง Telegram
-  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.99`
+  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.100`
   ให้ใช้เลขมากกว่ารีลีสล่าสุด แล้วตรวจขั้น Select build components และเวลางานเพื่อยืนยันความเร็วจริง
