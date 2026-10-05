@@ -63,6 +63,18 @@ def _recover_interrupted_update():
     return True
 
 
+def _fast_write_output(stream, text):
+    """Keep subprocess diagnostics usable on Thai Windows console encodings."""
+    if stream is None:
+        return
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, 'encoding', None) or 'utf-8'
+        stream.write(text.encode(encoding, errors='backslashreplace').decode(encoding))
+    stream.flush()
+
+
 def _fast_launch_submodule():
     """Fast path: ตรวจ --run-module แล้วรันตรงๆ โดยข้าม import หนักทั้งหมด"""
     if "--run-module" not in sys.argv:
@@ -113,10 +125,8 @@ def _fast_launch_submodule():
                     result = subprocess.run(
                         [executable, *script_args], env=child_env,
                         capture_output=True, text=True, encoding="utf-8", timeout=90)
-                    if sys.stdout is not None:
-                        sys.stdout.write(result.stdout)
-                    if sys.stderr is not None:
-                        sys.stderr.write(result.stderr)
+                    _fast_write_output(sys.stdout, result.stdout)
+                    _fast_write_output(sys.stderr, result.stderr)
                     raise SystemExit(result.returncode)
                 raise SystemExit(subprocess.call([executable, *script_args], env=child_env))
             import runpy
@@ -141,11 +151,17 @@ def _fast_launch_submodule():
                 f"ไม่พบฟังก์ชันหลัก '{ep_name}'\nในโมดูล '{module_name}'.")
     except ImportError as e:
         import traceback; traceback.print_exc()
+        if full_module_name == 'All_Programs.158_AutoLychee_OneFile' and any(
+                flag in script_args for flag in ('--check', '--smoke-test', '--post')):
+            raise SystemExit(1)
         _fast_show_error("Launch Error",
             f"ไม่สามารถโหลดโมดูล '{module_name}' ได้:\n{e}\n\n"
             f"ตรวจสอบว่าไฟล์ .py อยู่ในโฟลเดอร์ '{_subfolder}'")
     except Exception as e:
         import traceback; traceback.print_exc()
+        if full_module_name == 'All_Programs.158_AutoLychee_OneFile' and any(
+                flag in script_args for flag in ('--check', '--smoke-test', '--post')):
+            raise SystemExit(1)
         _fast_show_error("Runtime Error",
             f"เกิดข้อผิดพลาดขณะรัน '{module_name}':\n{e}")
     return True
@@ -239,7 +255,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.100"
+CURRENT_VERSION = "1.1.101"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:

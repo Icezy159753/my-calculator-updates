@@ -175,6 +175,30 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b'MZold')
         self.assertFalse(list(self.root.glob('*.download')))
 
+    def test_thai_console_diagnostics_do_not_fail_on_unicode(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fast_write_output')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<console diagnostics>', 'exec'), namespace)
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding='cp874')
+        namespace['_fast_write_output'](stream, '12 sections OK · smoke test')
+        self.assertIn(b'12 sections OK', buffer.getvalue())
+        namespace['_fast_write_output'](None, 'windowed app has no stream')
+
+    def test_failed_auto_check_exits_without_error_dialog(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fast_launch_submodule')
+        error = Mock()
+        namespace = {'os': os, 'sys': SimpleNamespace(frozen=True, executable=str(self.root/'Main_Program.exe'),
+                     _MEIPASS=str(self.root), path=list(sys.path), argv=['Main_Program.exe','--run-module','158_AutoLychee_OneFile','--check']),
+                     '_fast_show_error': error}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<fast check>', 'exec'), namespace)
+        with patch('traceback.print_exc'), self.assertRaises(SystemExit) as result:
+            namespace['_fast_launch_submodule']()
+        self.assertEqual(result.exception.code, 1)
+        error.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

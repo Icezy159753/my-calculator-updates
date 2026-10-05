@@ -51,6 +51,8 @@ def verify():
             raise
         if process.returncode or ('--smoke-test' in args and b'Auto Lychee GUI smoke test OK' not in stdout):
             raise RuntimeError(f'Transition smoke failed: {executable.name}; {stderr.decode("utf-8", errors="replace")}')
+        if '--check' in args and b'12 sections OK' not in stdout:
+            raise RuntimeError('Launcher did not return the Auto Lychee check output')
     print('Previous installed version upgraded successfully; all managed files and smoke tests verified')
 
 

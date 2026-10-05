@@ -157,3 +157,6 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
 
 - ตั้งแต่ v1.1.100 Main reuse updater.exe เมื่อ SHA-256 ตรงกับ asset digest ของ GitHub
   ดาวน์โหลดลงไฟล์ชั่วคราวและตรวจ EXE/checksum ก่อนแทนไฟล์เดิม
+- ตั้งแต่ v1.1.101 ผลตรวจผ่าน Main ต้องพิมพ์ได้บน CP874 และ UTF-8
+  คำสั่งตรวจ AutoLychee ที่ล้มเหลวต้อง exit 1 โดยไม่เปิดกล่อง error รอผู้ใช้
+  CI ต้องเห็น `12 sections OK` จาก Main ด้วย ไม่ตรวจแค่ exit code
