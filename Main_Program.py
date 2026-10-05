@@ -199,7 +199,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.97"
+CURRENT_VERSION = "1.1.98"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:
@@ -330,6 +330,8 @@ def check_for_updates(app_window, notify_only=False):
                 app_url = None
                 patch_url = None
                 patch_name = f"Main_Program_patch_{CURRENT_VERSION}_to_{latest_version}.bsdiff"
+                file_asset_name = f"Main_Program_files_{CURRENT_VERSION}_to_{latest_version}.zip"
+                file_asset = next((asset for asset in latest_release['assets'] if asset.get('name') == file_asset_name), None)
                 full_name = f"Main_Program_full_{latest_version}.zip"
                 for asset in latest_release['assets']:
                     if asset['name'] == 'updater.exe':
@@ -374,7 +376,7 @@ def check_for_updates(app_window, notify_only=False):
                 update_url = app_url
                 patch_manifest_path = None
                 cached_package = get_cached_package_path(app_dir, CURRENT_VERSION)
-                if cached_package and os.path.exists(cached_package):
+                if cached_package and os.path.exists(cached_package) and not file_asset:
                     if patch_url:
                         update_kind = "patch"
                         update_url = patch_url
@@ -411,8 +413,6 @@ def check_for_updates(app_window, notify_only=False):
                 else:
                     log_update_event(f"Update selected: {update_kind}; base={cached_package}; target={latest_version}")
 
-                file_asset_name = f"Main_Program_files_{CURRENT_VERSION}_to_{latest_version}.zip"
-                file_asset = next((asset for asset in latest_release['assets'] if asset.get('name') == file_asset_name), None)
                 if file_asset:
                     update_kind = 'files'
                     update_url = file_asset['browser_download_url']

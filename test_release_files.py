@@ -99,6 +99,19 @@ class ReleaseFilesTests(unittest.TestCase):
         files.recover_pending(self.app)
         self.assertEqual(files.inventory(self.app), files.inventory(self.old))
 
+    def test_rollback_does_not_replace_untouched_locked_files(self):
+        replace = os.replace
+
+        def locked_replace(source, target):
+            if str(target).endswith('program.py'):
+                raise PermissionError('untouched file still locked')
+            return replace(source, target)
+
+        with patch('release_files.os.replace', side_effect=locked_replace):
+            with self.assertRaises(PermissionError):
+                self.apply()
+        self.assertEqual(files.inventory(self.app), files.inventory(self.old))
+
     def test_payload_corruption_rejected(self):
         replacement = self.root / 'corrupt.zip'
         with zipfile.ZipFile(self.package) as source, zipfile.ZipFile(replacement, 'w') as target:

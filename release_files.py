@@ -85,6 +85,10 @@ def _rollback(root, transaction, journal):
                 backup = destination(transaction / 'backup', entry['path'])
                 if digest(backup) != entry['before']:
                     raise UpdateRejected('Rollback backup checksum mismatch')
+                # Untouched files may still be locked by antivirus/another process.
+                # They already contain the original bytes and need no replacement.
+                if target.is_file() and digest(target) == entry['before']:
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temporary = target.with_name(target.name + '.rollback-tmp')
                 shutil.copyfile(backup, temporary)

@@ -9,7 +9,7 @@ on:
       preview_version:
         description: 'Next version to validate (does not publish a release)'
         required: true
-        default: '1.1.98'
+        default: '1.1.99'
         type: string
 
 permissions:
