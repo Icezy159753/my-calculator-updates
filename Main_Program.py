@@ -255,7 +255,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.102"
+CURRENT_VERSION = "1.1.103"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:
@@ -374,17 +374,44 @@ def _normalize_download_url(url):
         return url.replace("https://github./", "https://github.com/", 1)
     return url
 
-def check_for_updates(app_window, notify_only=False):
+class StartupReleaseCheck(QtCore.QObject):
+    ready = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal()
+
+    def start(self):
+        def fetch():
+            try:
+                import requests
+                response = requests.get(
+                    f'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest', timeout=5)
+                response.raise_for_status()
+                release = response.json()
+                if not isinstance(release, dict) or not isinstance(release.get('tag_name'), str):
+                    raise ValueError('Invalid release response')
+            except Exception:
+                try:
+                    self.failed.emit()
+                except RuntimeError:
+                    pass  # The window was closed while the request was in flight.
+                return
+            try:
+                self.ready.emit(release)
+            except RuntimeError:
+                pass
+        threading.Thread(target=fetch, name='StartupReleaseCheck', daemon=True).start()
+
+
+def check_for_updates(app_window, notify_only=False, latest_release=None):
     """Check updates. When notify_only=True, only update bottom status UI."""
     import requests
     from packaging.version import parse as parse_version
     print("Checking for updates...")
     try:
-        api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-        response = requests.get(api_url, timeout=5)
-        response.raise_for_status()
-
-        latest_release = response.json()
+        if latest_release is None:
+            api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+            response = requests.get(api_url, timeout=5)
+            response.raise_for_status()
+            latest_release = response.json()
         latest_tag = latest_release["tag_name"]
         latest_version = _normalize_tag_version(latest_tag)
 
@@ -1553,7 +1580,39 @@ class AppLauncher(QtWidgets.QMainWindow):
         self.update_later_button.setVisible(False)
 
     def start_update_from_status_bar(self):
-        check_for_updates(self, notify_only=False)
+        if getattr(self, '_update_prompt_active', False):
+            return
+        self._update_prompt_active = True
+        try:
+            check_for_updates(self, notify_only=False,
+                              latest_release=getattr(self, '_cached_update_release', None))
+        finally:
+            self._update_prompt_active = False
+
+    def start_startup_update_check(self):
+        if getattr(self, '_startup_update_check_started', False):
+            return
+        self._startup_update_check_started = True
+        self._startup_release_check = StartupReleaseCheck(self)
+        self._startup_release_check.ready.connect(self.on_startup_release_checked)
+        self._startup_release_check.failed.connect(self.set_update_status_error)
+        self._startup_release_check.start()
+
+    @QtCore.pyqtSlot(object)
+    def on_startup_release_checked(self, release):
+        from packaging.version import parse as parse_version
+        try:
+            version = _normalize_tag_version(release['tag_name'])
+            newer = parse_version(version) > parse_version(CURRENT_VERSION)
+        except Exception:
+            self.set_update_status_error()
+            return
+        if not newer:
+            self.set_update_status_latest()
+            return
+        self._cached_update_release = release
+        self.set_update_available(version)
+        self.start_update_from_status_bar()
 
     def apply_theme(self, mode):
         if mode == "Dark":
@@ -2445,8 +2504,6 @@ if __name__ == "__main__":
     # --- เรียกใช้ฟังก์ชันแสดง Changelog ที่นี่! ---
     show_changelog_if_exists(window)
     # ---------------------------------------------
-    # Delay update check so startup/UI interactions stay responsive first.
-    QtCore.QTimer.singleShot(15000, lambda: check_for_updates(window, notify_only=True))
     try:
         main_icon_relative_path = os.path.join(ICON_FOLDER, "I_Main.ico")
         main_icon_actual_path = resource_path(main_icon_relative_path)
@@ -2460,4 +2517,5 @@ if __name__ == "__main__":
         print(f"LAUNCHER_WARNING: ไม่สามารถโหลดไอคอนหลักของโปรแกรมได้: {e}")
 
     window.show()
+    QtCore.QTimer.singleShot(0, window.start_startup_update_check)
     sys.exit(qt_app.exec())

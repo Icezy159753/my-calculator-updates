@@ -12,6 +12,7 @@ import sys
 import hashlib
 import io
 import zipfile
+import threading
 from release_files import inventory, make_file_package, apply_file_update
 
 import release_build as build
@@ -241,6 +242,65 @@ class ReleaseBuildTests(unittest.TestCase):
         method, instance, send, log = self.notice_fixture(error=OSError('url contains fixture-token'))
         self.assertFalse(method(instance))
         self.assertNotIn('fixture-token', log.call_args.args[0])
+
+    def startup_namespace(self, methods):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        launcher = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'AppLauncher')
+        nodes = [n for n in launcher.body if isinstance(n, ast.FunctionDef) and n.name in methods]
+        namespace = {'QtCore': SimpleNamespace(pyqtSlot=lambda *args: lambda method: method),
+                     'CURRENT_VERSION': '1.1.102', '_normalize_tag_version': lambda tag: tag.lstrip('v')}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), '<startup update>', 'exec'), namespace)
+        return namespace
+
+    def test_startup_new_release_prompts_and_current_release_does_not(self):
+        ns = self.startup_namespace({'on_startup_release_checked'})
+        window = SimpleNamespace(set_update_available=Mock(), set_update_status_latest=Mock(),
+                                 set_update_status_error=Mock(), start_update_from_status_bar=Mock())
+        versions = SimpleNamespace(parse=lambda value: tuple(map(int, value.split('.'))))
+        with patch.dict(sys.modules, {'packaging.version': versions}):
+            ns['on_startup_release_checked'](window, {'tag_name': 'v1.1.102'})
+            window.set_update_status_latest.assert_called_once()
+            window.start_update_from_status_bar.assert_not_called()
+            release = {'tag_name': 'v1.1.103'}
+            ns['on_startup_release_checked'](window, release)
+            window.set_update_available.assert_called_once_with('1.1.103')
+            window.start_update_from_status_bar.assert_called_once()
+            self.assertIs(window._cached_update_release, release)
+
+    def test_startup_worker_fetches_outside_ui_and_reports_failure(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        worker = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'StartupReleaseCheck')
+        signals = []
+        def signal(*args):
+            value = SimpleNamespace(emit=Mock()); signals.append(value); return value
+        namespace = {'QtCore': SimpleNamespace(QObject=object, pyqtSignal=signal), 'threading': threading,
+                     'REPO_OWNER': 'owner', 'REPO_NAME': 'repo'}
+        exec(compile(ast.Module(body=[worker], type_ignores=[]), '<release fetch>', 'exec'), namespace)
+        request = Mock(return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: {'tag_name': 'v1.1.103'}))
+        with patch('threading.Thread') as thread, patch.dict(sys.modules, {'requests': SimpleNamespace(get=request)}):
+            namespace['StartupReleaseCheck']().start()
+            request.assert_not_called()
+            self.assertTrue(thread.call_args.kwargs['daemon'])
+            thread.return_value.start.assert_called_once()
+            fetch = thread.call_args.kwargs['target']
+            fetch()
+            signals[0].emit.assert_called_once_with({'tag_name': 'v1.1.103'})
+            request.side_effect = OSError('offline')
+            fetch()
+            signals[1].emit.assert_called_once()
+
+    def test_cached_startup_release_does_not_repeat_network_request_for_prompt(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        method = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'check_for_updates')
+        ask = Mock(return_value=False)
+        namespace = {'CURRENT_VERSION': '1.1.102', '_normalize_tag_version': lambda tag: tag.lstrip('v'), 'ask_yes_no': ask}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), '<cached prompt>', 'exec'), namespace)
+        request = Mock()
+        versions = SimpleNamespace(parse=lambda value: tuple(map(int, value.split('.'))))
+        with patch.dict(sys.modules, {'requests': SimpleNamespace(get=request), 'packaging.version': versions}):
+            namespace['check_for_updates'](object(), latest_release={'tag_name': 'v1.1.103'})
+        ask.assert_called_once()
+        request.assert_not_called()
 
 
 if __name__ == '__main__':
