@@ -2212,3 +2212,5 @@ if __name__ == "__main__":
 
 
 
+
+# Preview-only selective-build verification; no functional changes.
