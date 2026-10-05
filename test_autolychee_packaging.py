@@ -1,8 +1,9 @@
 """Launcher routing checks without loading the Launcher UI or starting Lychee jobs."""
 import ast
 import os
+import runpy
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import sys
@@ -83,6 +84,30 @@ class AutoLycheePackagingTests(unittest.TestCase):
         source = (ROOT / 'All_Programs/158_AutoLychee_OneFile.py').read_text(encoding='utf-8')
         self.assertIn("elif args == ['--smoke-test']:", source)
         self.assertIn("print('Auto Lychee GUI smoke test OK', flush=True)", source)
+
+    def test_autolychee_build_keeps_runtime_outside_executable(self):
+        # Qt must live beside the EXE so launch does not unpack it into TEMP each time.
+        hooks = ModuleType('PyInstaller.utils.hooks')
+        hooks.collect_submodules = lambda name: []
+        analysis = SimpleNamespace(pure=[], scripts=['loader'], binaries=['Qt runtime'], datas=['source'])
+        executable, collect = Mock(return_value='exe'), Mock()
+        with patch.dict(sys.modules, {'PyInstaller.utils.hooks': hooks}):
+            runpy.run_path(str(ROOT / 'AutoLychee.spec'), init_globals={
+                'Analysis': Mock(return_value=analysis), 'PYZ': Mock(return_value='pyz'),
+                'EXE': executable, 'COLLECT': collect,
+            })
+        self.assertTrue(executable.call_args.kwargs['exclude_binaries'])
+        self.assertNotIn(analysis.binaries, executable.call_args.args)
+        self.assertEqual(collect.call_args.args, ('exe', analysis.binaries, analysis.datas))
+        self.assertEqual(collect.call_args.kwargs['name'], 'AutoLychee')
+
+    def test_main_build_includes_whole_autolychee_bundle(self):
+        tree = ast.parse((ROOT / 'Main_Program.spec').read_text(encoding='utf-8'))
+        datas = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == 'datas' for target in node.targets))
+        namespace = {'autolychee_bundle': 'dist/AutoLychee'}
+        bundled = eval(compile(ast.Expression(datas.elts[0]), '<bundle>', 'eval'), namespace)
+        self.assertEqual(bundled, ('dist/AutoLychee', 'AutoLychee'))
 
     def test_frozen_fast_path_opens_separate_exe(self):
         tree = ast.parse((ROOT / 'Main_Program.py').read_text(encoding='utf-8-sig'))

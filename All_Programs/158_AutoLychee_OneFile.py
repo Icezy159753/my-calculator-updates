@@ -1063,25 +1063,22 @@ def user_can_see(hwnd):
 
 
 class FocusGuard:
-    """Keep the window the user works in at the front during a BG run (user rule 2026-10-02: BG must not
-    disturb other work). Any foreground change that did NOT follow the user's own keyboard/mouse input
-    (within 400 ms) is undone within one poll (5 ms) — whoever caused it: a parked Lyche dialog, a hidden
-    Excel window of the post-processing, Auto Lychee's own window getting the activation when another window
-    closes (all seen live 2026-10-03). A change that follows user input is the user switching windows: that
-    window becomes the one to protect (only if it is on screen — never a parked or invisible window).
-    `hold()` → True while a bot step needs Lyche active (it gives the focus back itself); input in the
-    0.8 s after a hold is the bot's own synthetic click, not the user's."""
+    """Return focus when Lyche takes it during a BG run. A visible non-Lyche foreground window becomes
+    the current protected window; never reverse another application's activation, which can fight the
+    GUI backup guard and make unrelated windows flicker. Never raise a hidden/minimised target.
+    Recent keyboard/mouse input cannot identify an intentional switch to Lyche: it also happens when
+    the user is typing in another app and a Lyche dialog activates itself. Protect that app even then.
+    `hold()` → True only while a bot step needs Lyche active (it gives the focus back itself)."""
     def __init__(self, pid=0, hold=None, initial=None):
         self.pid, self.hold = pid, hold
         foreground = ctypes.windll.user32.GetForegroundWindow()
         def usable(hwnd):
-            return bool(hwnd) and win32gui.IsWindow(hwnd) and win32process.GetWindowThreadProcessId(hwnd)[1] != pid
+            return (bool(hwnd) and win32gui.IsWindow(hwnd) and user_can_see(hwnd)
+                    and win32process.GetWindowThreadProcessId(hwnd)[1] != pid)
         # `initial`: the user's window when Run was pressed (live 2026-10-03: by the time the guard starts Lyche
         # may already hold the foreground — opening Cross Tabulation — and nothing would be protected).
         self.user_window = initial if usable(initial) else foreground if usable(foreground) and user_can_see(foreground) else None
         self.returns = 0
-        self._last = foreground
-        self._held_until = 0.0
         self._stop = None
         self._thread = None
 
@@ -1106,19 +1103,18 @@ class FocusGuard:
 
     def check(self):
         foreground = ctypes.windll.user32.GetForegroundWindow()
-        now = time.monotonic()
         if self.hold and self.hold():
-            self._held_until = now + .8
-            self._last = foreground
             return
         if not foreground:
             return
-        if foreground != self._last:
-            self._last = foreground
-            if now > self._held_until and ms_since_input() < 400 and user_can_see(foreground):
-                self.user_window = foreground  # the user switched windows
-                return
-        if foreground == self.user_window or not self.user_window or not win32gui.IsWindow(self.user_window):
+        # Never fight another application's activation with BringWindowToTop. The GUI has its own
+        # backup guard; protecting different stale windows made the two guards pull focus back and forth.
+        if win32process.GetWindowThreadProcessId(foreground)[1] != self.pid:
+            if user_can_see(foreground):
+                self.user_window = foreground
+            return
+        if (foreground == self.user_window or not self.user_window
+                or not win32gui.IsWindow(self.user_window) or not user_can_see(self.user_window)):
             return
         give_back_foreground(self.user_window, settle=0)
         self.returns += 1
@@ -2370,6 +2366,20 @@ class Lyche:
                 self.checkpoint()
                 row, text = self.find_item(root, item)
                 results.append({'item': item, 'found': row is not None, 'label': text})
+            if any(not result['found'] for result in results):
+                # Search navigates a virtualised tree and can miss an existing item until a full
+                # list read resets its scroll position. Confirm misses against a fresh live scan,
+                # never the GUI's cached suggestion list. A scan failure remains a check error.
+                self.emit('log', text='ค้นหาบางตัวแปรไม่พบ — กำลังอ่านรายการล่าสุดจาก Lyche เพื่อยืนยันอัตโนมัติ')
+                panel = self.find(root, aid='searchPanel')
+                self.find(panel, aid='txtKeyWord').set_edit_text('')
+                fresh = self.item_list()
+                known = {code.casefold(): (code, label) for code, label in fresh}
+                for result in results:
+                    if not result['found'] and result['item'].casefold() in known:
+                        code, label = known[result['item'].casefold()]
+                        result.update(found=True, label=f'{code} {label}')
+                self.emit('items', items=fresh)
         finally:
             try:
                 panel = self.find(root, aid='searchPanel')
@@ -4494,9 +4504,19 @@ def add_bottom_grid_to_last_used_row(ws):
     if last_used_row == 0 or last_used_col == 0:
         return
 
+    # Mean/statistic values can occupy a vertically merged final record. Its blank continuation
+    # is still part of the table: Excel renders the bottom edge on that physical tail cell, whereas
+    # openpyxl reloads synthesise it from the anchor and can conceal a missing edge in the saved XML.
+    edge_rows = {}
+    for merged in ws.merged_cells.ranges:
+        if merged.min_row <= last_used_row <= merged.max_row and merged.min_col <= last_used_col:
+            last_used_col = max(last_used_col, merged.max_col)
+            for col in range(merged.min_col, merged.max_col + 1):
+                edge_rows[col] = merged.max_row
+
     thin = Side(style="thin")
     for c in range(1, last_used_col + 1):
-        cell = ws.cell(row=last_used_row, column=c)
+        cell = ws.cell(row=edge_rows.get(c, last_used_row), column=c)
         b = cell.border
         cell.border = Border(
             left=b.left,
@@ -6413,10 +6433,10 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequ
                            QStandardItemModel, QTextCursor)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
+    QPushButton, QToolButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QPlainTextEdit, QSplitter,
-    QAbstractItemView, QSpinBox, QDialog, QFrame, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu,
+    QAbstractItemView, QAbstractButton, QSpinBox, QDialog, QFrame, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
+    QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu, QProgressBar,
 )
 from chrome import MacWindowMixin
 from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs
@@ -6654,12 +6674,13 @@ def dialog_buttons(dialog, layout, all_rows=True):
     buttons = QHBoxLayout()
     buttons.setSpacing(8)
     show_all_rows = all_rows
-    all_rows = QPushButton('ใช้กับทุกแถว')
+    # Parent before setting visibility: an unparented visible button briefly becomes its own window.
+    all_rows = QPushButton('ใช้กับทุกแถว', dialog)
     all_rows.setVisible(show_all_rows)
     all_rows.setObjectName('secondary')
-    cancel = QPushButton('ยกเลิก')
+    cancel = QPushButton('ยกเลิก', dialog)
     cancel.setObjectName('secondary')
-    ok = QPushButton('ตกลง')
+    ok = QPushButton('ตกลง', dialog)
     ok.setObjectName('primary')
     ok.setDefault(True)
     for button in (all_rows, cancel, ok):
@@ -6672,6 +6693,7 @@ def dialog_buttons(dialog, layout, all_rows=True):
     buttons.addWidget(cancel)
     buttons.addWidget(ok)
     layout.addLayout(buttons)
+    return all_rows, cancel, ok
 
 
 class PostProcessDialog(QDialog):
@@ -6996,6 +7018,32 @@ def rows_area(name):
     return scroll, rows
 
 
+class BannerItemEdit(QLineEdit):
+    """Route keyboard and context-menu paste through the Banner list parser."""
+    def __init__(self, paste_items):
+        super().__init__()
+        self.paste_items = paste_items
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.Paste):
+            self.paste_items(QApplication.clipboard().text())
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        for title, slot, enabled in (
+                ('ตัด', self.cut, self.hasSelectedText()),
+                ('คัดลอก', self.copy, self.hasSelectedText()),
+                ('วางตัวแปร', lambda: self.paste_items(QApplication.clipboard().text()), True),
+                ('เลือกทั้งหมด', self.selectAll, bool(self.text()))):
+            action = menu.addAction(title)
+            action.setEnabled(enabled)
+            action.triggered.connect(slot)
+        menu.exec(event.globalPos())
+
+
 class BannerManualDialog(VariableSearch, QDialog):
     """Banner Manual of a row: Lyche item codes that replace the History's Banner (in this order), one per row
     (5 rows, ＋ เพิ่มแถว), each box searching Lyche's variable list. The run does what a user would: Banner
@@ -7007,6 +7055,12 @@ class BannerManualDialog(VariableSearch, QDialog):
         super().__init__(parent)
         self.apply_all = False
         self.checker = checker  # App.check_manual_items(items, callback): 'เช็คกับ Lyche'
+        self.checking = False
+        self.pending_check = False
+        self.loading_items = False
+        self.checked_missing = []
+        self.check_revision = 0
+        self.checked_items = None
         layout = sheet_layout(self, 560)
         heading = QLabel('Banner Manual')
         heading.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
@@ -7026,7 +7080,25 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.enabled = QCheckBox('ใช้ Banner Manual')
         self.enabled.setStyleSheet('font-size: 15px; font-weight: 700;')
         self.enabled.setChecked(bool(settings.get('banner_manual')))
-        inner.addWidget(self.enabled)
+        header = QHBoxLayout()
+        header.setSpacing(4)
+        header.addWidget(self.enabled)
+        self.bulk_button = QToolButton()
+        self.bulk_button.setAutoRaise(True)
+        self.bulk_button.setText('📋')
+        self.bulk_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.bulk_button.setFixedSize(36, 32)
+        self.bulk_button.setCursor(Qt.PointingHandCursor)
+        self.bulk_button.setAccessibleName('วาง Banner หลายตัวแปร')
+        self.bulk_button.setToolTip('วาง Banner หลายตัวแปร · แยกลงช่องและเช็คกับ Lyche อัตโนมัติ')
+        self.bulk_button.setStyleSheet(
+            'QToolButton { background: transparent; border: none; border-radius: 6px; padding: 0; font-size: 18px; } '
+            'QToolButton:hover, QToolButton:focus { background: #e1ebfa; } '
+            'QToolButton:pressed { background: #d0dff5; }')
+        self.bulk_button.clicked.connect(self.bulk_paste)
+        header.addWidget(self.bulk_button)
+        header.addStretch(1)
+        inner.addLayout(header)
         caption = QLabel('ตัวแปรละแถว เรียงตามลำดับ Banner (บนลงล่าง) · พิมพ์เพื่อค้นหาตัวแปรจาก Lyche')
         caption.setStyleSheet('color: #4a5a78; font-size: 12px; font-weight: 600;')
         caption.setWordWrap(True)
@@ -7046,6 +7118,11 @@ class BannerManualDialog(VariableSearch, QDialog):
         check_row.setSpacing(10)
         self.check_button = QPushButton('เช็คกับ Lyche')
         self.check_button.setObjectName('secondary')
+        self.check_button.setStyleSheet(
+            'QPushButton { background: #229653; color: #ffffff; } '
+            'QPushButton:hover { background: #1b8448; } '
+            'QPushButton:pressed { background: #166c3b; } '
+            'QPushButton:disabled { background: #e0eee5; color: #88a594; }')
         self.check_button.setCursor(Qt.PointingHandCursor)
         self.check_button.setToolTip('ค้นหาทุกข้อในรายการ Item ของ Lyche (เบื้องหลัง) ว่ามีจริงและชื่อตรง — ไม่แก้ Banner ใน Lyche')
         self.check_button.clicked.connect(self.check_items)
@@ -7069,7 +7146,7 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.message.hide()
         layout.addWidget(self.message)
         layout.addSpacing(6)
-        dialog_buttons(self, layout)
+        self.all_button, self.cancel_button, self.ok_button = dialog_buttons(self, layout)
         self.item_rows = []
         existing = manual_items(settings.get('banner_manual_items', ''))
         for _ in range(max(self.DEFAULT_ROWS, len(existing))):
@@ -7080,9 +7157,13 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.set_rows_enabled(self.enabled.isChecked())
         self.load_items()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.fit_height()
+    def setVisible(self, visible):
+        # QDialog.exec() also goes through setVisible. Size wrapped labels before the native window
+        # is exposed; resizing in showEvent briefly displayed the smaller frame on Windows.
+        if visible and not self.isVisible():
+            self.ensurePolished()
+            self.fit_height()
+        super().setVisible(visible)
 
     def fit_height(self):
         """Grow to the height the wrapped labels need: Qt opens the sheet at its minimum height, which pushed
@@ -7098,6 +7179,17 @@ class BannerManualDialog(VariableSearch, QDialog):
     def items_loaded(self):
         QTimer.singleShot(0, self.fit_height)
 
+    def load_items(self, refresh=False):
+        self.invalidate_check()
+        self.loading_items = self.items_provider is not None
+        super().load_items(refresh)
+
+    def set_items(self, data, error=''):
+        self.loading_items = False
+        super().set_items(data, error)
+        if self.pending_check:
+            self.check_items()
+
     def add_row(self, focus=False):
         if len(self.item_rows) >= self.MAX_ROWS:
             return
@@ -7109,7 +7201,7 @@ class BannerManualDialog(VariableSearch, QDialog):
         number.setStyleSheet('color: #d0213c; font-size: 15px; font-weight: 700;')
         number.setFixedWidth(18)
         number.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        edit = QLineEdit()
+        edit = BannerItemEdit(lambda text: self.paste_text(text, self.item_rows.index(edit)))
         edit.setPlaceholderText('ตัวแปร เช่น QUOTA1' if not self.item_rows else 'เช่น QUOTA6')
         edit.setCompleter(self.completer)
         edit.setStyleSheet(self.FIELD)
@@ -7140,27 +7232,110 @@ class BannerManualDialog(VariableSearch, QDialog):
         syntax_note(self, f'คัดลอกแล้ว: {", ".join(items)} — เปิด Banner Manual ของแถวอื่นแล้วกด วาง')
 
     def paste_syntax(self):
+        self.paste_text(QApplication.clipboard().text())
+
+    def bulk_paste(self):
+        dialog = QDialog(self)
+        dialog.setStyleSheet(STYLE)
+        layout = sheet_layout(dialog, 540)
+        layout.setSpacing(12)
+        heading = QLabel('วางตัวแปร Banner')
+        heading.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
+        layout.addWidget(heading)
+        label = QLabel('วางข้อความแบบ Notepad ตัวแปรละบรรทัด\nคั่นด้วย comma, tab หรือเว้นวรรคได้ · สูงสุด 30 ข้อ')
+        label.setStyleSheet('color: #5f6f8a; font-size: 12px;')
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        text = QPlainTextEdit()
+        text.setObjectName('bannerPaste')
+        text.setStyleSheet(
+            'QPlainTextEdit#bannerPaste { background: #ffffff; color: #1e2a44; '
+            'border: 1px solid #c3d0e4; border-radius: 10px; padding: 12px; '
+            'font-family: "Cascadia Mono", Consolas, "Leelawadee UI"; font-size: 14px; '
+            'selection-background-color: #dceaff; selection-color: #193d86; } '
+            'QPlainTextEdit#bannerPaste:focus { border: 1px solid #2a8de9; } '
+            'QScrollBar:vertical { background: #f4f7fc; width: 8px; margin: 4px; border-radius: 4px; } '
+            'QScrollBar::handle:vertical { background: #c3d0e4; border-radius: 4px; min-height: 24px; } '
+            'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }')
+        text.setPlaceholderText('QUOTA1\nQUOTA6\nD1')
+        text.setMinimumHeight(210)
+        existing = self.entered()
+        text.setPlainText('\n'.join(existing) if existing else QApplication.clipboard().text())
+        layout.addWidget(text)
+        hint = QLabel('โปรแกรมจะแยกลงแต่ละช่องและเช็คกับ Lyche อัตโนมัติ')
+        hint.setStyleSheet('color: #5f6f8a; font-size: 12px;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        note = QLabel('')
+        note.setWordWrap(True)
+        note.setStyleSheet('color: #c62828;')
+        layout.addWidget(note)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        cancel = QPushButton('ยกเลิก')
+        cancel.setObjectName('secondary')
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.clicked.connect(dialog.reject)
+        apply = QPushButton('ใส่ทุกช่องและเช็คกับ Lyche')
+        apply.setObjectName('primary')
+        apply.setCursor(Qt.PointingHandCursor)
+        def submit():
+            if self.paste_text(text.toPlainText()):
+                dialog.accept()
+            else:
+                note.setText(self.syntax_note.text())
+        apply.clicked.connect(submit)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(apply)
+        layout.addLayout(buttons)
+        dialog.exec()
+
+    def paste_text(self, text, start=0):
         try:
-            items = banner_manual_from_text(QApplication.clipboard().text())
+            items = banner_manual_from_text(text)
+            if start + len(items) > self.MAX_ROWS:
+                raise ValueError(f'วางได้สูงสุด {self.MAX_ROWS - start} ข้อจากช่องนี้ — ไม่มีการตัดรายการทิ้ง')
         except ValueError as exc:
             syntax_note(self, str(exc), ok=False)
-            return
+            return False
         self.enabled.setChecked(True)
-        while len(self.item_rows) < min(len(items), self.MAX_ROWS):
+        while len(self.item_rows) < start + len(items):
             self.add_row()
-        for index, edit in enumerate(self.item_rows):
-            edit.setText(items[index] if index < len(items) else '')
+        for index, edit in enumerate(self.item_rows[start:]):
+            edit.setText(self.known.get(items[index].casefold(), items[index]) if index < len(items) else '')
         syntax_note(self, f'วางแล้ว {len(items)} ข้อ: {", ".join(items)}')
+        self.pending_check = True
+        self.check_items()
+        QTimer.singleShot(0, self.fit_height)
+        return True
 
     def set_rows_enabled(self, on):
         for widget in self.scroll.widget().findChildren(QWidget):
             if isinstance(widget, (QLineEdit, QPushButton)):
                 widget.setEnabled(on)
         self.add_button.setEnabled(on and len(self.item_rows) < self.MAX_ROWS)
-        self.check_button.setEnabled(on)
+        self.check_button.setEnabled(on and not self.checking)
+        self.update_check_buttons()
+
+    def invalidate_check(self):
+        self.check_revision += 1
+        self.checked_items = None
+        self.update_check_buttons()
+
+    def update_check_buttons(self):
+        """Keep actions available; accept() explains why an unchecked list cannot be saved."""
+        if not hasattr(self, 'ok_button'):
+            return
+        for button in (self.cancel_button, self.all_button, self.ok_button):
+            button.setVisible(True)
+            button.setEnabled(True)
+        self.ok_button.setDefault(True)
 
     def items_edited(self, *_):
+        self.invalidate_check()
         self.check_result.setText('')  # an old result no longer applies
+        self.checked_missing = []
         self.message.hide()
 
     def entered(self):
@@ -7169,36 +7344,70 @@ class BannerManualDialog(VariableSearch, QDialog):
         return [self.known.get(item.casefold(), item) for item in items]
 
     def check_items(self):
+        self.invalidate_check()
+        if self.checking or self.loading_items:
+            self.pending_check = True
+            self.check_result.setText('<span style="color:#1f6fd1">รอเช็คตัวแปรล่าสุดกับ Lyche…</span>')
+            return
+        self.pending_check = False
         items = self.entered()
         if not items:
             self.check_result.setText('<span style="color:#c62828">ใส่ข้ออย่างน้อย 1 ข้อก่อนเช็ค</span>')
             return
         if self.checker is None:
+            if self.known:
+                self.show_check([{'item': item, 'found': item.casefold() in self.known,
+                                  'label': self.known.get(item.casefold(), '')} for item in items])
+            else:
+                self.show_check(None, 'ยังไม่ได้เชื่อมต่อ Lyche')
             return
+        self.checking = True
+        revision = self.check_revision
+        self.update_check_buttons()
         self.check_button.setEnabled(False)
         self.check_result.setText('<span style="color:#1f6fd1">กำลังเช็คกับ Lyche (เบื้องหลัง)…</span>')
-        self.checker(items, self.show_check)
+        def completed(results, error=''):
+            try:
+                self.checking = False
+                if revision == self.check_revision and items == self.entered() and not self.pending_check:
+                    self.show_check(results, error)
+                if self.pending_check:
+                    self.check_items()
+                else:
+                    self.check_button.setEnabled(self.enabled.isChecked())
+                self.update_check_buttons()
+            except RuntimeError:  # dialog deleted while worker was running
+                return
+        self.checker(items, completed)
 
     def show_check(self, results, error=''):
         """Result of 'เช็คกับ Lyche': ✓ item → Lyche's name, ✗ item not found (or the error)."""
         try:
-            if not self.isVisible():
-                return
+            self.check_button.setEnabled(self.enabled.isChecked())
         except RuntimeError:  # the dialog was closed and deleted meanwhile
             return
         self.check_button.setEnabled(self.enabled.isChecked())
         if error or results is None:
+            self.checked_items = None
+            self.update_check_buttons()
             self.check_result.setText(f'<span style="color:#c62828">เช็คไม่สำเร็จ: {escape(error or "ไม่ทราบสาเหตุ")}</span>')
+            QTimer.singleShot(0, self.fit_height)
             return
         lines = []
         for result in results:
             if result['found']:
+                self.known[result['item'].casefold()] = result['item']
                 label = result['label'] if len(result['label']) <= 48 else result['label'][:47] + '…'
                 lines.append(f'<span style="color:#1f9a3e">✓ {escape(result["item"])}</span>'
                              f' <span style="color:#5f6f8a">→ {escape(label)}</span>')
             else:
                 lines.append(f'<span style="color:#c62828">✗ {escape(result["item"])} — ไม่พบใน Lyche</span>')
         missing = sum(not r['found'] for r in results)
+        self.checked_missing = [r['item'] for r in results if not r['found']]
+        if [r['item'].casefold() for r in results] == [item.casefold() for item in self.entered()]:
+            self.checked_items = tuple(self.entered())
+            self.message.hide()
+        self.update_check_buttons()
         lines.append('<b style="color:#1f9a3e">ตรงกับ Lyche ครบทุกข้อ</b>' if not missing
                      else f'<b style="color:#c62828">ไม่พบ {missing} ข้อ — แก้ชื่อข้อก่อนรัน</b>')
         self.check_result.setText('<br>'.join(lines))
@@ -7215,14 +7424,26 @@ class BannerManualDialog(VariableSearch, QDialog):
     def accept(self):
         if self.enabled.isChecked():
             items = self.entered()
-            unknown = [item for item in items if self.known and item.casefold() not in self.known]
+            # Cached suggestions can predate newly added variables. Only a completed live check
+            # may declare an item missing; the check requirement below still prevents bypassing it.
+            unknown = self.checked_missing
             if not items or unknown:
                 self.message.setText('เปิด Banner Manual แล้ว กรุณาใส่ข้ออย่างน้อย 1 ข้อ เช่น QUOTA1' if not items else
-                                     f'ไม่พบตัวแปร {", ".join(unknown)} ใน Lyche (เพิ่งเพิ่มใน Lyche? กด ดึงตัวแปรใหม่)')
+                                     f'ไม่พบตัวแปร {", ".join(unknown)} ใน Lyche — แก้ชื่อแล้วกดเช็คกับ Lyche ก่อนตกลง '
+                                     '(โปรแกรมตรวจรายการล่าสุดให้อัตโนมัติแล้ว)')
                 self.message.show()
                 QTimer.singleShot(0, self.fit_height)
                 (self.item_rows[0] if not items else self.item_rows[0]).setFocus()
                 self.apply_all = False
+                return
+            if (self.checked_items != tuple(items) or self.checking
+                    or self.pending_check or self.loading_items):
+                self.message.setText('กำลังเช็คตัวแปรกับ Lyche กรุณารอให้เช็คเสร็จก่อนตกลง'
+                                     if self.checking or self.pending_check else
+                                     'กรุณากด “เช็คกับ Lyche” เพื่อตรวจตัวแปรให้ครบทุกข้อก่อนตกลง')
+                self.message.show()
+                self.apply_all = False
+                QTimer.singleShot(0, self.fit_height)
                 return
         super().accept()
 
@@ -7472,6 +7693,9 @@ class HiddenTextDelegate(QStyledItemDelegate):
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
 
 
+QUEUE_CHECK_ROLE = Qt.UserRole + 5
+
+
 class StepDelegate(QStyledItemDelegate):
     """Step / Banner Manual cells: a compact chip with the setting when on, a faint dash when off (a
     dashed '+' while hovered). One gear per row (GearDelegate) is the obvious way into the settings."""
@@ -7482,6 +7706,8 @@ class StepDelegate(QStyledItemDelegate):
         widget = opt.widget
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
         on = text not in ('', 'Off', '-')
+        check = index.data(QUEUE_CHECK_ROLE) or {}
+        invalid = check.get('state') == 'error'
         hover = bool(option.state & QStyle.State_MouseOver)
         rect = option.rect.adjusted(4, 5, -4, -5)
         painter.save()
@@ -7493,10 +7719,10 @@ class StepDelegate(QStyledItemDelegate):
             label = metrics.elidedText(text, Qt.ElideRight, rect.width() - 14)
             chip = QRect(0, rect.y(), min(rect.width(), metrics.horizontalAdvance(label) + 18), rect.height())
             chip.moveCenter(rect.center())
-            painter.setPen(QPen(QColor('#c9b6f3'), 1))
-            painter.setBrush(QColor('#e0d4fb' if hover else '#ece5fb'))
+            painter.setPen(QPen(QColor('#e89898' if invalid else '#c9b6f3'), 1))
+            painter.setBrush(QColor('#fde4e4' if invalid else '#e0d4fb' if hover else '#ece5fb'))
             painter.drawRoundedRect(chip, 8, 8)
-            painter.setPen(QColor('#5b34b8'))
+            painter.setPen(QColor('#c62828' if invalid else '#5b34b8'))
             painter.drawText(chip, Qt.AlignCenter, label)
         elif hover:
             chip = QRect(0, rect.y(), min(rect.width(), 44), rect.height())
@@ -7605,32 +7831,47 @@ class ResultDialog(QDialog):
                 stats.itemAt(index).widget().hide()
 
         if results:
-            card = QFrame()
-            card.setStyleSheet('QFrame { background: #ffffff; border: 1px solid #e5e5ea; border-radius: 12px; } QLabel { border: none; background: transparent; }')
-            rows = QVBoxLayout(card)
-            rows.setContentsMargins(14, 10, 14, 10)
-            rows.setSpacing(8)
-            shown = results[:8]
-            for name, status, note in shown:
+            self.result_table = QTableWidget(len(results), 2, self)
+            table = self.result_table
+            table.setObjectName('runResults')
+            table.setFixedHeight(260)
+            table.setWordWrap(False)
+            table.setTextElideMode(Qt.ElideRight)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            table.setSelectionMode(QAbstractItemView.SingleSelection)
+            table.setShowGrid(False)
+            table.verticalHeader().hide()
+            table.horizontalHeader().hide()
+            table.verticalHeader().setDefaultSectionSize(32)
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            table.setStyleSheet(
+                'QTableWidget#runResults { background: #ffffff; border: 1px solid #e5e5ea; '
+                'border-radius: 12px; padding: 6px; color: #1e2a44; } '
+                'QTableWidget#runResults::item { border: none; padding: 4px 8px; } '
+                'QTableWidget#runResults::item:selected { background: #edf4ff; color: #193d86; } '
+                'QScrollBar:vertical { background: #f4f7fc; width: 8px; margin: 6px 0; border-radius: 4px; } '
+                'QScrollBar::handle:vertical { background: #c3d0e4; min-height: 24px; border-radius: 4px; } '
+                'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }')
+            for row, (name, status, note) in enumerate(results):
                 color, _ = self.PILLS.get(status, ('#86868b', ''))
-                line = QHBoxLayout()
-                line.setSpacing(10)
-                dot = QLabel('●')
-                dot.setStyleSheet(f'color: {color}; font-size: 10px;')
-                line.addWidget(dot, 0, Qt.AlignTop)
-                label = QLabel(f'<span style="font-weight:600">{escape(name or "-")}</span>'
-                               + (f'<br><span style="color:#86868b;font-size:12px">{escape(note)}</span>' if note and status != 'OK' else ''))
-                label.setWordWrap(True)
-                line.addWidget(label, 1)
-                state = QLabel(status)
-                state.setStyleSheet(f'color: {color}; font-size: 12px; font-weight: 600;')
-                line.addWidget(state, 0, Qt.AlignTop)
-                rows.addLayout(line)
-            if len(results) > len(shown):
-                more = QLabel(f'และอีก {len(results) - len(shown)} รายการ — ดูในตาราง')
-                more.setStyleSheet('color: #86868b; font-size: 12px;')
-                rows.addWidget(more)
-            layout.addWidget(card)
+                label = QTableWidgetItem(name or '-')
+                font = label.font()
+                font.setWeight(QFont.DemiBold)
+                label.setFont(font)
+                tooltip = (name or '-') + (f'\n{note}' if note else '')
+                label.setToolTip(tooltip)
+                state = QTableWidgetItem(status)
+                state.setForeground(QColor(color))
+                state.setFont(font)
+                state.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                state.setToolTip(tooltip)
+                table.setItem(row, 0, label)
+                table.setItem(row, 1, state)
+            layout.addWidget(table)
 
         layout.addSpacing(8)
         buttons = QHBoxLayout()
@@ -7652,6 +7893,140 @@ class ResultDialog(QDialog):
     def open_folder(self):
         import os
         os.startfile(self.folder)
+
+
+class ImportResultDialog(ResultDialog):
+    """Import notice with all problem cells in a scrollable list, centred on the app's monitor."""
+    def __init__(self, parent, kind, title, message, problems):
+        super().__init__(parent, kind, title, message, None, None)
+        self.setStyleSheet(STYLE)
+        if problems:
+            details = QPlainTextEdit()
+            details.setReadOnly(True)
+            details.setPlainText('\n\n'.join(problems))
+            details.setStyleSheet('QPlainTextEdit { background: #fff7f7; color: #a32626; '
+                                 'border: 1px solid #efcccc; border-radius: 8px; padding: 10px; }')
+            details.setFixedHeight(min(220, 65 + 45 * len(problems)))
+            layout = self.findChild(QFrame, 'sheet').layout()
+            layout.insertWidget(layout.count() - 1, details)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
+        screen = self.parentWidget().screen() if self.parentWidget() else QApplication.primaryScreen()
+        if screen:
+            self.move(screen.availableGeometry().center() - self.rect().center())
+
+
+class ImportModeDialog(ImportResultDialog):
+    """Explicit choice before an imported workbook changes the queue."""
+    def __init__(self, parent, old_count, new_count):
+        super().__init__(parent, 'info', 'เลือกวิธีนำเข้าคิว',
+                         f'คิวเดิม {old_count} แถว · ไฟล์ที่เลือก {new_count} แถว', [])
+        self.mode = None
+        layout = self.findChild(QFrame, 'sheet').layout()
+        choices = QVBoxLayout()
+        choices.setSpacing(12)
+        for mode, title, description, symbol, accent, soft, border, hover in (
+                ('replace', 'แทนที่คิวเดิม', 'ลบทุกแถวเดิม แล้วใช้คิวจากไฟล์นี้', '↺',
+                 '#9a4a16', '#fff4e9', '#f0d1b7', '#ffe8d4'),
+                ('append', 'ต่อท้ายคิวเดิม', 'เก็บคิวเดิม แล้วเพิ่มรายการใหม่ไว้ด้านล่าง', '＋',
+                 '#205c9b', '#edf5ff', '#bdd6f1', '#dfedff')):
+            button = QPushButton()
+            button.setObjectName('importChoice')
+            button.setAccessibleName(title + ' · ' + description)
+            button.setStyleSheet(
+                f'QPushButton#importChoice {{ background: {soft}; border: 1px solid {border}; '
+                'border-radius: 12px; padding: 0; } '
+                f'QPushButton#importChoice:hover {{ background: {hover}; border-color: {accent}; }} '
+                f'QPushButton#importChoice:focus {{ border: 2px solid {accent}; }} '
+                f'QPushButton#importChoice:pressed {{ background: {hover}; }}')
+            button.setCursor(Qt.PointingHandCursor)
+            button.setAutoDefault(False)
+            button.setMinimumHeight(88)
+            contents = QHBoxLayout(button)
+            contents.setContentsMargins(16, 14, 16, 14)
+            contents.setSpacing(14)
+            badge = QLabel(symbol)
+            badge.setFixedSize(38, 38)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet(f'color: {accent}; background: {hover}; border-radius: 10px; font-size: 24px;')
+            contents.addWidget(badge)
+            copy = QVBoxLayout()
+            copy.setSpacing(4)
+            heading = QLabel(title)
+            heading.setStyleSheet(f'color: {accent}; font-size: 16px; font-weight: 700;')
+            explanation = QLabel(description)
+            explanation.setWordWrap(True)
+            explanation.setStyleSheet(f'color: {accent}; font-size: 12px; font-weight: 400;')
+            copy.addWidget(heading)
+            copy.addWidget(explanation)
+            contents.addLayout(copy, 1)
+            arrow = QLabel('›')
+            arrow.setStyleSheet(f'color: {accent}; font-size: 24px;')
+            contents.addWidget(arrow)
+            for label in button.findChildren(QLabel):
+                label.setAttribute(Qt.WA_TransparentForMouseEvents)
+            button.clicked.connect(lambda checked=False, value=mode: self.choose(value))
+            choices.addWidget(button)
+        layout.insertLayout(layout.count() - 1, choices)
+        cancel = layout.itemAt(layout.count() - 1).layout().itemAt(0).widget()
+        cancel.setText('ยกเลิก')
+        cancel.setObjectName('secondary')
+        cancel.clicked.disconnect()
+        cancel.clicked.connect(self.reject)
+        cancel.setMaximumWidth(110)
+        footer = layout.itemAt(layout.count() - 1).layout()
+        footer.setStretch(0, 0)
+        footer.insertStretch(0, 1)
+
+    def choose(self, mode):
+        self.mode = mode
+        self.accept()
+
+
+class ImportProgressDialog(QDialog):
+    """Modal, non-dismissable progress while the asynchronous import check is running."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setStyleSheet(STYLE)
+        layout = sheet_layout(self, 420)
+        self.label = QLabel('กำลังตรวจสอบคิว')
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet('font-size: 19px; font-weight: 700; color: #1b3fd0;')
+        layout.addWidget(self.label)
+        note = QLabel('กำลังตรวจตัวแปร Banner Manual และ Filter กับ Lyche\nกรุณารอสักครู่')
+        note.setAlignment(Qt.AlignCenter)
+        note.setWordWrap(True)
+        note.setStyleSheet('color: #5f6f8a;')
+        layout.addWidget(note)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        bar.setStyleSheet('QProgressBar { background: #e7effb; border: none; border-radius: 4px; } '
+                         'QProgressBar::chunk { background: #2a8de9; border-radius: 4px; }')
+        layout.addWidget(bar)
+        self.tick = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(350)
+
+    def animate(self):
+        self.tick = (self.tick + 1) % 4
+        self.label.setText('กำลังตรวจสอบคิว' + '·' * self.tick)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
+        self.move(self.parentWidget().screen().availableGeometry().center() - self.rect().center())
+
+    def reject(self):
+        pass  # Escape must not unlock the main window before checking finishes
+
+    def closeEvent(self, event):
+        event.ignore()
 
 
 class App(MacWindowMixin, QMainWindow):
@@ -7845,8 +8220,29 @@ class App(MacWindowMixin, QMainWindow):
         self.table.setFocusPolicy(Qt.StrongFocus)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(34)  # compact queue rows (user request)
+        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setFixedWidth(38)
+        self.table.verticalHeader().setStyleSheet(
+            'QHeaderView { background: #ffffff; } '
+            'QHeaderView::section { background: #ffffff; color: #1e2a44; '
+            'border: none; border-right: 1px solid #edf2f9; border-bottom: 1px solid #edf2f9; '
+            'padding: 0; font-size: 12px; font-weight: 600; } '
+            'QHeaderView::section:selected { background: #dbe9fb; }')
+        self.table.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
+        self.table.verticalHeader().setMinimumSectionSize(28)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        # Keep automatic row numbering and existing data-column indices. The native corner button
+        # supplies the blue header background; a mouse-transparent label preserves Select All.
+        corner = self.table.findChild(QAbstractButton)
+        self.number_heading = QLabel('No.', corner)
+        self.number_heading.setAlignment(Qt.AlignCenter)
+        self.number_heading.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.number_heading.setStyleSheet(
+            'color: #ffffff; background: #2a8de9; border: none; '
+            'border-right: 1px solid #4ea1ee; font-size: 12px; font-weight: 700;')
+        corner_layout = QVBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.addWidget(self.number_heading)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.horizontalHeader().setHighlightSections(False)
@@ -8160,12 +8556,16 @@ class App(MacWindowMixin, QMainWindow):
 
     def apply_post(self, rows, settings):
         """Merge `settings` into each row's settings; changed rows go back to รอรัน."""
+        recheck = []
         for target in rows:
             before = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
             after = {**before, **settings}  # each dialog changes only its own keys
             after['export_mode'] = export_mode(after)  # e.g. 'apply to all' onto a Banner Manual row
             if before == after:
                 continue
+            if (self.table.item(target, MANUAL_COLUMN).data(QUEUE_CHECK_ROLE)
+                    and any(before.get(key) != after.get(key) for key in MANUAL_KEYS)):
+                recheck.append(self.table.item(target, 0).data(Qt.UserRole))
             self.table.blockSignals(True)
             self.table.item(target, 0).setData(Qt.UserRole + 1, after)
             self.table.item(target, 4).setText('รอรัน')  # the output would change: run the row again
@@ -8174,6 +8574,8 @@ class App(MacWindowMixin, QMainWindow):
             self.show_post(target)
             self.color_status(target)
         self.autosave()
+        if recheck:
+            self.check_imported_jobs([job for job in self.jobs() if job.id in recheck])
 
     def add_row(self):
         self.add_job(Job(history=self.banner.currentText().strip()))
@@ -8211,9 +8613,16 @@ class App(MacWindowMixin, QMainWindow):
         self.autosave()
 
     def replace_jobs(self, jobs):
+        checks = {self.table.item(row, 0).data(Qt.UserRole):
+                  {col: self.table.item(row, col).data(QUEUE_CHECK_ROLE) for col in (2, MANUAL_COLUMN)}
+                  for row in range(self.table.rowCount())}
         self.table.setRowCount(0)
         for job in jobs:
             self.add_job(job)
+            row = self.table.rowCount() - 1
+            for column, check in checks.get(job.id, {}).items():
+                if check:
+                    self.mark_queue_check(row, column, check['state'], check['message'])
 
     def paste(self):
         if self.busy:
@@ -8224,6 +8633,8 @@ class App(MacWindowMixin, QMainWindow):
         self.autosave()
 
     def import_excel(self):
+        if self.busy:
+            return
         filename, _ = QFileDialog.getOpenFileName(self, 'เลือกไฟล์คิว (ไฟล์ที่ส่งออกจากโปรแกรม หรือชีทแรก: Banner, ชื่อไฟล์, Filter, Base)', '', 'Excel (*.xlsx);;CSV (*.csv)')
         if not filename:
             return
@@ -8238,12 +8649,132 @@ class App(MacWindowMixin, QMainWindow):
                     jobs = read_jobs(workbook.worksheets[0].iter_rows(values_only=True), self.banner.currentText())
                 finally:
                     workbook.close()
-            for job in jobs:
-                self.add_job(job)
+            if not jobs:
+                self.show_import_result(set())
+                return
+            mode = self.choose_import_mode(len(jobs))
+            if mode is None:
+                return
+            self.start_import_progress()
+            if mode == 'replace':
+                self.replace_jobs(jobs)
+            else:
+                for job in jobs:
+                    self.add_job(job)
             self.autosave()
             self.write_log(f'นำเข้าคิว {len(jobs)} แถว (พร้อมค่าตั้ง Step 1-3 ถ้ามีในไฟล์) ← {Path(filename).name}')
+            self.check_imported_jobs(jobs, notify=True)
         except Exception as exc:
+            self.finish_import_progress()
             self.error(str(exc))
+
+    def choose_import_mode(self, new_count):
+        dialog = ImportModeDialog(self, self.table.rowCount(), new_count)
+        return dialog.mode if dialog.exec() == QDialog.Accepted else None
+
+    def start_import_progress(self):
+        self.finish_import_progress()
+        self.import_progress = ImportProgressDialog(self)
+        self.import_progress.show()
+        self.import_progress.raise_()
+        QApplication.processEvents()
+
+    def finish_import_progress(self):
+        dialog = getattr(self, 'import_progress', None)
+        if dialog is not None:
+            dialog.timer.stop()
+            dialog.done(QDialog.Accepted)
+            dialog.deleteLater()
+            self.import_progress = None
+
+    def mark_queue_check(self, row, column, state='', message=''):
+        item = self.table.item(row, column)
+        blocked = self.table.blockSignals(True)
+        try:
+            item.setData(QUEUE_CHECK_ROLE, {'state': state, 'message': message} if state else None)
+            item.setBackground(QColor('#fde4e4') if state == 'error' else QColor(0, 0, 0, 0))
+            item.setToolTip(message or ('คลิกเพื่อตั้งค่า Banner Manual' if column == MANUAL_COLUMN
+                                       else f'Filter: {item.text()}\nคลิกเพื่อตั้งค่า Filter'))
+        finally:
+            self.table.blockSignals(blocked)
+
+    def show_import_result(self, wanted):
+        self.finish_import_progress()
+        problems, count = [], 0
+        for row, job in enumerate(self.jobs()):
+            if job.id not in wanted:
+                continue
+            count += 1
+            for column, field in ((MANUAL_COLUMN, 'Banner Manual'), (2, 'Filter')):
+                check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
+                if check:
+                    problems.append(f'แถว {row + 1} · {job.output or job.history or "-"} · {field}\n{check["message"]}')
+        if not count:
+            kind, title, message = 'warn', 'ไม่พบรายการคิว', 'ไฟล์นี้ไม่มีรายการคิวที่นำเข้าได้'
+        elif problems:
+            kind, title, message = 'error', 'พบปัญหาในคิวที่นำเข้า', \
+                f'นำเข้า {count} แถว · พบปัญหา {len(problems)} ช่อง\nกรุณาแก้ช่องสีแดงก่อนรัน'
+        else:
+            kind, title, message = 'ok', 'นำเข้าสำเร็จ', f'นำเข้าคิว {count} แถวเรียบร้อย\nตรวจตัวแปร Banner Manual และ Filter ผ่านแล้ว'
+        ImportResultDialog(self, kind, title, message, problems).exec()
+
+    def check_imported_jobs(self, jobs, notify=False):
+        """Check all imported Manual/Filter variable names once, then mark only the bad cells."""
+        wanted = {job.id for job in jobs}
+        refs, variables = [], []
+        project = self.project_key()
+        for row, job in enumerate(self.jobs()):
+            if job.id not in wanted:
+                continue
+            for column, value in ((MANUAL_COLUMN, job.banner_manual_items if job.banner_manual else ''),
+                                  (2, job.filter)):
+                self.mark_queue_check(row, column)
+                try:
+                    if column == MANUAL_COLUMN:
+                        if not job.banner_manual:
+                            continue
+                        items = banner_manual_from_text(value)
+                        if len(items) > BannerManualDialog.MAX_ROWS:
+                            raise ValueError('Banner Manual ได้สูงสุด 30 ข้อ')
+                    else:
+                        items = [condition['variable'] for condition in parse_filters(value)]
+                    if not items:
+                        continue
+                except ValueError as exc:
+                    self.mark_queue_check(row, column, 'error', str(exc))
+                    continue
+                refs.append((job.id, column, value, items))
+                variables.extend(items)
+                self.mark_queue_check(row, column, 'pending', 'กำลังเช็คตัวแปรกับ Lyche…')
+        if not variables:
+            if notify:
+                self.show_import_result(wanted)
+            return
+        def completed(results, error=''):
+            if project != self.project_key():
+                error = 'เปลี่ยนโปรเจกต์ Lyche ระหว่างเช็ค — กรุณานำเข้าหรือแก้ข้อมูลเพื่อเช็คใหม่'
+            found = {result['item'].casefold(): result['found'] for result in results or []}
+            current = {job.id: (row, job) for row, job in enumerate(self.jobs())}
+            failures = 0
+            for job_id, column, value, items in refs:
+                if job_id not in current:
+                    continue
+                row, job = current[job_id]
+                actual = job.banner_manual_items if column == MANUAL_COLUMN else job.filter
+                if actual != value or (column == MANUAL_COLUMN and not job.banner_manual):
+                    continue  # a delayed callback must not colour an edited or removed row
+                missing = [item for item in items if found.get(item.casefold()) is False]
+                unchecked = [item for item in items if item.casefold() not in found]
+                message = (f'เช็คกับ Lyche ไม่สำเร็จ: {error}' if error else
+                           f'ยังไม่ได้ผลเช็คจาก Lyche: {", ".join(unchecked)}' if unchecked else
+                           f'ไม่พบตัวแปรใน Lyche: {", ".join(missing)}' if missing else '')
+                self.mark_queue_check(row, column, 'error' if message else '', message)
+                failures += bool(message)
+            self.table.viewport().update()
+            self.write_log(f'เช็คตัวแปรคิวที่นำเข้ากับ Lyche แล้ว · พบช่องที่มีปัญหา {failures} ช่อง')
+            if notify:
+                self.show_import_result(wanted)
+        self.check_manual_items(manual_items(', '.join(variables)), completed)
 
     def export_excel(self):
         """Save the queue as .xlsx with every Step 1-3 setting (core.QUEUE_COLUMNS), so it can be
@@ -8326,6 +8857,7 @@ class App(MacWindowMixin, QMainWindow):
                      None, str(Path(filename).parent)).exec()
 
     def edited(self, item):
+        recheck = item.column() == 2 and bool(item.data(QUEUE_CHECK_ROLE))
         if item.column() < 4:
             self.table.blockSignals(True)
             self.table.item(item.row(), 4).setText('รอรัน')
@@ -8333,6 +8865,8 @@ class App(MacWindowMixin, QMainWindow):
             self.table.blockSignals(False)
             self.color_status(item.row())
         self.autosave()
+        if recheck:
+            self.check_imported_jobs([self.jobs()[item.row()]])
 
     def color_status(self, row):
         item = self.table.item(row, 4)
@@ -8410,6 +8944,12 @@ class App(MacWindowMixin, QMainWindow):
 
     def validate(self, notify=True):
         try:
+            for row in range(self.table.rowCount()):
+                for column in (MANUAL_COLUMN, 2):
+                    check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
+                    if check:
+                        field = 'Banner Manual' if column == MANUAL_COLUMN else 'Filter'
+                        raise ValueError(f'แถว {row + 1} · {field}: {check["message"]}')
             if not self.folder.text().strip():
                 raise ValueError('ยังไม่ได้เลือกโฟลเดอร์ผลลัพธ์')
             validate_jobs(self.jobs(), Path(self.folder.text().strip()))
@@ -8471,6 +9011,8 @@ class App(MacWindowMixin, QMainWindow):
             callback(None, 'ค้นหาและเลือกหน้าต่าง Lyche ก่อน')
             return
         self.check_callback, self.check_results, self.check_error = callback, None, ''
+        self.check_project = self.project_key()
+        self.items_result = None
         self.launch('check_items', items=items)
 
     def start_run(self):
@@ -8512,7 +9054,8 @@ class App(MacWindowMixin, QMainWindow):
         self.process.errorOccurred.connect(self.process_error)
         program, arguments = onefile.worker_command(str(request))  # ONEFILE: this file with --worker
         self.process.start(program, arguments)
-        if action in ('run', 'load', 'check_items', 'items'):
+        self.focus_background = bool(config.get('background', True))
+        if self.focus_background and action in ('run', 'load', 'check_items', 'items'):
             import ctypes
             self.user_window = ctypes.windll.user32.GetForegroundWindow()  # where the user is now
             self.focus_guard.start()
@@ -8557,6 +9100,14 @@ class App(MacWindowMixin, QMainWindow):
                 self.unfreeze_screen()
             elif kind == 'items':
                 self.items_result = event['items']
+                if self.action == 'check_items' and getattr(self, 'check_project', ''):
+                    project = self.check_project
+                    path = DATA / 'item-lists' / (re.sub(r'[^\w.-]+', '_', project) + '.json')
+                    try:
+                        save_json(path, {'project': project, 'time': datetime.now().strftime('%d/%m %H:%M'),
+                                         'items': self.items_result})
+                    except OSError:
+                        pass
             elif kind == 'items_checked':
                 self.check_results = event['results']
             elif kind == 'banners':
@@ -8708,7 +9259,7 @@ class App(MacWindowMixin, QMainWindow):
         the keyboard. Remember the window the user is working in (any non-Lyche window, this app
         included) and hand focus straight back to it. Skipped while the worker holds `hold-focus`
         (the two short steps that need Lyche active; the worker gives focus back itself)."""
-        if not self.busy or sys.platform != 'win32':
+        if not self.busy or not getattr(self, 'focus_background', False) or sys.platform != 'win32':
             return
         import win32gui
         import win32process
@@ -8718,20 +9269,19 @@ class App(MacWindowMixin, QMainWindow):
             return
         lyche = win32process.GetWindowThreadProcessId(handle)[1]
         if win32process.GetWindowThreadProcessId(foreground)[1] != lyche:
-            # adopt it only when the user switched there (an automated activation — Excel of the
-            # post-processing, this window after another one closed — is not where the user works)
-            if ms_since_input() < 400 or not getattr(self, 'user_window', None):
+            # Match the worker guard: never keep a stale target when another visible app is current.
+            if (win32gui.IsWindowVisible(foreground) and not win32gui.IsIconic(foreground)
+                    and win32gui.GetWindowRect(foreground)[0] > -15000):
                 self.user_window = foreground
             return
-        if win32gui.GetWindowRect(foreground)[0] > -15000:
-            return  # a visible Lyche window: the user is working in Lyche
+        # A visible transient Lyche dialog can steal focus while the user types elsewhere, too.
+        # BG protects the user's app regardless of the dialog's position; Preview never starts this guard.
         if self.control_dir and (self.control_dir / 'hold-focus').exists():
             return
         target = getattr(self, 'user_window', None)
-        if target and win32gui.IsWindow(target) and target != int(self.winId()):
+        if (target and win32gui.IsWindow(target) and win32gui.IsWindowVisible(target)
+                and not win32gui.IsIconic(target) and win32gui.GetWindowRect(target)[0] > -15000):
             self.activate_window(target)
-        else:
-            self.bring_to_front(alert=False)
 
     @staticmethod
     def activate_window(hwnd):

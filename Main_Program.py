@@ -199,7 +199,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.94"
+CURRENT_VERSION = "1.1.95"
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -2204,9 +2204,9 @@ class AppLauncher(QtWidgets.QMainWindow):
                 # ส่ง path ของ .exe ไปให้ subprocess ผ่าน environment variable
                 os.environ['MAIN_PROGRAM_DIR'] = self.launcher_base_dir
                 kwargs = {'working_dir': self.program_dir}
-                # Defer process creation slightly so spinner can start animating first.
+                # Next event-loop turn paints the spinner; process creation runs in a thread.
                 QtCore.QTimer.singleShot(
-                    260,
+                    0,
                     lambda mp=module_path, ep=entry_point, kw=kwargs, pi=program_info:
                         self._start_local_module_process(mp, ep, kw, pi)
                 )

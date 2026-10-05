@@ -70,7 +70,8 @@ def _smoke_test() -> None:
 - ตอนเป็น exe, `_fast_launch_submodule()` และ `_start_local_module_process()` เปิด
   `_internal/AutoLychee/AutoLychee.exe` เป็นโปรเซสแยก ห้าม import ไฟล์ 158 ตรงๆ
   เพราะไฟล์ 158 ใช้ PySide6 แต่ Main_Program ใช้ PyQt6 และไฟล์จะ `raise ImportError` เมื่อถูก import
-- `AutoLychee.spec` build exe แยก (PySide6) และ `Main_Program.spec` ต้องมี `dist/AutoLychee.exe` ก่อน
+- `AutoLychee.spec` build แบบ onedir แยก (PySide6) เพื่อลดเวลาที่เสียไปกับการแตกไฟล์ทุกครั้งที่เปิด
+  และ `Main_Program.spec` ต้องมี `dist/AutoLychee/AutoLychee.exe` ก่อน พร้อมคัดลอกทั้งโฟลเดอร์รวม `_internal`
   ลำดับการ build: `AutoLychee.spec` ก่อน แล้วจึง `Main_Program.spec`
 
 ## 4. ถ้าไฟล์ใหม่มี section หรือ package ใหม่

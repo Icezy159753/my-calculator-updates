@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Separate PySide6 executable: Main_Program uses PyQt6.
+# Separate PySide6 onedir bundle: avoid extracting Qt on every launch.
 from PyInstaller.utils.hooks import collect_submodules
 
 source = "All_Programs/158_AutoLychee_OneFile.py"
@@ -32,11 +32,19 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
+    pyz, a.scripts, [],
+    exclude_binaries=True,
     name='AutoLychee',
     debug=False,
     strip=False,
     upx=False,
     console=False,
     icon='Icon/Autolychee.png',
+)
+coll = COLLECT(
+    exe, a.binaries, a.datas,
+    strip=False,
+    upx=False,
+    name='AutoLychee',
+    contents_directory='_internal',
 )
