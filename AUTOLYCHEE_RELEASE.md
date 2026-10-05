@@ -152,7 +152,7 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
   ต้องได้ checksum ของ managed files เหมือน full release ใหม่ก่อนอัปโหลด
 - ไม่มี bsdiff ของ ZIP ทั้งชุดในรีลีสใหม่; Full ZIP และ updater.exe ยังต้องมีเพื่อรองรับเครื่องเดิม
 - `workflow_dispatch` ใช้สำหรับ preview เท่านั้น ไม่เผยแพร่ release หรือส่ง Telegram
-  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.101`
+  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.103`
   ให้ใช้เลขมากกว่ารีลีสล่าสุด แล้วตรวจขั้น Select build components และเวลางานเพื่อยืนยันความเร็วจริง
 
 - ตั้งแต่ v1.1.100 Main reuse updater.exe เมื่อ SHA-256 ตรงกับ asset digest ของ GitHub
@@ -160,3 +160,5 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
 - ตั้งแต่ v1.1.101 ผลตรวจผ่าน Main ต้องพิมพ์ได้บน CP874 และ UTF-8
   คำสั่งตรวจ AutoLychee ที่ล้มเหลวต้อง exit 1 โดยไม่เปิดกล่อง error รอผู้ใช้
   CI ต้องเห็น `12 sections OK` จาก Main ด้วย ไม่ตรวจแค่ exit code
+- ตั้งแต่ v1.1.102 Bot Token/Chat ID ของ updater ต้องตรงกับ Main และผ่าน getMe/getChat
+  แจ้งอัปเดตสำเร็จทั้งแบบเฉพาะไฟล์และ Full Package; log สถานะส่งโดยไม่แสดง token/response body

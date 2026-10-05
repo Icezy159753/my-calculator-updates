@@ -199,6 +199,49 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         error.assert_not_called()
 
+    def test_updater_uses_same_notification_credentials_as_main(self):
+        configs = []
+        for name in ('Main_Program.py', 'updater.py'):
+            tree = ast.parse(Path(__file__).with_name(name).read_text(encoding='utf-8-sig'))
+            values = {target.id: ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                      for target in node.targets if isinstance(target, ast.Name)
+                      and target.id in ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID')}
+            configs.append(values)
+        # Do not expose credential values if this assertion fails.
+        self.assertTrue(configs[0] == configs[1], 'Main/updater notification credentials differ')
+
+    def notice_fixture(self, response=None, error=None):
+        tree = ast.parse(Path(__file__).with_name('updater.py').read_text(encoding='utf-8-sig'))
+        app = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'UpdaterApp')
+        method = next(n for n in app.body if isinstance(n, ast.FunctionDef) and n.name == '_send_telegram_update_notice')
+        send = Mock(return_value=response, side_effect=error)
+        log = Mock()
+        namespace = {'TELEGRAM_BOT_TOKEN': 'fixture-token', 'TELEGRAM_CHAT_ID': 'fixture-chat',
+                     'requests': SimpleNamespace(post=send), '_log_update_event': log}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), '<update notice>', 'exec'), namespace)
+        instance = SimpleNamespace(current_version='1.1.96', new_version='1.1.102',
+                                   release_url='https://example.com/release',
+                                   _get_user_machine_info=lambda: ('user<&>', 'PC&one', '192.168.1.42'))
+        return namespace['_send_telegram_update_notice'], instance, send, log
+
+    def test_success_notice_contains_machine_versions_and_release(self):
+        method, instance, send, log = self.notice_fixture(SimpleNamespace(status_code=200, json=lambda: {'ok': True}))
+        self.assertTrue(method(instance))
+        payload = send.call_args.kwargs['json']
+        for text in ('user&lt;&amp;&gt;', 'PC&amp;one', '192.168.1.42', '1.1.96', '1.1.102', 'https://example.com/release'):
+            self.assertIn(text, payload['text'])
+        self.assertFalse(payload['disable_web_page_preview'])
+        self.assertEqual(payload['parse_mode'], 'HTML')
+        self.assertIn('sent=True', log.call_args.args[0])
+
+    def test_notification_failure_is_logged_without_secrets_and_does_not_fail_install(self):
+        method, instance, send, log = self.notice_fixture(SimpleNamespace(status_code=401, json=lambda: {'ok': False}))
+        self.assertFalse(method(instance))
+        self.assertIn('status=401', log.call_args.args[0])
+        method, instance, send, log = self.notice_fixture(error=OSError('url contains fixture-token'))
+        self.assertFalse(method(instance))
+        self.assertNotIn('fixture-token', log.call_args.args[0])
+
 
 if __name__ == '__main__':
     unittest.main()

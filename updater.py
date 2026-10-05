@@ -53,8 +53,8 @@ def _get_bsdiff4():
         _log_update_event(f"bsdiff4 import failed: {e}")
         return None
 
-TELEGRAM_BOT_TOKEN = "8207273310:AAEwpcDWP8yRP5Q74R3ic5jpZ_BOPQwJ_PQ"
-TELEGRAM_CHAT_ID = "8556512706"
+TELEGRAM_BOT_TOKEN = '8572127506:AAGLyBZxyjSnlENBVVcBux9i3Mi0GoIf9Y0'
+TELEGRAM_CHAT_ID = '8556512706'
 
 class UpdaterApp:
     def __init__(self, root):
@@ -484,19 +484,20 @@ class UpdaterApp:
 
     def _send_telegram_update_notice(self):
         if "TELEGRAM_BOT_TOKEN" in TELEGRAM_BOT_TOKEN or "TELEGRAM_CHAT_ID" in TELEGRAM_CHAT_ID:
-            print("TELEGRAM_SKIP: Missing token or chat id.")
-            return
+            _log_update_event('Telegram update notice skipped: missing credentials')
+            return False
+        from html import escape
         old_version = self.current_version or "N/A"
         new_version = self.new_version or "N/A"
         username, hostname, ip_address = self._get_user_machine_info()
         release_url = self.release_url or ""
         message_text = (
             "✅ <b>อัปเดตสำเร็จ</b>\n\n"
-            f"🖥️ <b>เครื่อง:</b> {hostname}\n"
-            f"👤 <b>ผู้ใช้:</b> {username}\n"
-            f"🌐 <b>IP:</b> {ip_address}\n"
-            f"🧩 <b>เวอร์ชัน:</b> {old_version} → {new_version}\n\n"
-            f"🔗 <b>Release:</b>\n{release_url}"
+            f"🖥️ <b>เครื่อง:</b> {escape(hostname)}\n"
+            f"👤 <b>ผู้ใช้:</b> {escape(username)}\n"
+            f"🌐 <b>IP:</b> {escape(ip_address)}\n"
+            f"🧩 <b>เวอร์ชัน:</b> {escape(old_version)} → {escape(new_version)}\n\n"
+            f"🔗 <b>Release:</b>\n{escape(release_url)}"
         )
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
@@ -507,10 +508,14 @@ class UpdaterApp:
         }
         try:
             response = requests.post(url, json=payload, timeout=8)
-            print(f"TELEGRAM_STATUS: {response.status_code}")
-            print(f"TELEGRAM_BODY: {response.text}")
-        except Exception as e:
-            print(f"TELEGRAM_ERROR: {e}")
+            sent = response.status_code == 200 and response.json().get('ok') is True
+            _log_update_event(f'Telegram update notice: status={response.status_code}; sent={sent}; '
+                              f'version={old_version}->{new_version}')
+            return sent
+        except Exception as error:
+            # Request exception strings can contain the bot token in the URL.
+            _log_update_event(f'Telegram update notice failed: {type(error).__name__}')
+            return False
 
     def _get_updates_dir(self):
         if not self.app_dir:
