@@ -88,7 +88,7 @@ def _smoke_test() -> None:
 รันจากโฟลเดอร์ `Main_Program` (Git Bash):
 
 ```bash
-python -m unittest test_autolychee_packaging -v
+python -m unittest test_autolychee_packaging test_update_cache test_release_files test_release_build -v
 export QT_QPA_PLATFORM=offscreen AUTOLYCHEE_DATA="$TEMP/al-smoke"
 timeout 120 python -X utf8 All_Programs/158_AutoLychee_OneFile.py --smoke-test   # ต้องเห็น "Auto Lychee GUI smoke test OK"
 timeout 60  python -X utf8 All_Programs/158_AutoLychee_OneFile.py --post </dev/null  # exit 0
@@ -127,3 +127,27 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
    build ปกติใช้เวลาประมาณ 12–15 นาที ถ้าเกิน 30 นาทีแปลว่ามีปัญหา
    (CI ตั้งให้ขั้น verify หมดเวลาที่ 10 นาที และทั้งงานหมดเวลาที่ 60 นาที)
 5. ถ้า build fail: `gh run view <run-id> --log-failed` แล้วสรุปสาเหตุให้ผู้ใช้เป็นภาษาไทย
+
+## 7. ระบบอัปเดตไฟล์เฉพาะที่เปลี่ยน (เริ่ม v1.1.97)
+
+- `release_build.py prepare` ดาวน์โหลดชุดเต็มล่าสุดและตรวจ checksum กับ `release_manifest.json`
+  ใช้ fingerprint ของ source/spec/dependencies เพื่อตัดสินใจ build Main, AutoLychee และ updater แยกกัน
+  หากรีลีสก่อนยังไม่มี manifest จะ build ใหม่ทั้งหมด; ถ้า checksum ไม่ตรงจะหยุดการเผยแพร่
+- Main อ่านเวอร์ชันจาก `_internal/release_version.json` เมื่อเป็น EXE จึง reuse EXE ได้เมื่อเปลี่ยนเลขเวอร์ชันอย่างเดียว
+  ห้ามเอาไฟล์นี้ออกจากแพ็กเกจ แม้ source `CURRENT_VERSION` ถูก bump แล้วก็ตาม
+- แก้โปรแกรมใน `All_Programs` โดย imports เดิม: reuse runtime และเปลี่ยนไฟล์ source ที่แพ็กไว้
+  เพิ่ม imports/เปลี่ยน requirements/spec: rebuild ส่วนที่เกี่ยวข้อง ต้องเพิ่ม hiddenimports/dependencies ให้ครบตามเดิม
+- AutoLychee เปลี่ยน: build AutoLychee แล้วแทนโฟลเดอร์ `_internal/AutoLychee` ทั้งชุด; Main ไม่จำเป็นต้อง rebuild
+- `Main_Program_files_<from>_to_<to>.zip` มี manifest และไฟล์เปลี่ยนพร้อม SHA-256
+  updater ใหม่รองรับ arguments เดิม และค้นแพ็กเกจนี้ได้เองแม้ Main บนเครื่องผู้ใช้ยังเป็นรุ่นเก่า
+  ไม่ต้องมี cache ZIP ฐาน; เครื่องที่ข้ามเวอร์ชันหรือไฟล์ฐานไม่ตรงจะใช้ Full Package
+- ก่อนแทนไฟล์ ต้องตรวจ checksum/เส้นทางทั้งหมดและสำรองไฟล์ก่อนเปลี่ยน
+  journal อยู่ที่ `_internal/update-transactions`; ถ้า rollback ไม่สำเร็จห้ามลบ backup
+  updater ครั้งถัดไปต้องกู้คืน transaction ก่อนเริ่มอัปเดตใหม่
+- ไม่ลบไฟล์งานนอกแพ็กเกจ และรักษา Test3.json, openrouter.json, Itemdef - Format.xlsx ที่มีอยู่
+- CI ตรวจ source ของโปรแกรมทั้ง 91 ไฟล์, smoke test EXE, updater EXE self-test และทดลองอัปจาก full release ก่อนหน้า
+  ต้องได้ checksum ของ managed files เหมือน full release ใหม่ก่อนอัปโหลด
+- ไม่มี bsdiff ของ ZIP ทั้งชุดในรีลีสใหม่; Full ZIP และ updater.exe ยังต้องมีเพื่อรองรับเครื่องเดิม
+- `workflow_dispatch` ใช้สำหรับ preview เท่านั้น ไม่เผยแพร่ release หรือส่ง Telegram
+  ตัวอย่าง: `gh workflow run windows-release.yml --ref main -f preview_version=1.1.98`
+  ให้ใช้เลขมากกว่ารีลีสล่าสุด แล้วตรวจขั้น Select build components และเวลางานเพื่อยืนยันความเร็วจริง

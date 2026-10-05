@@ -17,6 +17,9 @@ import re
 import json
 import getpass
 import socket
+from update_cache import find_cached_package, store_cached_package
+from release_files import (apply_file_update, recover_pending, RollbackFailed, protected,
+                           extract_full_package, install_full_update)
 
 # --- เพิ่มเข้ามา: ฟังก์ชันสำหรับหา Path ของไฟล์ที่แนบมากับ .exe ---
 def resource_path(relative_path):
@@ -277,9 +280,12 @@ class UpdaterApp:
 
     def _kill_process_by_name(self, exe_name):
         killed = False
-        for proc in psutil.process_iter(['pid', 'name']):
+        installation = os.path.normcase(os.path.realpath(self.app_dir)) + os.sep
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
             try:
-                if proc.info['name'] and proc.info['name'].lower() == exe_name.lower():
+                executable = os.path.normcase(os.path.realpath(proc.info.get('exe') or ''))
+                if (proc.pid != os.getpid() and executable.startswith(installation)
+                        and proc.info['name'] and proc.info['name'].lower() == exe_name.lower()):
                     proc.terminate()
                     try:
                         proc.wait(timeout=5)
@@ -400,6 +406,9 @@ class UpdaterApp:
             for filename in filenames:
                 src_path = os.path.join(root_dir, filename)
                 dst_path = os.path.join(target_dir, filename)
+                relative_name = os.path.relpath(src_path, src).replace(os.sep, '/')
+                if protected(relative_name) and os.path.exists(dst_path):
+                    continue
                 if rel_path == "." and filename in preserve_files and os.path.exists(dst_path):
                     continue
                 try:
@@ -513,12 +522,47 @@ class UpdaterApp:
         return None
 
     def _get_cached_zip_path(self, version):
-        if not version:
-            return None
-        updates_dir = self._get_updates_dir()
-        if not updates_dir:
-            return None
-        return os.path.join(updates_dir, f"package_{version}.zip")
+        return find_cached_package(self.app_dir, version)
+
+    def _try_file_update(self, work_dir):
+        # Old installed launchers already pass both versions and download the newest updater.
+        # Discover the small package directly without an API call or a cached base ZIP.
+        if not all(isinstance(v, str) and re.fullmatch(r'\d+\.\d+\.\d+', v)
+                   for v in (self.current_version, self.new_version)):
+            return False
+        base = f'https://github.com/Icezy159753/my-calculator-updates/releases/download/v{self.new_version}'
+        url = f'{base}/Main_Program_files_{self.current_version}_to_{self.new_version}.zip'
+        package = os.path.join(work_dir, 'file-update.zip')
+        try:
+            self.status_label.config(text='กำลังดาวน์โหลดเฉพาะไฟล์ที่เปลี่ยน...')
+            self.root.update_idletasks()
+            with requests.get(url, stream=True, timeout=(15, 90)) as response:
+                if response.status_code == 404:
+                    return False
+                response.raise_for_status()
+                total = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                with open(package, 'wb') as output:
+                    for chunk in response.iter_content(1024 * 1024):
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                        self.progress['value'] = downloaded * 100 / total if total else 0
+                        self.percent_label.config(text=self._format_bytes(downloaded))
+                        self.root.update_idletasks()
+            self._kill_processes_in_app_dir(self.app_dir)
+            self.status_label.config(text='กำลังตรวจไฟล์และติดตั้งอัปเดต...')
+            self.root.update_idletasks()
+            apply_file_update(self.app_dir, package, self.current_version, self.new_version)
+            _log_update_event(f'File update installed: {self.current_version} -> {self.new_version}; bytes={downloaded}')
+            return True
+        except RollbackFailed:
+            raise  # Keep backups and stop; never install over an incomplete rollback.
+        except Exception as error:
+            _log_update_event(f'File update rejected; full package fallback: {error}')
+            self.status_label.config(text='ตรวจไฟล์เดิมไม่ผ่านหรือดาวน์โหลดไม่สำเร็จ กำลังใช้ชุดโปรแกรมเต็ม...')
+            self.update_kind = 'full'
+            self.update_url = f'{base}/Main_Program_full_{self.new_version}.zip'
+            return False
 
     def _load_patch_manifest(self):
         if not self.patch_manifest_path:
@@ -534,6 +578,7 @@ class UpdaterApp:
     def run_update_process(self):
         zip_path = None
         temp_dir = None
+        work_dir = None
         try:
             _log_update_event("Update process started.")
             # 1. รอให้โปรแกรมหลักปิดตัว
@@ -549,10 +594,27 @@ class UpdaterApp:
 
             # 2. ดาวน์โหลดไฟล์เวอร์ชันใหม่
             self.status_label.config(text="กำลังเตรียมดาวน์โหลดเวอร์ชันใหม่...")
-            work_dir = tempfile.gettempdir()
+            work_dir = tempfile.mkdtemp(prefix='Main_Program_download_')
             zip_path = os.path.join(work_dir, "Main_Program_update.zip")
             new_exe_path = None
             temp_dir = tempfile.mkdtemp(prefix="Main_Program_update_tmp_", dir=work_dir)
+            self._kill_processes_in_app_dir(self.app_dir)
+            recover_pending(self.app_dir)
+            if self._try_file_update(temp_dir):
+                new_exe = os.path.join(self.app_dir, self.exe_name)
+                try:
+                    os.startfile(new_exe)
+                except OSError:
+                    self.status_label.config(text='อัปเดตสำเร็จ กรุณาเปิดโปรแกรมใหม่', fg='red')
+                    self.root.after(8000, self.root.quit)
+                    return
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                self._send_telegram_update_notice()
+                self.root.quit()
+                return
+            if self.update_kind == 'files':
+                self.update_kind = 'full'
+                self.update_url = f'https://github.com/Icezy159753/my-calculator-updates/releases/download/v{self.new_version}/Main_Program_full_{self.new_version}.zip'
             if os.path.exists(zip_path):
                 try:
                     os.remove(zip_path)
@@ -625,6 +687,7 @@ class UpdaterApp:
                     self.new_version = manifest.get("target_version", self.new_version)
                 except Exception as e:
                     patch_chain_failed = True
+                    _log_update_event(f"Full package fallback: patch chain failed: {e}")
                     self.status_label.config(text=f"Patch ล้มเหลว กำลังดาวน์โหลดไฟล์เต็ม... ({e})", fg="red")
                     self.root.update_idletasks()
                     is_patch_chain = False
@@ -721,8 +784,7 @@ class UpdaterApp:
                 time.sleep(0.5)
 
             if is_zip:
-                with zipfile.ZipFile(zip_path, 'r') as zf:
-                    zf.extractall(temp_dir)
+                extract_full_package(zip_path, temp_dir)
 
                 entries = [d for d in os.listdir(temp_dir) if os.path.isdir(os.path.join(temp_dir, d))]
                 if self.exe_name and os.path.exists(os.path.join(temp_dir, self.exe_name)):
@@ -735,43 +797,24 @@ class UpdaterApp:
                 if not self.app_dir:
                     raise RuntimeError("ไม่พบโฟลเดอร์ติดตั้งของโปรแกรม")
                 os.makedirs(self.app_dir, exist_ok=True)
-                keep_names = {
-                    self.exe_name,
-                    "_internal",
-                    "updater.exe",
-                    "updater.lock",
-                    "changelog.tmp",
-                    "0_Keep",
-                    "Itemdef - Format.xlsx",
-                    "savReaderWriter",
-                    "Test3.json",
-                }
-                keep_names = {name for name in keep_names if name}
-                self._clean_install_root(keep_names)
-                try:
-                    self._copy_tree_overwrite(
-                        new_app_dir,
-                        self.app_dir,
-                        preserve_files={"Itemdef - Format.xlsx", "Test3.json"},
-                        preserve_dirs={"savReaderWriter"},
-                    )
-                except Exception as e:
-                    raise RuntimeError(f"ไม่สามารถคัดลอกไฟล์ใหม่ทับของเดิมได้: {e}")
+                install_full_update(
+                    self.app_dir, new_app_dir,
+                    self.current_version or '0.0.0',
+                    self.new_version or self._extract_version_from_filename(self.update_url) or '0.0.0',
+                    work_dir,
+                )
                 self._ensure_seed_assets()
-                if self.new_version:
-                    cached_new_zip = self._get_cached_zip_path(self.new_version)
-                else:
-                    cached_new_zip = self._get_cached_zip_path(self._extract_version_from_filename(self.update_url))
-                if cached_new_zip and os.path.exists(cached_new_zip):
-                    try:
-                        os.remove(cached_new_zip)
-                    except Exception:
-                        pass
-                if cached_new_zip and zip_path and os.path.exists(zip_path):
-                    try:
-                        shutil.copy2(zip_path, cached_new_zip)
-                    except Exception:
-                        pass
+                cache_warning = None
+                try:
+                    cache_version = self.new_version or self._extract_version_from_filename(self.update_url)
+                    cached_new_zip = store_cached_package(self.app_dir, cache_version, zip_path)
+                    _log_update_event(f"Package cache saved: {cached_new_zip}")
+                except (OSError, ValueError) as error:
+                    cache_warning = 'อัปเดตสำเร็จ แต่เก็บไฟล์สำหรับอัปเดตครั้งถัดไปไม่ได้ ครั้งถัดไปอาจต้องดาวน์โหลดไฟล์เต็ม'
+                    _log_update_event(f"Package cache save failed: {error}")
+                if cache_warning:
+                    from tkinter import messagebox
+                    messagebox.showwarning('ไฟล์สำหรับอัปเดตครั้งถัดไป', cache_warning, parent=self.root)
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 if zip_path and os.path.exists(zip_path):
@@ -826,8 +869,34 @@ class UpdaterApp:
             self.root.after(10000, self.root.quit)
         finally:
             self._release_lock()
+            if work_dir and os.path.realpath(work_dir).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep):
+                shutil.rmtree(work_dir, ignore_errors=True)
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ['--self-test']:
+        # CI exercises the packaged updater without opening windows or touching an installation.
+        from pathlib import Path
+        from release_files import inventory, make_file_package
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            old, new, installed = (base / name for name in ('old', 'new', 'installed'))
+            for folder in (old, new, installed):
+                folder.mkdir()
+            (old / 'Main_Program.exe').write_bytes(b'old')
+            (new / 'Main_Program.exe').write_bytes(b'new')
+            shutil.copytree(old, installed, dirs_exist_ok=True)
+            package = base / 'update.zip'
+            make_file_package(inventory(old), new, '1.1.96', '1.1.97', package)
+            apply_file_update(installed, package, '1.1.96', '1.1.97')
+            if inventory(installed) != inventory(new):
+                raise RuntimeError('Frozen updater transaction failed')
+        if sys.stdout is None:
+            import ctypes
+            import msvcrt
+            handle = ctypes.windll.kernel32.GetStdHandle(-11)
+            sys.stdout = open(msvcrt.open_osfhandle(handle, os.O_WRONLY), 'w', encoding='utf-8')
+        print('Updater transaction self-test OK', flush=True)
+        raise SystemExit(0)
     # --- เพิ่มเข้ามา: ตรวจสอบว่ามี arguments ส่งมาหรือไม่ก่อนรัน ---
     # ป้องกัน Error เวลาเผลอดับเบิ้ลคลิกไฟล์ .py โดยตรง
     raw_args = sys.argv[1:]

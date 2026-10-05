@@ -13,6 +13,7 @@ if not os.path.isfile(autolychee_exe):
     raise FileNotFoundError("Build Auto Lychee first: pyinstaller AutoLychee.spec")
 datas = [
     (autolychee_bundle, "AutoLychee"),
+    ("release_version.json", "."),
     (os.path.join(site_packages, "savReaderWriter"), "savReaderWriter"),
     (os.path.join(site_packages, "sv_ttk"), "sv_ttk"),
     ("Icon", "Icon"),

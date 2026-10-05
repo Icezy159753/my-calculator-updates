@@ -5,3 +5,4 @@ dist/
 *.spec.bak
 
 Test3.json
+release_version.json

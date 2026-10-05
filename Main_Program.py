@@ -199,7 +199,18 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.96"
+CURRENT_VERSION = "1.1.97"
+# Reused launchers read the release version without rebuilding their Python runtime.
+if getattr(sys, 'frozen', False):
+    try:
+        import json as _version_json
+        import re as _version_re
+        with open(os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), 'release_version.json'), encoding='utf-8') as _version_stream:
+            _release_version = _version_json.load(_version_stream)['version']
+        if _version_re.fullmatch(r'\d+\.\d+\.\d+', _release_version):
+            CURRENT_VERSION = _release_version
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
 REPO_OWNER = "Icezy159753"  # << เปลี่ยนเป็นชื่อ Username ของคุณ
 REPO_NAME = "my-calculator-updates"    # << เปลี่ยนเป็นชื่อ Repository ของคุณ
 
@@ -217,9 +228,8 @@ def get_updates_dir(app_dir):
     return updates_dir
 
 def get_cached_package_path(app_dir, version):
-    if not version:
-        return None
-    return os.path.join(get_updates_dir(app_dir), f"package_{version}.zip")
+    from update_cache import find_cached_package
+    return find_cached_package(app_dir, version)
 
 def _normalize_tag_version(tag):
     if not tag:
@@ -392,7 +402,21 @@ def check_for_updates(app_window, notify_only=False):
                                     update_kind = "patch-chain"
                                     update_url = app_url
                         except Exception as e:
+                            log_update_event(f"Full package: patch chain lookup failed: {e}")
                             print(f"PATCH_CHAIN_WARNING: {e}")
+
+                if update_kind == "full":
+                    reason = "no valid cached ZIP" if not cached_package else "no complete patch route"
+                    log_update_event(f"Full package selected: {reason}; current={CURRENT_VERSION}, target={latest_version}")
+                else:
+                    log_update_event(f"Update selected: {update_kind}; base={cached_package}; target={latest_version}")
+
+                file_asset_name = f"Main_Program_files_{CURRENT_VERSION}_to_{latest_version}.zip"
+                file_asset = next((asset for asset in latest_release['assets'] if asset.get('name') == file_asset_name), None)
+                if file_asset:
+                    update_kind = 'files'
+                    update_url = file_asset['browser_download_url']
+                    log_update_event(f"File update selected: {CURRENT_VERSION} -> {latest_version}")
 
                 release_url = latest_release.get("html_url")
                 cmd = [
