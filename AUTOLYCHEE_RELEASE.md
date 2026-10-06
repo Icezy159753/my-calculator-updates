@@ -165,3 +165,25 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
 - ตั้งแต่ v1.1.103 เปิด Main แล้วเริ่มตรวจ release เบื้องหลังทันทีหลังแสดงหน้าต่าง
   ไม่มีหน่วง 15 วินาที; เมื่อพบรุ่นใหม่ต้องแสดงกล่องถามอัปเดตบน GUI thread
   ใช้ผลตรวจเดิมสำหรับกล่องและปุ่มอัปเดต ไม่เรียก latest API ซ้ำ; offline ให้แสดงสถานะและใช้งานโปรแกรมต่อได้
+
+## 8. Deploy ด้วยการดับเบิลคลิก
+
+- ใช้ `Deploy_GitHub.bat` จากโฟลเดอร์โครงการ; ต้องมี Python พร้อม dependencies ของโปรแกรม, Git และ GitHub CLI ที่ login แล้ว
+- สคริปต์ `tools/deploy_release.py` fetch tags, ตรวจ branch main/remote, เลือกเลขที่ยังไม่เคยใช้
+  แก้ CURRENT_VERSION และไฟล์คำสั่ง build, รัน unit tests และ source smoke tests ตามข้อ 5 พร้อม timeout
+- แสดงรายการไฟล์และถามยืนยันหลังทดสอบ: Enter ส่งขึ้น GitHub, N ยกเลิก
+  เมื่อยกเลิกหรือทดสอบไม่ผ่านก่อน stage ให้คืนเฉพาะเลขเวอร์ชันที่สคริปต์แก้ โดยรักษางานของผู้ใช้
+- ส่ง branch/tag ด้วย atomic push แล้วติดตาม CI จนเสร็จ; ไม่ย้ายหรือลบ tags เดิม
+- ถ้า push ล้มเหลวหลัง commit/tag แล้วให้รัน BAT ซ้ำโดยไม่แก้ไฟล์ เพื่อส่ง release เดิมต่อ
+- `Deploy_GitHub.bat --dry-run`: ดูรายการและเลขจาก tags ในเครื่อง ไม่แก้ไฟล์/commit/push
+- `Deploy_GitHub.bat --version-only`: สร้างเลขใหม่เพื่อทดสอบแจ้งอัปเดตแม้ไม่มีโปรแกรมเปลี่ยน
+- `--yes` ข้ามการถามยืนยันหลังทดสอบ; `--no-watch` ส่งขึ้นแล้วไม่รอ CI
+- `Deploy_GitHub.bat --check-only`: ตรวจ preflight/unit/smoke โดยไม่เพิ่มเวอร์ชัน/commit/push
+  ใช้ baseline origin/main ที่อยู่ในเครื่อง; deploy ปกติจะ fetch ให้ก่อนตรวจ
+- preflight อ่าน AST ของโค้ดและ spec โดยไม่ execute โปรแกรมหรือ spec:
+  ตรวจ grammar Python 3.12 และ scope, import ใหม่เทียบ baseline, package ที่ CI ติดตั้งแยก component,
+  exclusions ของ Qt, relative/local module ที่ถูกลบ และไฟล์ data/icon/source ที่ spec ต้องใช้
+  ERROR หยุดก่อน commit/push; WARNING แจ้ง optional imports, dynamic imports และ coverage ของ hiddenimports/hook
+  ตัวตรวจนี้ไม่แทนการ build/run EXE จริงสำหรับ native DLL และ hooks ที่ทำงานตอน runtime
+- ไม่เพิ่มไฟล์งาน Excel/CSV ที่อยู่นอกชุด release และไม่เพิ่ม Test3.json/openrouter.json/.env อัตโนมัติ
+  ถ้าเพิ่ม package/import ให้แก้ dependencies/spec ให้ครบตามเดิม

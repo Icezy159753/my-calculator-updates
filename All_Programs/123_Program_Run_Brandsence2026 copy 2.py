@@ -12,7 +12,7 @@ from openpyxl.styles import (
 
 # --- (คงเดิม) Imports for Factor/Regression Analysis ---
 import statsmodels.api as sm
-from factor_analyzer import FactorAnalyzer, Rotator
+from factor_analyzer import FactorAnalyzer
 from collections import OrderedDict
 import io
 import sys
@@ -529,9 +529,6 @@ class SpssProcessorApp(QMainWindow):
         self.transformed_df = None
         self.za_cols = []
         self.id_vars = []
-        self.weight_var = ''
-        self._weight_setting_present = True
-        self._settings_weight_choice_pending = False
         self.last_excel_filepath = None
         self.original_filepath = None
         self.current_settings_filepath = None
@@ -824,10 +821,6 @@ class SpssProcessorApp(QMainWindow):
             self.cb_save_all_sheets)
         c2.addWidget(self.cb_save_all_sheets)
 
-        self.btn_select_weight = mkbtn(
-            c2, "Weight: ไม่ถ่วงน้ำหนัก", "outline",
-            self.open_weight_selector)
-
         self.btn_analyze_export = mkbtn(
             c2,
             "\U0001F4CA  วิเคราะห์และส่งออก Excel",
@@ -993,167 +986,6 @@ class SpssProcessorApp(QMainWindow):
     # -----------------------------------------------------------------
     # Worker thread plumbing
     # -----------------------------------------------------------------
-    def open_weight_selector(self):
-        """เลือก case weight จากข้อมูล SPSS ที่โหลดอยู่ โดยไม่แก้ไฟล์ต้นฉบับ"""
-        data = self.transformed_df if self.transformed_df is not None else self.df
-        if data is None:
-            self._msg_warn("ยังไม่มีข้อมูล", "กรุณาโหลดไฟล์ SPSS ก่อนเลือก Weight")
-            return False
-        dlg = QDialog(self)
-        dlg.setWindowTitle("เลือกตัวแปร Weight")
-        dlg.resize(480, 520)
-        dlg.setStyleSheet(_DLG_QSS)
-        layout = QVBoxLayout(dlg)
-        if not self._weight_setting_present:
-            layout.addWidget(QLabel(
-                "Setting นี้ยังไม่ระบุ Weight กรุณาเลือกตัวแปรหรือเลือกไม่ถ่วงน้ำหนัก"))
-        elif self._settings_weight_choice_pending:
-            layout.addWidget(QLabel(
-                f"Weight ที่บันทึกใน Setting: {self.weight_var or 'ไม่ถ่วงน้ำหนัก'}\n"
-                "เลือก Weight ที่ต้องการใช้รันครั้งนี้"))
-        layout.addWidget(QLabel(
-            "ใช้ Weight > 0 เท่านั้น; ค่าว่าง, ศูนย์ และค่าติดลบจะไม่ใช้วิเคราะห์"))
-        if 'S13' in data.columns:
-            layout.addWidget(QLabel(
-                "เมื่อถ่วงน้ำหนัก ใช้ผู้ตอบ S13 ที่ตรงกับโรงพยาบาล Index1 เท่านั้น"))
-        search = QLineEdit()
-        search.setPlaceholderText("ค้นหาชื่อตัวแปร / Label")
-        layout.addWidget(search)
-        variables = QListWidget()
-        layout.addWidget(variables)
-        candidates = [c for c in data.columns
-                      if pd.api.types.is_numeric_dtype(data[c])]
-        def refresh(text=''):
-            variables.clear()
-            for col in candidates:
-                label = self.spss_variable_labels.get(col, '')
-                if text.casefold() in f'{col} {label}'.casefold():
-                    variables.addItem(f'{col} — {label}' if label else col)
-                    item = variables.item(variables.count() - 1)
-                    item.setData(Qt.ItemDataRole.UserRole, col)
-                    if col == self.weight_var or (
-                            not self.weight_var and col.casefold() == 'weight'):
-                        variables.setCurrentItem(item)
-        search.textChanged.connect(refresh)
-        refresh()
-        buttons = QHBoxLayout()
-        clear = QPushButton("ไม่ถ่วงน้ำหนัก")
-        choose = QPushButton("ใช้ตัวแปรที่เลือก")
-        buttons.addWidget(clear)
-        buttons.addWidget(choose)
-        layout.addLayout(buttons)
-        def apply_weight(col):
-            previous = self.weight_var
-            self.weight_var = col
-            try:
-                weights = self._case_weights(data, name=col)
-                if weights is not None and not weights.notna().any():
-                    raise ValueError("ไม่มีแถวที่มี Weight เป็นตัวเลขมากกว่า 0")
-            except ValueError as exc:
-                self.weight_var = previous
-                self._msg_warn("Weight ไม่ถูกต้อง", str(exc))
-                return
-            self.btn_select_weight.setText(f"Weight: {col or 'ไม่ถ่วงน้ำหนัก'}")
-            self._weight_setting_present = True
-            self._settings_weight_choice_pending = False
-            dlg.accept()
-        clear.clicked.connect(lambda: apply_weight(''))
-        choose.clicked.connect(lambda: apply_weight(
-            variables.currentItem().data(Qt.ItemDataRole.UserRole))
-            if variables.currentItem() else None)
-        self._center_toplevel(dlg)
-        return dlg.exec() == QDialog.DialogCode.Accepted
-
-    def _ensure_settings_weight_selected(self):
-        if self._weight_setting_present and not self._settings_weight_choice_pending:
-            return True
-        return self.open_weight_selector()
-
-    def _weight_name(self):
-        return self._ui.get('weight_var', self.weight_var)
-
-    def _case_weights(self, data, name=_UNSET):
-        if name is _UNSET:
-            name = self._weight_name()
-        if not name:
-            return None
-        if name not in data.columns:
-            raise ValueError(f"ไม่พบตัวแปร Weight '{name}' ในข้อมูล")
-        if not pd.api.types.is_numeric_dtype(data[name]):
-            raise ValueError(f"ตัวแปร Weight '{name}' ต้องเป็นตัวเลข")
-        weights = pd.to_numeric(data[name], errors='coerce').astype(float)
-        return weights.where(np.isfinite(weights) & (weights > 0))
-
-    def _weighted_frame(self, data):
-        weights = self._case_weights(data)
-        if weights is None:
-            return data
-        mask = weights.notna()
-        if 'S13' in data.columns and 'Index1' in data.columns:
-            # Hospital-specific bases use respondents from that hospital,
-            # not all respondents who also evaluated it in the long data.
-            mask &= data['S13'].eq(data['Index1'])
-        return data.loc[mask]
-
-    def _weighted_mean(self, data, columns):
-        weights = self._case_weights(data)
-        values = data[columns]
-        if weights is None:
-            return values.mean()
-        denominator = values.notna().mul(weights.fillna(0), axis=0).sum()
-        return values.mul(weights, axis=0).sum().div(
-            denominator.replace(0, np.nan))
-
-    def _weighted_corrwith(self, data, columns, target):
-        if not self._weight_name():
-            return data[columns].corrwith(data[target])
-        result = {}
-        weights = self._case_weights(data)
-        for col in columns:
-            mask = (data[col].notna() & data[target].notna()
-                    & weights.notna())
-            if mask.sum() < 2:
-                result[col] = np.nan
-                continue
-            x, y, w = data.loc[mask, col], data.loc[mask, target], weights[mask]
-            x = x - np.average(x, weights=w)
-            y = y - np.average(y, weights=w)
-            denominator = np.sqrt(np.sum(w * x * x) * np.sum(w * y * y))
-            result[col] = (np.clip(np.sum(w * x * y) / denominator, -1, 1)
-                           if denominator > 0 else np.nan)
-        return pd.Series(result, dtype=float)
-
-    def _weighted_factor_input(self, data):
-        columns = ['N_S', 'N_P', 'N_C', 'N_E']
-        complete = self._weighted_frame(data).dropna(subset=columns)
-        values = complete[columns].astype(float)
-        if len(values) < len(columns):
-            raise ValueError("ข้อมูลไม่เพียงพอสำหรับ Factor Analysis")
-        weights = self._case_weights(complete)
-        scaler = StandardScaler().fit(values, sample_weight=weights)
-        standardized = scaler.transform(values)
-        correlation = ((standardized.T * weights.to_numpy()) @ standardized
-                       / weights.sum())
-        if not np.isfinite(correlation).all() or np.any(scaler.var_ <= 0):
-            raise ValueError("ข้อมูล Factor มีค่าคงที่หรือค่าที่ไม่ถูกต้อง")
-        return values, standardized, correlation
-
-    @staticmethod
-    def _weighted_factor_loadings(columns, correlation):
-        eigenvalues, eigenvectors = eigh(correlation)
-        order = np.argsort(eigenvalues)[::-1]
-        loadings = eigenvectors[:, order] * np.sqrt(
-            np.maximum(eigenvalues[order], 0))
-        # Match FactorAnalyzer's sign convention before Equamax rotation.
-        signs = np.sign(loadings.sum(axis=0))
-        signs[signs == 0] = 1
-        loadings *= signs
-        rotated = Rotator(method='equamax', kappa=0.5,
-                          max_iter=250).fit_transform(loadings)
-        order = np.argsort(np.sum(rotated ** 2, axis=0))[::-1]
-        return pd.DataFrame(rotated[:, order], index=columns,
-                            columns=[f'Factor{i + 1}' for i in range(4)])
-
     def _snapshot_ui_inputs(self):
         """อ่านค่าจาก widget ทั้งหมดเก็บไว้ก่อนเริ่ม thread
 
@@ -1166,7 +998,6 @@ class SpssProcessorApp(QMainWindow):
                 self.e_group_entry_var.get().strip(),
             't2b_choice': self.t2b_choice_var.get(),
             'summary_only': self.save_all_sheets_var.get(),
-            'weight_var': self.weight_var,
         }
         return self._ui
 
@@ -1184,8 +1015,7 @@ class SpssProcessorApp(QMainWindow):
         for name in ('btn_start_process',
                      'btn_load_settings_process',
                      'btn_reanalyze', 'btn_analyze_export',
-                     'btn_define_labels', 'btn_save_settings',
-                     'btn_select_weight'):
+                     'btn_define_labels', 'btn_save_settings'):
             b = getattr(self, name)
             self._btn_state[name] = b.isEnabled()
             b.setEnabled(False)
@@ -1532,10 +1362,6 @@ class SpssProcessorApp(QMainWindow):
         self.transformed_df = None
         self.za_cols = []
         self.id_vars = []
-        self.weight_var = ''
-        self._weight_setting_present = True
-        self._settings_weight_choice_pending = False
-        self.btn_select_weight.setText("Weight: ไม่ถ่วงน้ำหนัก")
         self.last_excel_filepath = None
         self.original_filepath = None
         self.current_settings_filepath = None
@@ -2771,121 +2597,115 @@ class SpssProcessorApp(QMainWindow):
 
         self.update_status("กำลังโหลดการตั้งค่า...")
         self.current_settings_filepath = os.path.abspath(settings_filepath)
-        with pd.ExcelFile(settings_filepath) as xls:
+        xls = pd.ExcelFile(settings_filepath)
 
-            if 'Settings' not in xls.sheet_names:
-                raise ValueError("ไม่พบชีท 'Settings' ในไฟล์การตั้งค่า")
+        if 'Settings' not in xls.sheet_names:
+            raise ValueError("ไม่พบชีท 'Settings' ในไฟล์การตั้งค่า")
 
-            settings_df = pd.read_excel(xls, sheet_name='Settings')
-            self._weight_setting_present = 'Weight_Var' in settings_df.columns
-            self._settings_weight_choice_pending = True
-            weights = _clean_list_from_col(settings_df, 'Weight_Var')
-            self.weight_var = weights[0] if weights else ''
-            self.btn_select_weight.setText(
-                f"Weight: {self.weight_var or 'ไม่ถ่วงน้ำหนัก'}")
+        settings_df = pd.read_excel(xls, sheet_name='Settings')
 
-            spss_filepath_from_settings = None
-            if 'PathFile' in settings_df.columns and \
-                    not settings_df.empty and \
-                    not pd.isna(settings_df['PathFile'].iloc[0]):
-                spss_filepath_from_settings = str(
-                    settings_df['PathFile'].iloc[0]).strip()
-            elif require_pathfile:
-                raise ValueError("ไม่พบ PathFile ในไฟล์การตั้งค่า")
+        spss_filepath_from_settings = None
+        if 'PathFile' in settings_df.columns and \
+                not settings_df.empty and \
+                not pd.isna(settings_df['PathFile'].iloc[0]):
+            spss_filepath_from_settings = str(
+                settings_df['PathFile'].iloc[0]).strip()
+        elif require_pathfile:
+            raise ValueError("ไม่พบ PathFile ในไฟล์การตั้งค่า")
 
-            self.filter_entry.clear()
-            if 'Filter_Var' in settings_df.columns:
-                filter_values = settings_df[
-                    'Filter_Var'].dropna().tolist()
-                filter_values = [
-                    str(v).strip() for v in filter_values
-                    if str(v).strip()]
-                if filter_values:
-                    self.filter_entry.setEnabled(True)
-                    self.filter_entry.setText(
-                        ', '.join(filter_values))
+        self.filter_entry.clear()
+        if 'Filter_Var' in settings_df.columns:
+            filter_values = settings_df[
+                'Filter_Var'].dropna().tolist()
+            filter_values = [
+                str(v).strip() for v in filter_values
+                if str(v).strip()]
+            if filter_values:
+                self.filter_entry.setEnabled(True)
+                self.filter_entry.setText(
+                    ', '.join(filter_values))
 
-            if 'T2B_Choice' in settings_df.columns and \
-                    not settings_df.empty and \
-                    not pd.isna(settings_df[
-                        'T2B_Choice'].iloc[0]):
-                self.t2b_choice_var.set(str(
-                    settings_df['T2B_Choice'].iloc[0]))
+        if 'T2B_Choice' in settings_df.columns and \
+                not settings_df.empty and \
+                not pd.isna(settings_df[
+                    'T2B_Choice'].iloc[0]):
+            self.t2b_choice_var.set(str(
+                settings_df['T2B_Choice'].iloc[0]))
 
-            e_group_val = ""
-            if 'E_Group' in settings_df.columns and \
-                    not settings_df.empty and \
-                    not pd.isna(settings_df[
-                        'E_Group'].iloc[0]):
-                e_group_val = str(
-                    settings_df['E_Group'].iloc[0]).strip()
+        e_group_val = ""
+        if 'E_Group' in settings_df.columns and \
+                not settings_df.empty and \
+                not pd.isna(settings_df[
+                    'E_Group'].iloc[0]):
+            e_group_val = str(
+                settings_df['E_Group'].iloc[0]).strip()
 
-            if e_group_val.lower() == 'default' \
-                    or e_group_val == '':
-                self.e_group_mode_var.set("default")
-                self.e_group_entry_var.set("")
-                self._rb_e_default.setChecked(True)
-                self.e_group_entry.setEnabled(False)
-            else:
-                self.e_group_mode_var.set("group")
-                self.e_group_entry_var.set(e_group_val)
-                self._rb_e_group.setChecked(True)
-                self.e_group_entry.setEnabled(True)
+        if e_group_val.lower() == 'default' \
+                or e_group_val == '':
+            self.e_group_mode_var.set("default")
+            self.e_group_entry_var.set("")
+            self._rb_e_default.setChecked(True)
+            self.e_group_entry.setEnabled(False)
+        else:
+            self.e_group_mode_var.set("group")
+            self.e_group_entry_var.set(e_group_val)
+            self._rb_e_group.setChecked(True)
+            self.e_group_entry.setEnabled(True)
 
-            self.c_vars_to_compute = (
-                _clean_list_from_col(settings_df, 'C'))
-            self.vars_to_transform = {}
-            for key in ['A', 'S', 'P', 'E', 'AgreeS',
-                        'AgreeP']:
-                self.vars_to_transform[key] = _clean_list_from_col(
-                    settings_df, key)
+        self.c_vars_to_compute = (
+            _clean_list_from_col(settings_df, 'C'))
+        self.vars_to_transform = {}
+        for key in ['A', 'S', 'P', 'E', 'AgreeS',
+                    'AgreeP']:
+            self.vars_to_transform[key] = _clean_list_from_col(
+                settings_df, key)
 
-            self.filter_labels = {}
-            self.sandp_label_overrides = []
-            if 'Label' in xls.sheet_names:
-                labels_df = pd.read_excel(
-                    xls, sheet_name='Label')
+        self.filter_labels = {}
+        self.sandp_label_overrides = []
+        if 'Label' in xls.sheet_names:
+            labels_df = pd.read_excel(
+                xls, sheet_name='Label')
 
-                if 'Index1_Code' in labels_df.columns \
-                        and 'Index1_Label' in labels_df.columns:
-                    index1_labels_df = labels_df[
-                        ['Index1_Code', 'Index1_Label']
-                    ].dropna()
-                    self.index1_labels = dict(zip(
-                        index1_labels_df[
-                            'Index1_Code'].astype(int),
-                        index1_labels_df['Index1_Label']))
+            if 'Index1_Code' in labels_df.columns \
+                    and 'Index1_Label' in labels_df.columns:
+                index1_labels_df = labels_df[
+                    ['Index1_Code', 'Index1_Label']
+                ].dropna()
+                self.index1_labels = dict(zip(
+                    index1_labels_df[
+                        'Index1_Code'].astype(int),
+                    index1_labels_df['Index1_Label']))
 
-                filter_text_for_label = \
-                    self.filter_entry.text().strip()
-                filter_vars_list = [
-                    f.strip() for f in
-                    filter_text_for_label.split(',')
-                    if f.strip()]
-                filter_var = (
-                    filter_vars_list[0]
-                    if filter_vars_list else '')
-                if filter_var and \
-                        'Filter_Code' in labels_df.columns \
-                        and 'Filter_Label' in labels_df.columns:
-                    self.filter_labels['var_name'] = \
-                        filter_var
-                    filter_labels_df = labels_df[
-                        ['Filter_Code', 'Filter_Label']
-                    ].dropna()
-                    self.filter_labels['labels'] = dict(zip(
-                        filter_labels_df[
-                            'Filter_Code'].astype(int),
-                        filter_labels_df['Filter_Label']))
+            filter_text_for_label = \
+                self.filter_entry.text().strip()
+            filter_vars_list = [
+                f.strip() for f in
+                filter_text_for_label.split(',')
+                if f.strip()]
+            filter_var = (
+                filter_vars_list[0]
+                if filter_vars_list else '')
+            if filter_var and \
+                    'Filter_Code' in labels_df.columns \
+                    and 'Filter_Label' in labels_df.columns:
+                self.filter_labels['var_name'] = \
+                    filter_var
+                filter_labels_df = labels_df[
+                    ['Filter_Code', 'Filter_Label']
+                ].dropna()
+                self.filter_labels['labels'] = dict(zip(
+                    filter_labels_df[
+                        'Filter_Code'].astype(int),
+                    filter_labels_df['Filter_Label']))
 
-                if 'SandP_Label' in labels_df.columns:
-                    self.sandp_label_overrides = [
-                        str(v).strip()
-                        for v in labels_df['SandP_Label'].tolist()
-                        if pd.notna(v) and str(v).strip()
-                    ]
+            if 'SandP_Label' in labels_df.columns:
+                self.sandp_label_overrides = [
+                    str(v).strip()
+                    for v in labels_df['SandP_Label'].tolist()
+                    if pd.notna(v) and str(v).strip()
+                ]
 
-            return spss_filepath_from_settings
+        return spss_filepath_from_settings
 
     def _try_load_original_spss_for_reanalyze(
             self, spss_filepath_from_settings=None):
@@ -3499,15 +3319,6 @@ class SpssProcessorApp(QMainWindow):
         ogl.addStretch()
         vl.addWidget(og)
 
-        weight_button = QPushButton(
-            f"Weight: {self.weight_var or 'ไม่ถ่วงน้ำหนัก'} (เลือกตัวแปร)")
-        def choose_weight():
-            self.open_weight_selector()
-            weight_button.setText(
-                f"Weight: {self.weight_var or 'ไม่ถ่วงน้ำหนัก'} (เลือกตัวแปร)")
-        weight_button.clicked.connect(choose_weight)
-        vl.addWidget(weight_button)
-
         def confirm():
             for nm, lbs in listboxes.items():
                 items = []
@@ -3631,12 +3442,6 @@ class SpssProcessorApp(QMainWindow):
             self._on_transform_failed)
 
     def run_processing_with_loaded_settings(self):
-        if not self._ensure_settings_weight_selected():
-            self.update_status("ยกเลิกการเลือก Weight", "warning")
-            if self._settings_batch_active:
-                self._settings_batch_fail_current(
-                    "เลือก Weight", "ผู้ใช้ยกเลิกการเลือก Weight")
-            return
         self._snapshot_ui_inputs()
         if self._settings_batch_active:
             number = self._settings_batch_index + 1
@@ -3776,14 +3581,6 @@ class SpssProcessorApp(QMainWindow):
 
     def _run_full_transformation_logic(self):
         try:
-            if self.weight_var:
-                selected = set(self.computed_c_cols)
-                for variables in self.vars_to_transform.values():
-                    selected.update(variables)
-                if self.weight_var in selected:
-                    raise RuntimeError(
-                        "ตัวแปร Weight ต้องไม่เป็นตัวแปรที่เลือกแปลงหรือ Agree")
-                self._case_weights(self.df)
             temp_df = self.df.copy()
             all_transform_vars = set(self.computed_c_cols)
             for key, var_list in self.vars_to_transform.items():
@@ -4850,7 +4647,6 @@ class SpssProcessorApp(QMainWindow):
             groups = self._build_analysis_groups(
                 'Index1', cross_filter, self.transformed_df)
             for name, df_group in groups.items():
-                df_group = self._weighted_frame(df_group)
                 if name in seen or df_group.empty:
                     continue
                 seen.add(name)
@@ -4869,12 +4665,8 @@ class SpssProcessorApp(QMainWindow):
                 factor_data = df_group[factor_vars].dropna()
                 if len(factor_data) >= len(factor_vars):
                     try:
-                        if self._weight_name():
-                            _, _, correlation = self._weighted_factor_input(df_group)
-                            loadings = self._weighted_factor_loadings(
-                                factor_vars, correlation)
-                        else:
-                            loadings = self._rotated_factor_loadings(factor_data)
+                        loadings = self._rotated_factor_loadings(
+                            factor_data)
                         _, _, collisions =                             self._factor_mapping_details(
                                 loadings.abs(),
                                 resolve_collisions=False)
@@ -5598,37 +5390,10 @@ class SpssProcessorApp(QMainWindow):
                 "ไม่พบข้อมูลที่แปลงแล้ว (Transformed Data)")
             return
 
-        if not self._ensure_settings_weight_selected():
-            self.update_status("ยกเลิกการเลือก Weight", "warning")
-            if self._settings_batch_active:
-                self._settings_batch_fail_current(
-                    "เลือก Weight", "ผู้ใช้ยกเลิกการเลือก Weight")
-            return
-
         # Snapshot filters first so the QC dialog can preview the exact
         # Factor/Regression groups that will be analysed.
         self._snapshot_ui_inputs()
         cross_filters = self._cross_filters()
-
-        try:
-            weights = self._case_weights(self.transformed_df)
-            if weights is not None and not weights.notna().any():
-                raise ValueError("ไม่มีแถวที่มี Weight เป็นตัวเลขมากกว่า 0")
-            if self._weight_name() and self.is_reanalyze_mode:
-                agree_vars = (self.vars_to_transform.get('AgreeS', [])
-                              + self.vars_to_transform.get('AgreeP', []))
-                if not agree_vars or any(v not in self.transformed_df.columns
-                                         for v in agree_vars):
-                    raise ValueError(
-                        "การถ่วงน้ำหนัก T2B ในโหมดวิเคราะห์ซ้ำต้องมีตัวแปร "
-                        "AgreeS/AgreeP รายคนในไฟล์และ Setting "
-                        "ไม่สามารถถ่วงน้ำหนักค่าที่สรุปไว้ใน JSON ได้ "
-                        "กรุณารันจาก SPSS ต้นฉบับพร้อมเลือก Weight")
-        except ValueError as exc:
-            self._msg_error("Weight ไม่ถูกต้อง", str(exc))
-            if self._settings_batch_active:
-                self._settings_batch_fail_current("Weight", str(exc))
-            return
 
         if not self._prepare_long_qc_before_analysis(cross_filters):
             self.update_status("ยกเลิกการตรวจ QC", "warning")
@@ -5784,19 +5549,6 @@ class SpssProcessorApp(QMainWindow):
 
         self.log_message("=" * 50)
         self.log_message("เริ่มกระบวนการวิเคราะห์และส่งออก")
-        weights = self._case_weights(self.transformed_df)
-        self.log_message(f"Weight: {self._weight_name() or 'ไม่ถ่วงน้ำหนัก'}")
-        if weights is not None:
-            if 'S13' in self.transformed_df.columns:
-                self.log_message(
-                    "ฐานโรงพยาบาล: ใช้เฉพาะ S13 = Index1 "
-                    "สำหรับ Summary, T2B, Correlation และ Factor/Regression")
-            self.log_message(
-                f"ไม่ใช้แถว Weight ว่าง/ไม่เป็น finite/ไม่เกิน 0: "
-                f"{weights.isna().sum()} แถว (ข้อมูลหลังแปลง)")
-            self.log_message(
-                "SampleSize เป็นจำนวนผู้ตอบจริงที่ Weight > 0; "
-                "Regression ใช้ WLS และ HC1 p-values (ไม่ได้ระบุ survey design)")
         self.log_message("=" * 50)
         self.log_message(f"Primary Filter: {primary_filter}")
         cf_display = ', '.join(cross_filters) if cross_filters[0] else '(ไม่ระบุ)'
@@ -5820,7 +5572,7 @@ class SpssProcessorApp(QMainWindow):
         all_results = OrderedDict()
         all_output_parts = []
         use_json_agree_cache = False
-        if self.is_reanalyze_mode and not self._weight_name():
+        if self.is_reanalyze_mode:
             use_json_agree_cache = \
                 self._load_agree_summary_cache_from_json()
             if use_json_agree_cache:
@@ -6171,25 +5923,6 @@ class SpssProcessorApp(QMainWindow):
                 return int(per_index.max())
         return int(len(df_group))
 
-    def _weighted_sample_size(self, df_group):
-        """Sum respondent weights once, not once per rated Index1."""
-        if df_group.empty:
-            return 0.0
-        key = self._detect_respondent_key()
-        if key and key in df_group.columns:
-            respondents = df_group.drop_duplicates(subset=[key])
-        else:
-            keys = [c for c in self.id_vars if c in df_group.columns]
-            self._sample_size_approx = True
-            if keys:
-                respondents = df_group.drop_duplicates(subset=keys)
-            elif 'Index1' in df_group.columns:
-                return float(max(self._case_weights(group).sum()
-                                 for _, group in df_group.groupby('Index1')))
-            else:
-                respondents = df_group
-        return float(self._case_weights(respondents).sum())
-
     def _create_summary_df_logic(self, primary_filter, cross_filter):
         """ตรรกะการสร้าง Summary DataFrame"""
         try:
@@ -6202,8 +5935,7 @@ class SpssProcessorApp(QMainWindow):
             # --- E Group Mode: E columns ถูก merge แล้วจาก transformation (เช่น E_45) ---
             # ไม่ต้อง merge ซ้ำที่นี่
 
-            df_for_summary = self._weighted_frame(self.transformed_df)
-            corr_df = self._weighted_frame(corr_df)
+            df_for_summary = self.transformed_df
             groups_to_summarize = OrderedDict()
             corr_groups = OrderedDict()
             groups_to_summarize['Overall'] = df_for_summary
@@ -6240,7 +5972,7 @@ class SpssProcessorApp(QMainWindow):
 
             for name, df_group in groups_to_summarize.items():
                     if not df_group.empty:
-                        avg_values = self._weighted_mean(df_group, avg_cols_base)
+                        avg_values = df_group[avg_cols_base].mean()
                         summary_row_df = pd.DataFrame([avg_values])
                         summary_row_df['Filter'] = name
 
@@ -6269,9 +6001,6 @@ class SpssProcessorApp(QMainWindow):
                             regression_n = 0
                         summary_row_df['SampleSize'] = (
                             f"{base_n} / Reg={regression_n}")
-                        if self._weight_name():
-                            summary_row_df['SampleSize_Weighted'] = (
-                                self._weighted_sample_size(df_group))
                         summary_list.append(summary_row_df)
 
             if not summary_list:
@@ -6330,15 +6059,18 @@ class SpssProcessorApp(QMainWindow):
                     # (ดูความแรงของความสัมพันธ์ ไม่สนทิศทาง)
                     row = {'Filter': name}
                     if s_cols:
-                        s_corr = self._weighted_corrwith(df_group, s_cols, 'A').abs()
+                        s_corr = df_group[s_cols].corrwith(
+                            df_group['A']).abs()
                         for col, val in s_corr.items():
                             row['cor_' + col] = val
                     if p_cols:
-                        p_corr = self._weighted_corrwith(df_group, p_cols, 'A').abs()
+                        p_corr = df_group[p_cols].corrwith(
+                            df_group['A']).abs()
                         for col, val in p_corr.items():
                             row['cor_' + col] = val
                     if source_e_cols:
-                        e_corr = self._weighted_corrwith(df_group, source_e_cols, 'A').abs()
+                        e_corr = df_group[source_e_cols].corrwith(
+                            df_group['A']).abs()
                         for col, val in e_corr.items():
                             row[rename_dict.get(col, col)] = val
                     corr_rows.append(row)
@@ -6421,7 +6153,6 @@ class SpssProcessorApp(QMainWindow):
                         groups_to_summarize[nested_name] = subset
 
         for name, df_group in groups_to_summarize.items():
-            df_group = self._weighted_frame(df_group)
             if df_group.empty:
                 continue
             row_mask = summary_df['Filter'] == name
@@ -6459,9 +6190,7 @@ class SpssProcessorApp(QMainWindow):
                     dedup_keys
                 ].drop_duplicates() if dedup_keys else pd.DataFrame()
 
-            base_weights = self._case_weights(base_source_df)
-            total_base = (len(base_source_df) if base_weights is None
-                          else base_weights.sum())
+            total_base = len(base_source_df)
             if total_base == 0:
                 continue
 
@@ -6472,9 +6201,7 @@ class SpssProcessorApp(QMainWindow):
                     source_var = tr_col_lookup.get(
                         source_var, source_var)
                     if source_var in base_source_df.columns:
-                        indicator = base_source_df[source_var].isin(good_codes)
-                        t2b_sum = (indicator.sum() if base_weights is None
-                                   else base_weights[indicator].sum())
+                        t2b_sum = base_source_df[source_var].isin(good_codes).sum()
                         t2b_value = (t2b_sum / total_base) * 100 if total_base > 0 else 0
                         summary_df.loc[row_mask, agree_col_name] = t2b_value
 
@@ -6485,9 +6212,7 @@ class SpssProcessorApp(QMainWindow):
                     source_var = tr_col_lookup.get(
                         source_var, source_var)
                     if source_var in base_source_df.columns:
-                        indicator = base_source_df[source_var].isin(good_codes)
-                        t2b_sum = (indicator.sum() if base_weights is None
-                                   else base_weights[indicator].sum())
+                        t2b_sum = base_source_df[source_var].isin(good_codes).sum()
                         t2b_value = (t2b_sum / total_base) * 100 if total_base > 0 else 0
                         summary_df.loc[row_mask, agree_col_name] = t2b_value
 
@@ -6495,7 +6220,7 @@ class SpssProcessorApp(QMainWindow):
 
     def _run_factor_regression_logic(self, primary_filter, cross_filter):
         """ตรรกะการรัน Factor และ Regression"""
-        df_for_analysis = self._weighted_frame(self.transformed_df)
+        df_for_analysis = self.transformed_df
         all_cols = list(df_for_analysis.columns)
 
         if primary_filter and primary_filter not in all_cols: primary_filter = ""
@@ -6606,11 +6331,10 @@ class SpssProcessorApp(QMainWindow):
             settings_df = settings_df.reindex(range(max_len))
 
             settings_df.insert(0, 'Filter_Var', pd.Series(cross_filters))
-            settings_df.insert(0, 'Weight_Var', self.weight_var)
             settings_df.insert(0, 'E_Group', e_group_setting)
             settings_df.insert(0, 'T2B_Choice', self.t2b_choice_var.get())
             settings_df.insert(0, 'PathFile', self.original_filepath)
-            settings_df.loc[1:, ['PathFile', 'T2B_Choice', 'E_Group', 'Weight_Var']] = ''
+            settings_df.loc[1:, ['PathFile', 'T2B_Choice', 'E_Group']] = ''
 
             # --- Part 2: Label Sheet ---
             index1_label_data = list(self.index1_labels.items())
@@ -6969,7 +6693,7 @@ class SpssProcessorApp(QMainWindow):
             # เก็บค่า agree_* จาก Summary ลง JSON เฉพาะรอบปกติ
             # (โหมด Re-analyze ห้ามเขียนทับ JSON เดิม)
             saved_agree_json = False
-            if not self.is_reanalyze_mode and not self._weight_name():
+            if not self.is_reanalyze_mode:
                 saved_agree_json = self._save_agree_summary_to_json(
                     summary_df)
 
@@ -6987,8 +6711,7 @@ class SpssProcessorApp(QMainWindow):
                 for col_idx, header in enumerate(headers, 1):
                     if header is None: continue
 
-                    format_str = ('0.00' if header == 'SampleSize_Weighted'
-                                  else None)
+                    format_str = None
                     if header in ['S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E'] or \
                         (header.startswith(('S_', 'P_', 'E_')) and 'cor' not in header):
                         format_str = '0.00'
@@ -7223,8 +6946,6 @@ class SpssProcessorApp(QMainWindow):
         final_summary_df['Index'] = idx_val / 100
 
         main_order = ['Code Index1', 'Labe Index1', 'SampleSize', 'Filter', 'S', 'P', 'A level', 'A score', 'Index', 'C', 'E', 'B.S', 'B.P', 'B.C', 'B.E']
-        if self._weight_name():
-            main_order.insert(3, 'SampleSize_Weighted')
         final_summary_df.rename(columns={'Index1':'Code Index1'}, inplace=True)
 
         core_cols = sorted([c for c in final_summary_df.columns if c.startswith('CorE_')], key=lambda x: int(x.split('_')[1]))
@@ -7243,14 +6964,11 @@ class SpssProcessorApp(QMainWindow):
         final_column_order_existing = [col for col in final_column_order if col in final_summary_df.columns]
 
         excel_df = final_summary_df[final_column_order_existing]
-        if self._weight_name():
-            excel_df = excel_df.copy()
-            excel_df['Weight_Var'] = self._weight_name()
 
         return excel_df
 
     # ===================================================================
-    # CORE ANALYSIS LOGIC
+    # CORE ANALYSIS LOGIC (UNCHANGED)
     # ===================================================================
     def perform_factor_analysis(self, target_df):
         print(
@@ -7269,12 +6987,7 @@ class SpssProcessorApp(QMainWindow):
             f"ข้อมูลที่ใช้ในการวิเคราะห์องค์ประกอบ: "
             f"{len(df_factor)} แถว\n")
 
-        if self._weight_name():
-            df_factor, standardized, correlation = self._weighted_factor_input(target_df)
-            loadings_rotated_df = self._weighted_factor_loadings(
-                df_factor.columns, correlation)
-        else:
-            loadings_rotated_df = self._rotated_factor_loadings(df_factor)
+        loadings_rotated_df = self._rotated_factor_loadings(df_factor)
         print(
             "Rotation: Rotated Component Matrix "
             "(Equamax - SPSS Compatible):")
@@ -7323,9 +7036,8 @@ class SpssProcessorApp(QMainWindow):
         print("คำนวณ Factor Scores ด้วยวิธี Anderson-Rubin (PCA)...\n")
 
         loadings_matrix = loadings_rotated_df.to_numpy()
-        if not self._weight_name():
-            standardized = StandardScaler().fit_transform(df_factor)
-            correlation = df_factor.corr().values
+        standardized = StandardScaler().fit_transform(df_factor)
+        correlation = df_factor.corr().values
         inv_correlation = inv(correlation)
         temp_matrix = (
             loadings_matrix.T @ inv_correlation @ loadings_matrix)
@@ -7364,27 +7076,15 @@ class SpssProcessorApp(QMainWindow):
         dependent_var = 'ZA'; independent_vars = ['FAC1_1', 'FAC2_1', 'FAC3_1', 'FAC4_1']
         required_cols = [dependent_var] + independent_vars
         if not all(col in target_df.columns for col in required_cols): raise KeyError(f"ไม่พบคอลัมน์สำหรับ Regression: {', '.join(required_cols)}")
-        complete = self._weighted_frame(target_df).dropna(subset=required_cols)
-        df_regression = complete[required_cols].copy()
+        df_regression = target_df[required_cols].dropna().copy()
         if len(df_regression) < len(independent_vars) + 2: raise ValueError("ข้อมูลไม่เพียงพอสำหรับ Regression Analysis")
         print(f"ข้อมูลที่ใช้ในการวิเคราะห์ Regression: {len(df_regression)} แถว\n")
         Y = df_regression[dependent_var]; X_original = df_regression[independent_vars]; X = sm.add_constant(X_original)
-        weights = self._case_weights(complete)
-        model = (sm.OLS(Y, X).fit() if weights is None
-                 else sm.WLS(Y, X, weights=weights).fit(cov_type='HC1'))
+        model = sm.OLS(Y, X).fit()
         print("Regression Model Summary:"); print(model.summary()); print("\n" + "-"*50 + "\n")
         print("Standardized Coefficients (Beta):")
         unstandardized_coeffs = model.params.drop('const')
-        if weights is None:
-            betas = unstandardized_coeffs * (X_original.std() / Y.std())
-        else:
-            def weighted_std(values):
-                mean = np.average(values, weights=weights)
-                return np.sqrt(np.average((values - mean) ** 2, weights=weights))
-            y_std = weighted_std(Y)
-            if y_std <= 0:
-                raise ValueError("ZA มีค่าคงที่ ไม่สามารถคำนวณ Beta ได้")
-            betas = unstandardized_coeffs * X_original.apply(weighted_std) / y_std
+        betas = unstandardized_coeffs * (X_original.std() / Y.std())
         beta_df = pd.DataFrame({'Beta': betas}); print(beta_df); print("\n" + "-"*50 + "\n")
         print("Standardized Coefficients (Beta) - Sort:")
         score_to_factor_map = {f'FAC{i+1}_1': f'Factor{i+1}' for i in range(4)}
