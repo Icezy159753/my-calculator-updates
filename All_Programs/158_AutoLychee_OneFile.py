@@ -281,7 +281,7 @@ class Job:
     status: str = 'รอรัน'
     detail: str = ''
     id: str = field(default_factory=lambda: uuid4().hex)
-    # Post-processing after the Banner is exported (Delete Total + NA, post_total_na.py). Off by default;
+    # Post-processing after the Banner is exported (Delete Total + NA, post_total_na.py). On by default;
     # new fields go after `id` so positional Job(history, output, filter, base, status, detail) still works.
     total_na: bool = True  # on by default (user request); its empty-row option stays off
     total_na_empty_rows: bool = False
@@ -393,7 +393,10 @@ def manual_items(text: str) -> list[str]:
     return items
 
 
-def output_name(value: str) -> str:
+MAX_NAME = 120  # characters before '.xlsx'; Windows MAX_PATH (260) also has to fit the output folder
+
+
+def output_name(value: str, limit: int | None = MAX_NAME) -> str:
     value = value.strip()
     if value.lower().endswith('.xlsx'):
         value = value[:-5]
@@ -401,13 +404,21 @@ def output_name(value: str) -> str:
         raise ValueError('ชื่อไฟล์ว่างหรือมีอักขระที่ Windows ไม่รองรับ')
     if re.match(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)', value, re.I):
         raise ValueError('ชื่อนี้สงวนไว้สำหรับ Windows')
+    if limit is not None and len(value) > limit:
+        raise ValueError(f'ชื่อไฟล์ยาวเกิน {limit} ตัวอักษร')
     return value + '.xlsx'
 
 
 def job_output_name(job: Job) -> str:
-    stem = output_name(job.output)[:-5]
+    # characters/reserved-name checks on what the user typed; the length limit applies to the FINAL
+    # name, which carries the ' N%' / ' %' Type suffix added here
+    stem = output_name(job.output, limit=None)[:-5]
     stem = re.sub(r'\s+(?:N\s*%|%)$', '', stem, flags=re.I).rstrip()
-    return output_name(f'{stem} {job.report_type}')
+    suffix = f' {job.report_type}'
+    if len(stem) + len(suffix) > MAX_NAME:
+        raise ValueError(f'ชื่อไฟล์ยาวเกิน {MAX_NAME} ตัวอักษร (รวม “{suffix.strip()}” ที่ต่อท้ายให้อัตโนมัติ) '
+                         f'— ตัดชื่อให้เหลือไม่เกิน {MAX_NAME - len(suffix)} ตัว')
+    return output_name(stem + suffix)
 
 
 def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
@@ -432,6 +443,9 @@ def validate_jobs(jobs: list[Job], folder: Path, check_files=True):
                 raise ValueError('Base ต้องเป็นจำนวนเต็มบวก หรือเว้นว่าง')
             if job.del_sig and not re.search(r'[A-Za-z]', job.del_sig_groups or ''):
                 raise ValueError('เปิด Del Sig แล้วแต่ยังไม่ได้ใส่กลุ่ม Sig (ดับเบิลคลิกแถวเพื่อตั้งค่า)')
+            if job.del_sig:
+                from post_del_sig import parse_sig_groups
+                parse_sig_groups(job.del_sig_groups)  # ValueError for groups Del Sig would mis-read
             if job.banner_manual and not manual_items(job.banner_manual_items):
                 raise ValueError('เปิด Banner Manual แล้วแต่ยังไม่ได้ใส่ข้อ (คลิกช่อง Banner Manual เพื่อตั้งค่า)')
             if job.status != 'OK':
@@ -1011,7 +1025,11 @@ from pathlib import Path
 sys.coinit_flags = 0  # UI Automation uses MTA; STA can stall WPF providers.
 warnings.filterwarnings('ignore', message='Apply externally defined coinit_flags.*', category=UserWarning)
 import comtypes.client
-from _ctypes import COMError  # what comtypes raises when a UIA element is gone
+try:
+    from _ctypes import COMError  # what comtypes raises when a UIA element is gone
+except ImportError:  # only non-Windows Pythons (developer --check / tests) lack it
+    class COMError(Exception):
+        pass
 comtypes.client.gen_dir = None  # No generated code in the system Python installation.
 from pywinauto import Desktop
 from pywinauto.keyboard import send_keys
@@ -1531,7 +1549,11 @@ class Lyche:
         start = time.monotonic()
         last = None
         while time.monotonic() - start < timeout:
+            before = time.monotonic()
             self.checkpoint()
+            paused = time.monotonic() - before
+            if paused > .5:  # time spent paused does not count against this step's timeout
+                start += paused
             error = self.lyche_error()
             if error:
                 raise RuntimeError(f'Lyche แจ้งข้อผิดพลาด: {error} — ตรวจการเชื่อมต่อ/ล็อกอินของ Lyche แล้วลองใหม่')
@@ -3591,7 +3613,7 @@ def _delete_extra_total_and_na_columns_legacy(ws: Any, target_row: int) -> tuple
     col = 1
 
     while col <= last_col:
-        if _cell_text(ws.Range(_cell_ref(target_row, col)).Value).upper() == "TOTAL":
+        if _cell_text(ws.Range(_cell_ref(target_row, col)).Value).strip().upper() == "TOTAL":
             if not found_total:
                 found_total = True
                 col += 1
@@ -3606,7 +3628,7 @@ def _delete_extra_total_and_na_columns_legacy(ws: Any, target_row: int) -> tuple
     na_deleted = 0
     col = 1
     while col <= last_col:
-        if _cell_text(ws.Range(_cell_ref(target_row, col)).Value).upper() == "NA":
+        if _cell_text(ws.Range(_cell_ref(target_row, col)).Value).strip().upper() == "NA":
             ws.Columns(col).Delete()
             last_col -= 1
             na_deleted += 1
@@ -3642,7 +3664,7 @@ def _delete_extra_total_and_na_columns(ws: Any, target_row: int) -> tuple[int, i
     delete: list[int] = []
     total_deleted = na_deleted = 0
     for col, value in enumerate(values, 1):
-        text = _cell_text(value).upper()
+        text = _cell_text(value).strip().upper()
         if text == "TOTAL":
             if seen_total:
                 delete.append(col)
@@ -3938,6 +3960,119 @@ def _excel_dispatch(dispatch: Any) -> Any:
     return dynamic.Dispatch(dispatch)
 
 
+def _process_ids() -> set[int] | None:
+    """PIDs running right now (None if they cannot be listed)."""
+    try:
+        import win32process
+
+        return set(win32process.EnumProcesses())
+    except Exception:
+        return None
+
+
+def _set_kill_on_close(job: Any, on: bool) -> None:
+    if job is None:
+        return
+    try:
+        import win32job
+
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        flags = info["BasicLimitInformation"]["LimitFlags"]
+        kill = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info["BasicLimitInformation"]["LimitFlags"] = (flags | kill) if on else (flags & ~kill)
+        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+    except Exception:
+        pass
+
+
+def _kill_excel_with_this_process(excel: Any, existing_pids: set[int] | None) -> Any:
+    """EXCEL.EXE is started by DCOM, outside the post child's job object, so Stop / kill of the
+    child left a hidden Excel (holding the client file) running. Put it in its own
+    KILL_ON_JOB_CLOSE job, closed when this process exits or process_files() ends.
+    Only an Excel whose PID did not exist before CoCreateInstance (`existing_pids`) is ever put in
+    the job, so the user's own Excel can never be tied to us; when that cannot be proven, no job.
+    Best effort; NOT runtime-tested (Windows only)."""
+    if existing_pids is None:
+        return None
+    try:
+        import win32api
+        import win32con
+        import win32job
+        import win32process
+
+        _, pid = win32process.GetWindowThreadProcessId(int(excel.Hwnd))
+        if not pid or pid in existing_pids:
+            return None
+        job = win32job.CreateJobObject(None, "")
+        _set_kill_on_close(job, True)
+        handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, pid)
+        win32job.AssignProcessToJobObject(job, handle)
+        return job
+    except Exception:
+        return None
+
+
+def _foreign_workbooks(excel: Any, work_dir: Path) -> list[str]:
+    """Workbooks open in our Excel that are not our working copies (a file the user opened that
+    Windows handed to this hidden instance)."""
+    ours = str(Path(work_dir)).lower()
+    try:
+        names = [str(excel.Workbooks.Item(i).FullName) for i in range(1, int(excel.Workbooks.Count) + 1)]
+    except Exception:
+        return []
+    return [name for name in names if not name.lower().startswith(ours)]
+
+
+OWNER_FILE = "owner.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    import sys
+
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":  # NOT os.kill(pid, 0): on Windows that terminates the process
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return kernel32.GetLastError() == 5  # access denied: it exists
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT: still running
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sweep_stale_work_dirs() -> None:
+    """A killed post child cannot run TemporaryDirectory's cleanup: remove working copies left in
+    %TEMP% by runs whose process is gone (owner.pid). A folder of a live run (e.g. a second app
+    window) is never touched; one without owner.pid is left alone for its first 10 minutes."""
+    import tempfile
+    import time
+
+    for folder in Path(tempfile.gettempdir()).glob("autolychee_totalna_*"):
+        try:
+            owner = int((folder / OWNER_FILE).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            owner = None
+        try:
+            if owner is not None and _pid_alive(owner):
+                continue
+            if owner is None and time.time() - folder.stat().st_mtime < 600:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def process_files(
     jobs: list[dict[str, Any]],
     work_dir: Path,
@@ -3951,9 +4086,10 @@ def process_files(
     original_get_class = gencache.GetClassForCLSID
     gencache.GetClassForCLSID = lambda clsid: None
     pythoncom.CoInitialize()
-    excel = None
+    excel = dispatch = excel_job = None
     try:
         excel_clsid = pywintypes.IID("{00024500-0000-0000-C000-000000000046}")
+        existing_pids = _process_ids()
         dispatch = pythoncom.CoCreateInstance(
             excel_clsid,
             None,
@@ -3961,6 +4097,7 @@ def process_files(
             pythoncom.IID_IDispatch,
         )
         excel = _excel_dispatch(dispatch)
+        excel_job = _kill_excel_with_this_process(excel, existing_pids)
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.EnableEvents = False
@@ -3995,10 +4132,23 @@ def process_files(
                 progress(index, str(source), "error", str(exc))
     finally:
         if excel is not None:
-            try:
-                excel.Quit()
-            except Exception:
-                pass
+            if _foreign_workbooks(excel, work_dir):
+                # The user's own file is open in this Excel: Quit (DisplayAlerts=False) would discard
+                # their changes and the job would kill it. Hand the instance over instead.
+                _set_kill_on_close(excel_job, False)
+                for name, value in (("DisplayAlerts", True), ("EnableEvents", True),
+                                    ("Visible", True), ("UserControl", True)):
+                    try:
+                        setattr(excel, name, value)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+        excel = dispatch = None  # release the COM references before CoUninitialize
+        excel_job = None  # closing the job kills an Excel that ignored Quit()
         pythoncom.CoUninitialize()
         gencache.GetClassForCLSID = original_get_class
 
@@ -4060,7 +4210,10 @@ def process_in_place(path: Path, delete_empty_rows: bool = False,
         if progress is not None:
             progress(detail)
 
+    _sweep_stale_work_dirs()
     with tempfile.TemporaryDirectory(prefix="autolychee_totalna_") as work:
+        (Path(work) / OWNER_FILE).write_text(str(os.getpid()), encoding="ascii")
+
         def run() -> None:
             try:
                 process_files([job], Path(work), report, delete_empty_rows=delete_empty_rows)
@@ -4120,19 +4273,67 @@ def clean_header(text):
     return "".join(re.findall(r"[A-Za-z]", text)).upper()
 
 def parse_sig_groups(sig_input):
-    groups = [g.strip().upper() for g in sig_input.split(",") if g.strip()]
-    expanded = []
-    for g in groups:
-        if "-" in g and len(g) == 3:
-            a,b = g.split("-")
-            expanded.append("".join(chr(c) for c in range(ord(a), ord(b)+1)))
-        else:
-            expanded.append("".join(sorted(set(re.findall(r"[A-Z]", g)))))
+    """'A-C, D-F' / 'ABC,DE' -> {letter: group letters}. Spaces, en/em dashes and reversed ranges
+    ('C - A') mean the same as 'A-C'. Raises ValueError for a group it cannot read or a letter that
+    is in two groups (previously 'A - C' silently became {A, C} and 'C-A' nothing)."""
     out = {}
-    for rng in expanded:
+    for raw in str(sig_input or "").split(","):
+        g = re.sub(r"[\s\u2010-\u2015\u2212]", lambda m: "" if m.group().isspace() else "-", raw).upper()
+        if not g:
+            continue
+        m = re.fullmatch(r"([A-Z])-([A-Z])", g)
+        if m:
+            lo, hi = sorted(m.groups())
+            rng = "".join(chr(c) for c in range(ord(lo), ord(hi) + 1))
+        elif re.fullmatch(r"[A-Z]+", g):
+            rng = "".join(sorted(set(g)))
+        else:
+            raise ValueError(f"กลุ่ม Sig อ่านไม่ได้: {raw.strip()!r} (ใช้แบบ A-C หรือ ABC คั่นด้วย ,)")
         for ch in rng:
+            if out.get(ch, rng) != rng:
+                raise ValueError(f"ตัวอักษร {ch} อยู่ในกลุ่ม Sig มากกว่าหนึ่งกลุ่ม ({out[ch]} และ {rng})")
             out[ch] = rng
     return out
+
+
+def looks_like_sig(text):
+    """A Lychee Sig cell: letters, each at most once, upper case (95 %) and lower case (90 %) each in
+    alphabetical order, optionally 'ADJ', separated by spaces/commas. 'N/A', 'n<30', 'NA', 'Mean',
+    'Base too small' are not Sig text and must never be filtered."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    for tok in re.split(r"[\s,]+", text.strip()):
+        if not tok or tok.upper() == "ADJ":
+            continue
+        if not re.fullmatch(r"[A-Za-z_]+", tok):
+            return False
+        letters = [c for c in tok if c != "_"]
+        upper = [c for c in letters if c.isupper()]
+        lower = [c for c in letters if c.islower()]
+        if upper != sorted(upper) or lower != sorted(lower):
+            return False
+        if len({c.upper() for c in letters}) != len(letters):
+            return False
+    return True
+
+
+def display_number(value, number_format="General"):
+    """How Excel shows `value` with `number_format`, for gluing Sig letters beside a number
+    ('7.3BCD', not '7.333333333333333BCD'). Rounds half away from zero like Excel (12.25 -> 12.3).
+    Also used by Cut N/% (post_cut_percent)."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    fmt = str(number_format or "General").split(";")[0]
+    m = re.search(r"0(?:\.(0+))?", fmt)
+    if not m:
+        return f"{value:.10g}" if isinstance(value, float) else str(value)
+    percent = "%" in fmt
+    number = Decimal(repr(value)) * (100 if percent else 1)  # repr: the decimal digits Excel shows
+    number = number.quantize(Decimal(1).scaleb(-len(m.group(1) or "")), rounding=ROUND_HALF_UP)
+    sep = "," if "," in fmt[:m.start()] else ""
+    return f"{number:{sep}f}" + ("%" if percent else "")
 
 def detect_letter_header_row(ws, start_row, end_row, min_seq=3):
     scan_until = min(end_row, start_row + 120)
@@ -4181,7 +4382,7 @@ def find_last_data_row(ws, start_row, col_indexes):
     return last
 
 def filter_sig_text(text, allowed_letters, preserve_tokens=("ADJ",)):
-    if not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text or not looks_like_sig(text):
         return text
     out = text
     dynamic_preserve = tuple(
@@ -4251,10 +4452,18 @@ def collect_sig_rows_and_merge(ws, start_row, end_row, label_cols, data_cols, ke
             # The Sig must attach beside the % on THIS row, not the Count row.
             merge_target = r
             continue
+        # Only the one Sig row of each category is merged/deleted. Later unlabeled rows (spacer
+        # between One Sheet tables, footnotes, the next table's 'Contents' row) and rows holding
+        # numbers or ordinary text are left alone.
+        if unlabeled_after_value != (2 if keep_first_unlabeled else 1):
+            continue
+        row_values = [ws.cell(row=r, column=c).value for c in data_cols]
+        if any(v not in (None, "") and not (isinstance(v, str) and (not v.strip() or looks_like_sig(v)))
+               for v in row_values):
+            continue
 
         target = merge_target if merge_target is not None else prev_value_row
-        for c in data_cols:
-            sig_val = ws.cell(row=r, column=c).value
+        for c, sig_val in zip(data_cols, row_values):
             if (sig_val and isinstance(sig_val, str) and sig_val.strip()
                     and re.search(r'[A-Za-z]', sig_val)
                     and not re.search(r'\d', sig_val)):
@@ -4263,7 +4472,7 @@ def collect_sig_rows_and_merge(ws, start_row, end_row, label_cols, data_cols, ke
                 if existing is None or (isinstance(existing, str) and not str(existing).strip()):
                     val_cell.value = sig_val.strip()
                 else:
-                    val_cell.value = str(existing) + sig_val.strip()
+                    val_cell.value = display_number(existing, val_cell.number_format) + sig_val.strip()
 
         rows_to_delete.append(r)
 
@@ -4337,10 +4546,11 @@ def renumber_col_a_by_col_b(ws, crosstab_mode="NORMAL"):
                     idx += 1
                 continue
             if has_label:
-                a_cell.value = idx
+                # keep Lychee's own codes (1, 2, 98 …); only fill a blank code cell
+                if a_cell.value in (None, "") and str(b).strip().upper() != "TOTAL":
+                    a_cell.value = idx
                 idx += 1
-            else:
-                a_cell.value = None
+            # unlabeled rows (spacer, footnote, next table's 'Contents' link) are never cleared
 
 def transfer_bottom_borders_before_delete(ws, rows_to_delete):
     """
@@ -4413,9 +4623,8 @@ def delete_rows_preserving_merges(ws, rows_to_delete):
     # Strip hyperlinks ONLY on the rows we are about to delete. Removing every
     # hyperlink in the sheet (as an older version did) wiped the navigation
     # links in the header rows ("Contents"/"Info"/"Next") so they stopped
-    # working after a Sig-beside run. Surviving rows keep their hyperlinks;
-    # openpyxl rewrites each one's ref from cell.coordinate at save time, so the
-    # rebuilt (shifted) cells below still point at the right place.
+    # working after a Sig-beside run. Surviving rows keep their hyperlinks; their
+    # refs are moved with the cells at the end of this function.
     for r in del_set:
         for cell in ws[r]:
             if cell.hyperlink is not None:
@@ -4504,6 +4713,13 @@ def delete_rows_preserving_merges(ws, rows_to_delete):
         if nr1 == nr2 and c1 == c2:
             continue  # collapsed to a single cell -> nothing to merge
         ws.merged_cells.add(CellRange(min_col=c1, min_row=nr1, max_col=c2, max_row=nr2))
+
+    # openpyxl does NOT re-key a hyperlink when its cell moves (Hyperlink.ref is fixed when the
+    # link is assigned and written as-is): without this the One Sheet 'Contents' links of the
+    # tables below a deleted row stay at their old addresses (on empty/other cells).
+    for cell in list(ws._cells.values()):
+        if cell.hyperlink is not None and cell.hyperlink.ref != cell.coordinate:
+            cell.hyperlink.ref = cell.coordinate
 
 def add_bottom_grid_to_last_used_row(ws):
     last_used_row = 0
@@ -4633,13 +4849,14 @@ def place_sig_stamp(ws, header_row, sig_text, col=3):
     cell.font = Font(name='Arial', size=9, color='FFFF0000')
 
 
-def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_beside=False):
+def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_beside=False, raise_errors=False):
     import openpyxl
     try:
         rules_by_char = parse_sig_groups(sig_input)
         wb = openpyxl.load_workbook(file_path)
         sheets_to_process = [n for n in wb.sheetnames if n.lower() not in ['contents', 'info']]
         cells_changed_count = 0
+        tables_moved = False  # rows deleted on a sheet holding several tables (One Sheet)
 
         for sheet_name in sheets_to_process:
             ws = wb[sheet_name]
@@ -4715,6 +4932,8 @@ def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_
                     continue
 
                 for c, letter in col_map.items():
+                    if letter not in rules_by_char:
+                        continue  # same as NORMAL: a column in no Sig group keeps its letters
                     allowed = set(rules_by_char.get(letter, ""))
                     for r in range(data_start, data_end + 1):
                         v = ws.cell(row=r, column=c).value
@@ -4734,6 +4953,7 @@ def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_
             if rows_to_delete_in_sheet:
                 transfer_bottom_borders_before_delete(ws, rows_to_delete_in_sheet)
                 delete_rows_preserving_merges(ws, rows_to_delete_in_sheet)
+                tables_moved = tables_moved or len(stub_starts) > 1
 
                 renumber_col_a_by_col_b(ws, crosstab_mode)
                 add_bottom_grid_to_last_used_row(ws)
@@ -4741,10 +4961,16 @@ def process_single_excel_file(file_path, sig_input, crosstab_mode="NORMAL", sig_
             if sig_beside:
                 merge_col_ab_pairs_for_n_percent(ws, crosstab_mode)
 
+        if tables_moved and "Contents" in wb.sheetnames:
+            # tables below deleted rows moved up: point the Contents links at their new rows
+            from post_cut_percent import repair_contents_table_links
+            repair_contents_table_links(wb)
         wb.save(file_path)
         return cells_changed_count, "Success"
 
     except Exception as e:
+        if raise_errors:
+            raise  # Auto Lychee: keep the traceback for logs/error-post-*.txt
         return 0, f"Error: {e}"
 
 
@@ -4767,7 +4993,8 @@ def process_in_place(file_path, sig_input, crosstab_mode="NORMAL", sig_beside=Fa
         shutil.copy2(file_path, working)
         from fast_styles import exact_style_cache
         with exact_style_cache():  # same output bytes, faster openpyxl style handling
-            cells, status = process_single_excel_file(str(working), sig_input.strip(), crosstab_mode, sig_beside)
+            cells, status = process_single_excel_file(str(working), sig_input.strip(), crosstab_mode, sig_beside,
+                                                      raise_errors=True)
         if status != "Success":
             raise RuntimeError(f"Del Sig ไม่สำเร็จ: {status}")
         pending = file_path.with_name(f".{file_path.stem}.del_sig_pending{file_path.suffix}")
@@ -5294,7 +5521,7 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
                 if base_value is None or str(base_value).strip() == "":
                     target_cell.value = sig_value
                 else:
-                    target_cell.value = f"{base_value}\n{sig_value}"
+                    target_cell.value = f"{_display_number(base_value, target_cell.number_format)}\n{sig_value}"
                 new_alignment = copy(target_cell.alignment)
                 new_alignment.wrap_text = True
                 target_cell.alignment = new_alignment
@@ -5310,7 +5537,7 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
             sheet.row_dimensions[target_row].height = max(target_height, target_height + sig_height)
             thin_border = Side(border_style="thin", color="000000")
             for cell in label_cells:
-                if cell.border.bottom.style is None:
+                if _side_style(cell.border.bottom) is None:
                     cell.border = Border(
                         left=cell.border.left,
                         right=cell.border.right,
@@ -5383,10 +5610,10 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
                 label_cell.fill = copy(label_fill)
             for cell in (left_cell, label_cell):
                 cell.border = Border(
-                    left=cell.border.left if cell.border.left.style else thin_border,
-                    right=cell.border.right if cell.border.right.style else thin_border,
-                    top=cell.border.top if cell.border.top.style else thin_border,
-                    bottom=cell.border.bottom if cell.border.bottom.style else thin_border,
+                    left=cell.border.left if _side_style(cell.border.left) else thin_border,
+                    right=cell.border.right if _side_style(cell.border.right) else thin_border,
+                    top=cell.border.top if _side_style(cell.border.top) else thin_border,
+                    bottom=cell.border.bottom if _side_style(cell.border.bottom) else thin_border,
                 )
 
     def normalize_single_row_table_borders(sheet, max_col: int) -> None:
@@ -5416,10 +5643,10 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
             for col_idx in range(1, max_col + 1):
                 cell = sheet.cell(row=row_idx, column=col_idx)
                 cell.border = Border(
-                    left=cell.border.left if cell.border.left.style else thin_border,
-                    right=cell.border.right if cell.border.right.style else thin_border,
-                    top=cell.border.top if cell.border.top.style else thin_border,
-                    bottom=cell.border.bottom if cell.border.bottom.style else thin_border,
+                    left=cell.border.left if _side_style(cell.border.left) else thin_border,
+                    right=cell.border.right if _side_style(cell.border.right) else thin_border,
+                    top=cell.border.top if _side_style(cell.border.top) else thin_border,
+                    bottom=cell.border.bottom if _side_style(cell.border.bottom) else thin_border,
                 )
 
     def remove_consecutive_duplicate_labels(sheet) -> None:
@@ -5462,16 +5689,16 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
                 value_cell = sheet.cell(row=row_idx, column=col_idx)
                 sig_cell = sheet.cell(row=sig_row, column=col_idx)
                 value_cell.border = Border(
-                    left=value_cell.border.left if value_cell.border.left.style else thin_border,
-                    right=value_cell.border.right if value_cell.border.right.style else thin_border,
-                    top=value_cell.border.top if value_cell.border.top.style else thin_border,
+                    left=value_cell.border.left if _side_style(value_cell.border.left) else thin_border,
+                    right=value_cell.border.right if _side_style(value_cell.border.right) else thin_border,
+                    top=value_cell.border.top if _side_style(value_cell.border.top) else thin_border,
                     bottom=value_cell.border.bottom,
                 )
                 sig_cell.border = Border(
-                    left=sig_cell.border.left if sig_cell.border.left.style else thin_border,
-                    right=sig_cell.border.right if sig_cell.border.right.style else thin_border,
+                    left=sig_cell.border.left if _side_style(sig_cell.border.left) else thin_border,
+                    right=sig_cell.border.right if _side_style(sig_cell.border.right) else thin_border,
                     top=sig_cell.border.top,
-                    bottom=sig_cell.border.bottom if sig_cell.border.bottom.style else thin_border,
+                    bottom=sig_cell.border.bottom if _side_style(sig_cell.border.bottom) else thin_border,
                 )
 
     def normalize_one_sheet_header_fill(sheet, max_col: int) -> None:
@@ -5549,8 +5776,8 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
             text = str(value or "").strip()
             if not text:
                 continue
-            if not re.fullmatch(r"[A-Z]+", text):
-                return False
+            if not (re.fullmatch(r"[A-Z]+", text) or (re.fullmatch(r"[A-Za-z]+", text) and looks_like_sig(text))):
+                return False  # upper case as before; lower case (90 %) only if it reads as Sig letters
             has_sig = True
         return has_sig
 
@@ -5960,6 +6187,14 @@ def resolve_input_items(items: List[str]) -> Tuple[List[Path], List[str]]:
 
 # ===================== Auto Lychee integration =====================
 
+def _side_style(side):
+    """Border side style; a side missing from the file's border XML is None in openpyxl."""
+    return getattr(side, "style", None)
+
+
+from post_del_sig import display_number as _display_number, looks_like_sig  # one definition of each
+
+
 CUT_MODES = {"both": [KEEP_COUNT, KEEP_PERCENT], "count": [KEEP_COUNT], "percent": [KEEP_PERCENT]}
 
 
@@ -5969,7 +6204,7 @@ def output_stem_no_date(source_stem: str, keep_mode: str = KEEP_COUNT) -> str:
     stem = re.sub(r"_processed(?:_\d+)?$", "", source_stem, flags=re.IGNORECASE)
     output_token = "%" if keep_mode == KEEP_PERCENT else "N"
     stem = re.sub(r"(?i)\bN\s*%", output_token, stem)
-    stem = re.sub(r"(?i)(?:\s+)(?:N|%)$", "", stem.strip()).rstrip()
+    stem = re.sub(r"(?i)(?:^|\s+)(?:N|%)$", "", stem.strip()).rstrip()
     return f"{stem} {output_token}" if stem else output_token
 
 
@@ -6099,6 +6334,22 @@ def post_process(job, path):
 CUT_LABELS = {'both': 'N + %', 'count': 'N Only', 'percent': '% Only'}
 
 
+def save_error_log(config, bot, label=''):
+    """logs/error-<time>.txt with the current traceback (and a screenshot of Lyche)."""
+    try:
+        log_dir = Path(config['control_dir']).parent / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        text = (f'{label}\n' if label else '') + traceback.format_exc()
+        (log_dir / f'error-{stamp}.txt').write_text(text, encoding='utf-8')
+        try:
+            bot.main().capture_as_image().save(log_dir / f'error-{stamp}.png')
+        except Exception:
+            pass
+    except OSError:
+        pass
+
+
 def post_main():
     """`AutoLychee_OneFile.py --post` (exe: `… --post`): the post-processing child. Reads one
     task per stdin line, runs post_process() on it and reports the row's final status itself.
@@ -6110,20 +6361,28 @@ def post_main():
     for line in sys.stdin:
         if not line.strip():
             continue
-        task = json.loads(line)
-        job, path = Job(**task['job']), Path(task['path'])
         try:
+            task = json.loads(line)
+            if not isinstance(task, dict):
+                raise ValueError('not an object')
+        except ValueError as exc:
+            emit('log', text=f'หลังรัน: ข้ามคำสั่งที่อ่านไม่ได้ ({exc})')
+            continue
+        job = Job(id=str((task.get('job') or {}).get('id', '')))
+        path = Path(str(task.get('path', '')))
+        try:
+            job, path = Job(**task['job']), Path(task['path'])
             started = time.process_time()
             detail = task['detail'] + ' | ' + post_process(job, path)
             if os.environ.get('LYCHE_CPU_DEBUG'):
                 emit('log', text=f'cpu post-processing {path.name}: {time.process_time() - started:.1f}s')
             emit('status', id=job.id, status='OK', detail=detail, base=task['base'])
         except Exception as exc:
-            emit('status', id=job.id, status='ผิดพลาด', detail=f"{task['detail']} | หลังรันไม่สำเร็จ: {exc}",
-                 base=task['base'])
+            emit('status', id=job.id, status='ผิดพลาด', detail=f"{task.get('detail', '')} | หลังรันไม่สำเร็จ: {exc}",
+                 base=task.get('base', ''))
             emit('log', text=f'หลังรัน {path.name} ไม่สำเร็จ: {exc}')
             try:
-                log_dir = Path(task['log_dir'])
+                log_dir = Path(task.get('log_dir') or '.')
                 log_dir.mkdir(parents=True, exist_ok=True)
                 (log_dir / f'error-post-{datetime.now():%Y%m%d-%H%M%S}.txt').write_text(
                     traceback.format_exc(), encoding='utf-8')
@@ -6351,38 +6610,58 @@ def main():
                 post = PostPipeline(Path(config['control_dir']).parent / 'logs')
             with bot.background_session():  # Lyche stays off-screen for the whole queue
                 loaded = None
+                failures_in_a_row = 0
                 for job in jobs:
                     if job.status == 'OK':
                         continue
                     current = job
-                    emit('status', id=job.id, status='กำลังรัน', detail='กำลังโหลด Banner')
-                    # Banner Manual changes the loaded Banner, so a row reuses what is loaded only when
-                    # both the History and its manual items are the same as the previous row's.
-                    wanted = (job.history, tuple(manual_items(job.banner_manual_items)) if job.banner_manual else ())
-                    if wanted != loaded:
-                        bot.load(job.history, source)
-                        if wanted[1]:
-                            emit('status', id=job.id, status='กำลังรัน', detail='Banner Manual')
-                            bot.set_banner_items(list(wanted[1]))
-                        loaded = wanted
-                    base = bot.set_filter(job.filter, job.base)
-                    emit('status', id=job.id, status='กำลังรัน', detail='Tabulate / Export')
-                    path = folder / job_output_name(job)
-                    # the row's last Step; Banner Manual rows export with Analysis Axis only (user rule:
-                    # a One Sheet export of a manual Banner said Saved but left no file)
-                    bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not job.banner_manual)
-                    detail = f'Saved | {path}'
-                    if bot.matrix and job.del_sig and job.del_sig_mode != 'MATRIX':
-                        job.del_sig_mode = 'MATRIX'  # user rule: a Matrix History → Del Sig in Matrix mode
-                        emit('log', text=f'{job.output}: Banner แบบ Matrix → Del Sig ใช้ประเภท Matrix')
-                    base = '' if base is None else str(base)
-                    cpu_debug('Lyche steps')
-                    if job.total_na or job.del_sig or job.cut_percent:
-                        emit('status', id=job.id, status='กำลังรัน', detail='Saved · รอทำขั้นหลังรัน', base=base)
-                        post.submit(job, path, detail, base)
-                    else:
-                        emit('status', id=job.id, status='OK', detail=detail, base=base)
-                    current = None
+                    try:
+                        emit('status', id=job.id, status='กำลังรัน', detail='กำลังโหลด Banner')
+                        # Banner Manual changes the loaded Banner, so a row reuses what is loaded only when
+                        # both the History and its manual items are the same as the previous row's.
+                        wanted = (job.history, tuple(manual_items(job.banner_manual_items)) if job.banner_manual else ())
+                        if wanted != loaded:
+                            bot.load(job.history, source)
+                            if wanted[1]:
+                                emit('status', id=job.id, status='กำลังรัน', detail='Banner Manual')
+                                bot.set_banner_items(list(wanted[1]))
+                            loaded = wanted
+                        base = bot.set_filter(job.filter, job.base)
+                        emit('status', id=job.id, status='กำลังรัน', detail='Tabulate / Export')
+                        path = folder / job_output_name(job)
+                        # the row's last Step; Banner Manual rows export with Analysis Axis only (user rule:
+                        # a One Sheet export of a manual Banner said Saved but left no file)
+                        bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not job.banner_manual)
+                        detail = f'Saved | {path}'
+                        if bot.matrix and job.del_sig and job.del_sig_mode != 'MATRIX':
+                            job.del_sig_mode = 'MATRIX'  # user rule: a Matrix History → Del Sig in Matrix mode
+                            emit('log', text=f'{job.output}: Banner แบบ Matrix → Del Sig ใช้ประเภท Matrix')
+                        base = '' if base is None else str(base)
+                        cpu_debug('Lyche steps')
+                        if job.total_na or job.del_sig or job.cut_percent:
+                            emit('status', id=job.id, status='กำลังรัน', detail='Saved · รอทำขั้นหลังรัน', base=base)
+                            post.submit(job, path, detail, base)
+                        else:
+                            emit('status', id=job.id, status='OK', detail=detail, base=base)
+                        current = None
+                    except Stopped:
+                        raise
+                    except Exception as exc:
+                        # One failed row (bad filter, missing History, Lyche error box…) used to end
+                        # the whole queue. Record it, close Lyche's leftover dialogs and go on; two
+                        # failures in a row mean Lyche itself is stuck: stop as before.
+                        failures_in_a_row += 1
+                        emit('status', id=job.id, status='ผิดพลาด', detail=str(exc))
+                        current = None
+                        if failures_in_a_row >= 2:
+                            raise
+                        save_error_log(config, bot, job.output)
+                        loaded = None  # load the Banner again for the next row
+                        bot.close_leftover_dialogs()
+                        bot.checkpoint()
+                        emit('log', text=f'{job.output}: ผิดพลาด ({exc}) — ข้ามไปแถวถัดไป')
+                        continue
+                    failures_in_a_row = 0
                 try:  # user rule: close the Cross Tabulation window right after the last row of the run
                     bot.close_window()
                 except Exception as exc:
@@ -6416,15 +6695,7 @@ def main():
             except Exception:
                 pass
             post.close(kill=True)
-        log_dir = Path(config['control_dir']).parent / 'logs'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        (log_dir / f'error-{stamp}.txt').write_text(traceback.format_exc(), encoding='utf-8')
-        if bot:
-            try:
-                bot.main().capture_as_image().save(log_dir / f'error-{stamp}.png')
-            except Exception:
-                pass
+        save_error_log(config, bot)
         emit('error', text=str(exc))
         sys.exit(1)
 
@@ -6461,7 +6732,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu, QProgressBar, QListView,
 )
 from chrome import MacWindowMixin
-from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
+from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed, job_output_name
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -6539,6 +6810,13 @@ QPushButton#primary:pressed { background: qlineargradient(x1:0, y1:0, x2:1, y2:0
 QPushButton:disabled, QPushButton#primary:disabled, QPushButton#blue:disabled, QPushButton#purple:disabled, QPushButton#gold:disabled,
 QPushButton#amber:disabled, QPushButton#red:disabled, QPushButton#secondary:disabled { background: #eef2f8; color: #a9b4c6; }
 QPushButton#plain:disabled, QPushButton#icon:disabled { background: transparent; color: #b3bdcc; }
+/* v3 L3: visible keyboard focus. Buttons have no border, so the 2px ring takes 2px of padding. */
+QPushButton#secondary:focus, QPushButton#blue:focus, QPushButton#purple:focus, QPushButton#gold:focus,
+QPushButton#amber:focus, QPushButton#red:focus { border: 2px solid #2a8de9; padding: 5px 13px; }
+QPushButton#plain:focus { border: 2px solid #2a8de9; padding: 5px 8px; }
+QPushButton#icon:focus { border: 2px solid #2a8de9; padding: 4px 0; }
+QPushButton#primary:focus { border: 2px solid #12318f; padding: 7px 20px; }
+QPushButton#segLeft:focus, QPushButton#segRight:focus { border: 1px solid #2a8de9; }
 
 QLineEdit, QComboBox, QSpinBox { background: #ffffff; border: 1px solid #c3d0e4; border-radius: 7px; padding: 6px 10px; min-height: 20px; selection-background-color: #cfe3fb; selection-color: #1e2a44; }
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border: 1px solid #9fb8dc; }
@@ -6753,6 +7031,36 @@ class StyledComboBox(QComboBox):
         super().showPopup()
 
 
+def ask_choice(parent, text, info, choices, default):
+    """v3: a Thai question box. `choices` = [(key, label, QMessageBox.ButtonRole)]; returns the key of the
+    clicked button (Esc / closing the box → `default`'s partner: the RejectRole choice, else `default`)."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle(APP_NAME)
+    box.setText(text)
+    if info:
+        box.setInformativeText(info)
+    buttons = {}
+    for key, label, role in choices:
+        buttons[box.addButton(label, role)] = key
+    by_key = {key: button for button, key in buttons.items()}
+    box.setDefaultButton(by_key[default])
+    on_escape = next((by_key[key] for key, _, role in choices if role == QMessageBox.RejectRole), by_key[default])
+    box.setEscapeButton(on_escape)
+    box.exec()
+    return buttons.get(box.clickedButton(), buttons[on_escape])
+
+
+def confirm_apply_all(dialog):
+    """v3 M7: 'ใช้กับทุกแถว' overwrites every row's settings; ask first (default = ยกเลิก)."""
+    table = getattr(dialog.parentWidget(), 'table', None)
+    count = table.rowCount() if table is not None else 0
+    return ask_choice(dialog, f'ใช้ค่านี้กับทุกแถวในคิว ({count} แถว)?',
+                      'ค่าเดิมของทุกแถวจะถูกแทนที่ และแถวที่ค่าเปลี่ยนจะกลับเป็น “รอรัน”',
+                      [('all', 'ใช้กับทุกแถว', QMessageBox.AcceptRole), ('cancel', 'ยกเลิก', QMessageBox.RejectRole)],
+                      'cancel') == 'all'
+
+
 class PostProcessDialog(QDialog):
     """Settings for what runs on a Banner's Excel file after Lyche exported it:
     1) Delete Total + NA (156_DeleteTotalNA.py), 2) Del Sig (Del_Sig.py), 3) Cut N / %
@@ -6885,7 +7193,7 @@ class PostProcessDialog(QDialog):
         manual = bool(settings.get('banner_manual'))
         if manual:
             locked = QLabel('Banner Manual → แยกชีทเท่านั้น')
-            locked.setStyleSheet('color: #8b97ab; font-size: 12px;')
+            locked.setStyleSheet('color: #5f6f8a; font-size: 12px;')
             export.addWidget(locked)
         export.addStretch(1)
         self.export_group = QButtonGroup(self)
@@ -6909,7 +7217,7 @@ class PostProcessDialog(QDialog):
         self.message.hide()
         layout.addWidget(self.message)
         note = QLabel('Delete Total + NA ต้องมี Microsoft Excel ในเครื่อง · Del Sig และตัด N / % ปิดไว้เป็นค่าเริ่มต้น')
-        note.setStyleSheet('color: #8b97ab; font-size: 12px;')
+        note.setStyleSheet('color: #5f6f8a; font-size: 12px;')
         layout.addWidget(note)
         layout.addSpacing(6)
         dialog_buttons(self, layout)
@@ -6933,9 +7241,21 @@ class PostProcessDialog(QDialog):
             self.sig_groups.setFocus()
             self.apply_all = False
             return
+        if self.del_sig.isChecked():
+            from post_del_sig import parse_sig_groups
+            try:
+                parse_sig_groups(self.sig_groups.text())
+            except ValueError as exc:
+                self.message.setText(str(exc))
+                self.message.show()
+                self.sig_groups.setFocus()
+                self.apply_all = False
+                return
         super().accept()
 
     def accept_all(self):
+        if not confirm_apply_all(self):
+            return
         self.apply_all = True
         self.accept()
 
@@ -7385,7 +7705,7 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.update_check_buttons()
 
     def update_check_buttons(self):
-        """Keep actions available; accept() explains why an unchecked list cannot be saved."""
+        """Keep actions available; an unchecked list is saved as 'not checked yet' (v3 N5)."""
         if not hasattr(self, 'ok_button'):
             return
         for button in (self.cancel_button, self.all_button, self.ok_button):
@@ -7497,18 +7817,18 @@ class BannerManualDialog(VariableSearch, QDialog):
                 (self.item_rows[0] if not items else self.item_rows[0]).setFocus()
                 self.apply_all = False
                 return
-            if (self.checked_items != tuple(items) or self.checking
-                    or self.pending_check or self.loading_items):
-                self.message.setText('กำลังเช็คตัวแปรกับ Lyche กรุณารอให้เช็คเสร็จก่อนตกลง'
-                                     if self.checking or self.pending_check else
-                                     'กรุณากด “เช็คกับ Lyche” เพื่อตรวจตัวแปรให้ครบทุกข้อก่อนตกลง')
-                self.message.show()
-                self.apply_all = False
-                QTimer.singleShot(0, self.fit_height)
-                return
+            # v3 N5: no completed live check for exactly these items (Lyche not selected, worker busy,
+            # check failed or still running) no longer blocks saving: the row is saved and marked
+            # 'ยังไม่ได้เช็ค' (amber); App re-checks it when Lyche is available and before a run.
+            self.verified = (self.checked_items == tuple(items) and not self.checking
+                             and not self.pending_check and not self.loading_items)
+        else:
+            self.verified = True
         super().accept()
 
     def accept_all(self):
+        if not confirm_apply_all(self):
+            return
         self.apply_all = True
         self.accept()
 
@@ -7752,16 +8072,33 @@ class HiddenTextDelegate(QStyledItemDelegate):
         opt.text = ''
         widget = opt.widget
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
-        if index.data(Qt.UserRole + 6):
-            painter.save()
-            painter.fillRect(option.rect.adjusted(1, 1, -1, -1), QColor('#f0f2f6'))
-            painter.setPen(QColor('#a7b1c0'))
-            painter.drawText(option.rect, Qt.AlignCenter, '—')
-            painter.restore()
-            return
 
 
 QUEUE_CHECK_ROLE = Qt.UserRole + 5
+STEP_LOCK_ROLE = Qt.UserRole + 6  # Step 3 cell of a Type % row (drawn by StepDelegate)
+OUTPUT_HINT_ROLE = Qt.UserRole + 7  # final file name ('Brand N%.xlsx') of the row, '' when invalid
+CHECK_UNVERIFIED = ('unchecked', 'pending')  # amber: could not check with Lyche yet; 'error' = red
+RECHECK_HINT = ' — กด “เช็คตัวแปรใหม่” หลังเลือกหน้าต่าง Lyche'
+
+
+class OutputNameDelegate(QStyledItemDelegate):
+    """v3 N3: the output-name cell also shows the real file name ('→ Brand N%.xlsx', grey, right-aligned)
+    when the column is wide enough; the tooltip always has it."""
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        hint = index.data(OUTPUT_HINT_ROLE)
+        text = index.data(Qt.DisplayRole) or ''
+        if not hint or not text:
+            return
+        metrics = QFontMetrics(option.font)
+        label = f'→ {hint}'
+        rect = option.rect.adjusted(6, 0, -8, 0)
+        if metrics.horizontalAdvance(text) + metrics.horizontalAdvance(label) + 28 > rect.width():
+            return  # no room: the tooltip shows it
+        painter.save()
+        painter.setPen(QColor('#7a869a'))
+        painter.drawText(rect, Qt.AlignRight | Qt.AlignVCenter, label)
+        painter.restore()
 
 
 class StepDelegate(QStyledItemDelegate):
@@ -7773,9 +8110,20 @@ class StepDelegate(QStyledItemDelegate):
         text, opt.text = opt.text, ''
         widget = opt.widget
         (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+        if index.data(STEP_LOCK_ROLE):  # v3 N7: Step 3 of a Type % row — not used, not clickable
+            painter.save()
+            painter.fillRect(option.rect.adjusted(1, 1, -1, -1), QColor('#f0f2f6'))
+            painter.setPen(QColor('#6b778c'))
+            font = QFont(option.font)
+            font.setPointSizeF(max(7.0, font.pointSizeF() - 1))
+            painter.setFont(font)
+            painter.drawText(option.rect, Qt.AlignCenter, 'ไม่ใช้ (%)')
+            painter.restore()
+            return
         on = text not in ('', 'Off', '-')
         check = index.data(QUEUE_CHECK_ROLE) or {}
         invalid = check.get('state') == 'error'
+        unverified = check.get('state') in CHECK_UNVERIFIED  # v3: amber 'not checked yet', never red
         hover = bool(option.state & QStyle.State_MouseOver)
         rect = option.rect.adjusted(4, 5, -4, -5)
         painter.save()
@@ -7787,10 +8135,11 @@ class StepDelegate(QStyledItemDelegate):
             label = metrics.elidedText(text, Qt.ElideRight, rect.width() - 14)
             chip = QRect(0, rect.y(), min(rect.width(), metrics.horizontalAdvance(label) + 18), rect.height())
             chip.moveCenter(rect.center())
-            painter.setPen(QPen(QColor('#e89898' if invalid else '#c9b6f3'), 1))
-            painter.setBrush(QColor('#fde4e4' if invalid else '#e0d4fb' if hover else '#ece5fb'))
+            painter.setPen(QPen(QColor('#e89898' if invalid else '#e2b95c' if unverified else '#c9b6f3'), 1))
+            painter.setBrush(QColor('#fde4e4' if invalid else '#fff4d6' if unverified
+                                    else '#e0d4fb' if hover else '#ece5fb'))
             painter.drawRoundedRect(chip, 8, 8)
-            painter.setPen(QColor('#c62828' if invalid else '#5b34b8'))
+            painter.setPen(QColor('#c62828' if invalid else '#8a5a00' if unverified else '#5b34b8'))
             painter.drawText(chip, Qt.AlignCenter, label)
         elif hover:
             chip = QRect(0, rect.y(), min(rect.width(), 44), rect.height())
@@ -7902,7 +8251,6 @@ class ResultDialog(QDialog):
             self.result_table = QTableWidget(len(results), 2, self)
             table = self.result_table
             table.setObjectName('runResults')
-            table.setFixedHeight(260)
             table.setWordWrap(False)
             table.setTextElideMode(Qt.ElideRight)
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -7924,6 +8272,7 @@ class ResultDialog(QDialog):
                 'QScrollBar:vertical { background: #f4f7fc; width: 8px; margin: 6px 0; border-radius: 4px; } '
                 'QScrollBar::handle:vertical { background: #c3d0e4; min-height: 24px; border-radius: 4px; } '
                 'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }')
+            heights = []
             for row, (name, status, note) in enumerate(results):
                 color, _ = self.PILLS.get(status, ('#86868b', ''))
                 label = QTableWidgetItem(name or '-')
@@ -7939,6 +8288,25 @@ class ResultDialog(QDialog):
                 state.setToolTip(tooltip)
                 table.setItem(row, 0, label)
                 table.setItem(row, 1, state)
+                # v3 N2: a row that is not OK shows its reason as a grey second line (was tooltip only)
+                reason = (note or '').strip() if status != 'OK' else ''
+                if reason:
+                    short = reason if len(reason) <= 110 else reason[:109] + '…'
+                    label.setForeground(QColor(0, 0, 0, 0))  # the two-line label below draws the name
+                    cell = QLabel(f'<div style="font-weight:600;color:#1e2a44">{escape(name or "-")}</div>'
+                                  f'<div style="color:#6e6e73;font-size:12px">{escape(short)}</div>')
+                    cell.setWordWrap(True)
+                    cell.setToolTip(tooltip)
+                    cell.setContentsMargins(8, 2, 4, 2)
+                    cell.setStyleSheet('background: transparent;')
+                    cell.setAttribute(Qt.WA_TransparentForMouseEvents)
+                    table.setCellWidget(row, 0, cell)
+                    height = 52 if len(short) <= 55 else 68
+                else:
+                    height = 32
+                table.setRowHeight(row, height)
+                heights.append(height)
+            table.setFixedHeight(min(300, sum(heights) + 14))
             layout.addWidget(table)
 
         layout.addSpacing(8)
@@ -7972,14 +8340,23 @@ class ImportResultDialog(ResultDialog):
             details = QPlainTextEdit()
             details.setReadOnly(True)
             details.setPlainText('\n\n'.join(problems))
-            details.setStyleSheet('QPlainTextEdit { background: #fff7f7; color: #a32626; '
-                                 'border: 1px solid #efcccc; border-radius: 8px; padding: 10px; }')
+            details.setStyleSheet('QPlainTextEdit { background: #fffaf0; color: #7a4f00; '
+                                  'border: 1px solid #f0dcb0; border-radius: 8px; padding: 10px; }' if kind == 'warn' else
+                                  'QPlainTextEdit { background: #fff7f7; color: #a32626; '
+                                  'border: 1px solid #efcccc; border-radius: 8px; padding: 10px; }')
             details.setFixedHeight(min(220, 65 + 45 * len(problems)))
             layout = self.findChild(QFrame, 'sheet').layout()
             layout.insertWidget(layout.count() - 1, details)
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.fit_and_center()
+        QTimer.singleShot(0, self.fit_and_center)  # v3: again once word-wrapped labels know their width
+
+    def fit_and_center(self):
+        self.layout().activate()
+        self.setMinimumHeight(self.layout().totalHeightForWidth(self.width()) if self.layout().hasHeightForWidth()
+                              else self.sizeHint().height())
         self.adjustSize()
         screen = self.parentWidget().screen() if self.parentWidget() else QApplication.primaryScreen()
         if screen:
@@ -8054,9 +8431,12 @@ class ImportModeDialog(ImportResultDialog):
 
 
 class ImportProgressDialog(QDialog):
-    """Modal, non-dismissable progress while the asynchronous import check is running."""
-    def __init__(self, parent):
+    """Modal progress while the asynchronous variable check is running. v3 N6: 'ยกเลิกการเช็ค' (or Esc)
+    calls `on_cancel`, which stops the worker and leaves the cells as 'ยังไม่ได้เช็ค'."""
+    def __init__(self, parent, on_cancel=None):
         super().__init__(parent)
+        self.on_cancel = on_cancel
+        self.started = datetime.now()
         self.setWindowModality(Qt.ApplicationModal)
         self.setStyleSheet(STYLE)
         layout = sheet_layout(self, 420)
@@ -8076,6 +8456,18 @@ class ImportProgressDialog(QDialog):
         bar.setStyleSheet('QProgressBar { background: #e7effb; border: none; border-radius: 4px; } '
                          'QProgressBar::chunk { background: #2a8de9; border-radius: 4px; }')
         layout.addWidget(bar)
+        self.elapsed = QLabel('ผ่านไป 0 วินาที')
+        self.elapsed.setAlignment(Qt.AlignCenter)
+        self.elapsed.setStyleSheet('color: #5f6f8a; font-size: 12px;')
+        layout.addWidget(self.elapsed)
+        self.cancel_button = QPushButton('ยกเลิกการเช็ค')
+        self.cancel_button.setObjectName('secondary')
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.setToolTip('Cancel check · หยุดการเช็ค ช่องที่ยังไม่ได้เช็คจะเป็นสีเหลือง')
+        self.cancel_button.setAutoDefault(False)
+        self.cancel_button.clicked.connect(self.cancel)
+        self.cancel_button.setVisible(on_cancel is not None)
+        layout.addWidget(self.cancel_button, 0, Qt.AlignHCenter)
         self.tick = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.animate)
@@ -8084,6 +8476,14 @@ class ImportProgressDialog(QDialog):
     def animate(self):
         self.tick = (self.tick + 1) % 4
         self.label.setText('กำลังตรวจสอบคิว' + '·' * self.tick)
+        seconds = int((datetime.now() - self.started).total_seconds())
+        self.elapsed.setText(f'ผ่านไป {seconds} วินาที' if seconds < 60 else f'ผ่านไป {seconds // 60} นาที {seconds % 60} วินาที')
+
+    def cancel(self):
+        if self.on_cancel is not None:
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setText('กำลังยกเลิก…')
+            self.on_cancel()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -8091,7 +8491,7 @@ class ImportProgressDialog(QDialog):
         self.move(self.parentWidget().screen().availableGeometry().center() - self.rect().center())
 
     def reject(self):
-        pass  # Escape must not unlock the main window before checking finishes
+        self.cancel()  # Escape = ยกเลิกการเช็ค (the dialog closes once the check is cancelled)
 
     def closeEvent(self, event):
         event.ignore()
@@ -8252,6 +8652,10 @@ class App(MacWindowMixin, QMainWindow):
             button.setIcon(QIcon(f'{ASSETS}/{icon}.svg'))
             button.setIconSize(QSize(16, 16))
         row.addSpacing(6)
+        self.recheck_button = self.button(  # v3 N1: the way out of yellow / red cells
+            'เช็คตัวแปรใหม่', self.recheck_variables, row, kind='plain',
+            tip='Re-check variables · เช็คตัวแปร Banner Manual และ Filter ทุกแถวกับ Lyche อีกครั้ง\n'
+                'ช่องสีเหลือง = ยังเช็คไม่ได้ (ไม่บล็อกการรัน) · ช่องสีแดง = ไม่พบตัวแปร (ต้องแก้ก่อนรัน)')
         self.button('วางจาก Excel', self.paste, row, kind='plain', tip='วาง 2 คอลัมน์: ชื่อผลลัพธ์ / Filter')
         self.button('นำเข้า Excel', self.import_excel, row, kind='plain')
         self.button('ส่งออก Excel', self.export_excel, row, kind='plain', tip='บันทึกคิวเป็นไฟล์ Excel (นำเข้ากลับได้)')
@@ -8262,8 +8666,17 @@ class App(MacWindowMixin, QMainWindow):
         for column in (2, *STEP_COLUMNS, MANUAL_COLUMN):  # 2 = Filter: a chip, click → FilterDialog
             self.table.setItemDelegateForColumn(column, self.step_delegate)
         self.table.setItemDelegateForColumn(GEAR_COLUMN, GearDelegate(self.table))
+        self.table.setItemDelegateForColumn(1, OutputNameDelegate(self.table))  # v3 N3: '→ Brand N%.xlsx'
+        # v3 H1: say what each Step does (full names stay in the tooltips)
+        step_headers = ['1 Total+NA', '2 Del Sig', '3 ตัด N/%', '4 Export']
+        step_headers += [f'Step {n}' for n in range(len(step_headers) + 1, len(STEP_COLUMNS) + 1)]
         self.table.setHorizontalHeaderLabels(['Banner', 'ชื่อไฟล์ผลลัพธ์', 'Filter', 'Base', 'สถานะ', 'รายละเอียด',
-                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)], 'Banner Manual', '', 'Type'])
+                                              *step_headers[:len(STEP_COLUMNS)], 'Banner Manual', '', 'Type'])
+        self.table.horizontalHeaderItem(1).setToolTip(
+            'ชื่อไฟล์ผลลัพธ์ · โปรแกรมต่อท้ายด้วย Type ให้อัตโนมัติ เช่น Brand → Brand N%.xlsx\n'
+            'ชื่อไฟล์จริงแสดงเป็นตัวเทาท้ายช่อง (ถ้าช่องกว้างพอ) และใน tooltip ของแต่ละแถว')
+        self.table.horizontalHeaderItem(TYPE_COLUMN).setToolTip(
+            'Type ของตาราง (N% หรือ %) · ต่อท้ายชื่อไฟล์ให้อัตโนมัติ · Type % ไม่ใช้ Step 3 ตัด N / %')
         # Columns 6+ (the Steps, Export last) are appended so every other column index stays the
         # same; they are only *shown* between Base and สถานะ. Column 5 (detail) keeps its data for
         # the run summary / queue export but is hidden: progress is shown in the log below.
@@ -8317,10 +8730,12 @@ class App(MacWindowMixin, QMainWindow):
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.setWordWrap(False)  # one line per cell; long Sig groups end with … (full text in the tooltip)
         # Leave more space for filenames: compact the short labels/settings before stretching that column.
-        for index, width in enumerate([120, 240, 84, 48, 60, 300, 80, 90, 72, 72, 102, 38]):
+        # v3 N4: status 76 px so 'ผิดพลาด' is never cut; Step 3/4 wide enough for '3 ตัด N/%' / 'One Sheet'
+        for index, width in enumerate([120, 240, 84, 48, 76, 300, 84, 84, 80, 88, 102, 38]):
             self.table.setColumnWidth(index, width)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(GEAR_COLUMN, QHeaderView.Fixed)
+        self.table.horizontalHeader().setMinimumSectionSize(38)
         self.table.setColumnWidth(TYPE_COLUMN, 72)
         self.table.horizontalHeader().setSectionResizeMode(TYPE_COLUMN, QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(False)
@@ -8371,10 +8786,10 @@ class App(MacWindowMixin, QMainWindow):
         row.addWidget(mode)
         segment = QHBoxLayout()
         segment.setSpacing(0)
-        self.bg_button = QPushButton('BG')
+        self.bg_button = QPushButton('BG · เบื้องหลัง')  # v3 M1
         self.bg_button.setObjectName('segLeft')
         self.bg_button.setToolTip('รันเบื้องหลัง — ไม่เห็นหน้าต่าง Lyche (ค่าเริ่มต้น)')
-        self.preview_button = QPushButton('Preview')
+        self.preview_button = QPushButton('Preview · เห็นจอ')
         self.preview_button.setObjectName('segRight')
         self.preview_button.setToolTip('รันแบบเห็นหน้าจอ Lyche — ใช้เมาส์/คีย์บอร์ดจริง ห้ามใช้เครื่องระหว่างรัน')
         self.mode_group = QButtonGroup(self)
@@ -8507,9 +8922,9 @@ class App(MacWindowMixin, QMainWindow):
             item.setTextAlignment(Qt.AlignCenter)
             item.setToolTip(tip)
             locked = column == STEP_COLUMNS[2] and not step3_allowed(post.get('report_type', 'N%'))
-            item.setData(Qt.UserRole + 6, locked)
+            item.setData(STEP_LOCK_ROLE, locked)
             if locked:
-                item.setToolTip('Type % ไม่ใช้ Step 3 ตัด N / %')
+                item.setToolTip('Type % ไม่ใช้ Step 3 ตัด N / %\nเปลี่ยน Type กลับเป็น N% เพื่อใช้ Step 3 อีกครั้ง')
         combo = self.table.cellWidget(row, TYPE_COLUMN)
         if combo:
             combo.blockSignals(True)
@@ -8522,13 +8937,40 @@ class App(MacWindowMixin, QMainWindow):
         self.table.item(row, GEAR_COLUMN).setToolTip('ตั้งค่า Step 1–4 ของแถวนี้\n' + post_summary(post))
         item.setToolTip(('Banner Manual: ' + manual if manual else 'Banner Manual ปิดอยู่ (ใช้ Banner จาก History)')
                         + '\nคลิกเพื่อตั้งค่า Banner Manual')
+        check = item.data(QUEUE_CHECK_ROLE)
+        if check and check.get('message'):
+            item.setToolTip(check['message'])
+        self.refresh_output_hint(row, post)
+
+    def refresh_output_hint(self, row, post=None):
+        """v3 N3: the real file name of the row (Type suffix added) for the cell hint and tooltip."""
+        item = self.table.item(row, 1)
+        if item is None:
+            return
+        if post is None:
+            post = self.table.item(row, 0).data(Qt.UserRole + 1) or {}
+        text = item.text().strip()
+        hint = problem = ''
+        if text:
+            try:
+                hint = job_output_name(Job(output=text, report_type=post.get('report_type', 'N%')))
+            except ValueError as exc:
+                problem = str(exc)
+        blocked = self.table.blockSignals(True)
+        try:
+            item.setData(OUTPUT_HINT_ROLE, hint)
+            item.setToolTip(f'{text}\n→ ไฟล์ที่จะบันทึก: {hint}' if hint else
+                            f'{text}\n⚠ {problem}' if problem else
+                            'ชื่อไฟล์ผลลัพธ์ (โปรแกรมต่อท้ายด้วย Type ให้อัตโนมัติ)')
+        finally:
+            self.table.blockSignals(blocked)
 
     def eventFilter(self, obj, event):
         if hasattr(self, 'table') and obj is self.table.viewport():
             if event.type() == QEvent.MouseMove:
                 index = self.table.indexAt(event.position().toPoint())
                 on_chip = index.isValid() and index.column() in (2, *STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
-                on_chip = on_chip and not bool(index.data(Qt.UserRole + 6))
+                on_chip = on_chip and not bool(index.data(STEP_LOCK_ROLE))
                 obj.setCursor(Qt.PointingHandCursor if on_chip else Qt.ArrowCursor)
             elif event.type() == QEvent.Leave:
                 obj.unsetCursor()
@@ -8541,7 +8983,7 @@ class App(MacWindowMixin, QMainWindow):
         return super().eventFilter(obj, event)
 
     def cell_double_clicked(self, row, column):
-        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(Qt.UserRole + 6):
+        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(STEP_LOCK_ROLE):
             return
         if column == 2 and not self.busy:
             self.edit_filter(row)
@@ -8551,7 +8993,7 @@ class App(MacWindowMixin, QMainWindow):
             self.edit_post(row)
 
     def cell_clicked(self, row, column):
-        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(Qt.UserRole + 6):
+        if column == STEP_COLUMNS[2] and self.table.item(row, column).data(STEP_LOCK_ROLE):
             return
         if column == 2 and not self.busy and not QApplication.keyboardModifiers():
             self.edit_filter(row)
@@ -8655,20 +9097,48 @@ class App(MacWindowMixin, QMainWindow):
             else PostProcessDialog(self, name, current)
         if dialog.exec() != QDialog.Accepted:
             return
-        self.apply_post(range(self.table.rowCount()) if dialog.apply_all else (rows or [row]), dialog.settings)
+        targets = list(range(self.table.rowCount())) if dialog.apply_all else list(rows or [row])
+        if not manual:
+            self.apply_post(targets, dialog.settings)
+            return
+        # v3 N5: Banner Manual is saved even without a live check; such rows are marked 'ยังไม่ได้เช็ค'
+        before = {target: dict(self.table.item(target, 0).data(Qt.UserRole + 1) or {}) for target in targets}
+        self.apply_post(targets, dialog.settings, recheck=False)
+        verified = getattr(dialog, 'verified', False)
+        unverified = []
+        for target in targets:
+            after = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
+            changed = any(before[target].get(key) != after.get(key) for key in MANUAL_KEYS)
+            marked = self.table.item(target, MANUAL_COLUMN).data(QUEUE_CHECK_ROLE)
+            if not after.get('banner_manual') or verified:
+                self.mark_queue_check(target, MANUAL_COLUMN)
+            elif changed or marked:  # OK on an unchanged red / yellow cell also re-checks it (N1)
+                self.mark_queue_check(target, MANUAL_COLUMN, 'unchecked',
+                                      'บันทึกแล้ว — ยังไม่ได้เช็คกับ Lyche จะเช็คอีกครั้งก่อนรัน')
+                unverified.append(self.table.item(target, 0).data(Qt.UserRole))
+        self.table.viewport().update()
+        if unverified:
+            self.write_log(f'บันทึก Banner Manual {len(unverified)} แถว — ยังไม่ได้เช็คกับ Lyche (ช่องสีเหลือง) '
+                           'จะเช็คอีกครั้งก่อนรัน')
+            if self.window_combo.currentData() and not self.busy:
+                self.check_imported_jobs([job for job in self.jobs() if job.id in unverified])
 
-    def apply_post(self, rows, settings):
+    def apply_post(self, rows, settings, recheck=True):
         """Merge `settings` into each row's settings; changed rows go back to รอรัน."""
-        recheck = []
+        allow_recheck, recheck = recheck, []
         for target in rows:
             before = self.table.item(target, 0).data(Qt.UserRole + 1) or {}
             after = {**before, **settings}  # each dialog changes only its own keys
             after['export_mode'] = export_mode(after)  # e.g. 'apply to all' onto a Banner Manual row
             if not step3_allowed(after.get('report_type', 'N%')):
+                if after.get('cut_percent'):  # v3 N7: remember Step 3 so switching back to N% restores it
+                    after['cut_percent_before_type'] = True
                 after['cut_percent'] = False
+            elif 'report_type' in settings and after.pop('cut_percent_before_type', False):
+                after['cut_percent'] = True
             if before == after:
                 continue
-            if (self.table.item(target, MANUAL_COLUMN).data(QUEUE_CHECK_ROLE)
+            if (allow_recheck and self.table.item(target, MANUAL_COLUMN).data(QUEUE_CHECK_ROLE)
                     and any(before.get(key) != after.get(key) for key in MANUAL_KEYS)):
                 recheck.append(self.table.item(target, 0).data(Qt.UserRole))
             self.table.blockSignals(True)
@@ -8699,7 +9169,18 @@ class App(MacWindowMixin, QMainWindow):
         self.autosave()
 
     def remove(self):
-        for row in reversed(self.selected_rows()):
+        rows = self.selected_rows()
+        if not rows:
+            return
+        # v3 H3: one click used to delete rows (and their Filter / Step / Banner Manual settings) at once
+        names = [f'แถว {row + 1} · ' + (self.table.item(row, 1).text().strip() or self.table.item(row, 0).text().strip() or '-')
+                 for row in rows[:5]] + ([f'… และอีก {len(rows) - 5} แถว'] if len(rows) > 5 else [])
+        if ask_choice(self, f'ลบ {len(rows)} แถวที่เลือกออกจากคิว?',
+                      '\n'.join(names) + '\n\n(ไม่ลบไฟล์ Excel ที่เคย export แล้ว)',
+                      [('remove', 'ลบแถว', QMessageBox.DestructiveRole), ('cancel', 'ยกเลิก', QMessageBox.RejectRole)],
+                      'cancel') != 'remove':
+            return
+        for row in reversed(rows):
             self.table.removeRow(row)
         self.autosave()
 
@@ -8774,12 +9255,15 @@ class App(MacWindowMixin, QMainWindow):
             self.error(str(exc))
 
     def choose_import_mode(self, new_count):
+        # v3 N10: nothing to keep (fresh window: one empty row) → replace without asking
+        if not any(job.output.strip() or job.filter.strip() not in ('', '-') or job.banner_manual for job in self.jobs()):
+            return 'replace'
         dialog = ImportModeDialog(self, self.table.rowCount(), new_count)
         return dialog.mode if dialog.exec() == QDialog.Accepted else None
 
     def start_import_progress(self):
         self.finish_import_progress()
-        self.import_progress = ImportProgressDialog(self)
+        self.import_progress = ImportProgressDialog(self, on_cancel=self.cancel_variable_check)
         self.import_progress.show()
         self.import_progress.raise_()
         QApplication.processEvents()
@@ -8797,34 +9281,54 @@ class App(MacWindowMixin, QMainWindow):
         blocked = self.table.blockSignals(True)
         try:
             item.setData(QUEUE_CHECK_ROLE, {'state': state, 'message': message} if state else None)
-            item.setBackground(QColor('#fde4e4') if state == 'error' else QColor(0, 0, 0, 0))
+            item.setBackground(QColor('#fde4e4') if state == 'error' else
+                               QColor('#fff4d6') if state in CHECK_UNVERIFIED else QColor(0, 0, 0, 0))
             item.setToolTip(message or ('คลิกเพื่อตั้งค่า Banner Manual' if column == MANUAL_COLUMN
                                        else f'Filter: {item.text()}\nคลิกเพื่อตั้งค่า Filter'))
         finally:
             self.table.blockSignals(blocked)
 
-    def show_import_result(self, wanted):
+    def show_import_result(self, wanted, context='import'):
+        """Summary after an import or a 'เช็คตัวแปรใหม่': red = must fix, yellow = not checked yet."""
         self.finish_import_progress()
-        problems, count = [], 0
+        problems, count, red, amber = [], 0, 0, 0
         for row, job in enumerate(self.jobs()):
             if job.id not in wanted:
                 continue
             count += 1
             for column, field in ((MANUAL_COLUMN, 'Banner Manual'), (2, 'Filter')):
                 check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
-                if check:
-                    problems.append(f'แถว {row + 1} · {job.output or job.history or "-"} · {field}\n{check["message"]}')
+                if check and check.get('state'):
+                    bad = check['state'] == 'error'
+                    red, amber = red + bad, amber + (not bad)
+                    problems.append(f'แถว {row + 1} · {job.output or job.history or "-"} · {field} · '
+                                    f'{"ต้องแก้ (สีแดง)" if bad else "ยังไม่ได้เช็ค (สีเหลือง)"}\n'
+                                    + check['message'].replace(RECHECK_HINT, ''))
+        done = f'นำเข้า {count} แถว' if context == 'import' else f'เช็ค {count} แถว'
+        later = 'เลือกหน้าต่าง Lyche แล้วโปรแกรมจะเช็คให้อัตโนมัติ หรือกด “เช็คตัวแปรใหม่”\nช่องสีเหลืองไม่บล็อกการรัน'
         if not count:
-            kind, title, message = 'warn', 'ไม่พบรายการคิว', 'ไฟล์นี้ไม่มีรายการคิวที่นำเข้าได้'
-        elif problems:
-            kind, title, message = 'error', 'พบปัญหาในคิวที่นำเข้า', \
-                f'นำเข้า {count} แถว · พบปัญหา {len(problems)} ช่อง\nกรุณาแก้ช่องสีแดงก่อนรัน'
-        else:
+            kind, title, message = ('warn', 'ไม่พบรายการคิว', 'ไฟล์นี้ไม่มีรายการคิวที่นำเข้าได้') if context == 'import' \
+                else ('info', 'ไม่มีแถวให้เช็ค', 'ยังไม่มีแถวในคิว')
+        elif red:
+            kind = 'error'
+            title = 'พบปัญหาในคิวที่นำเข้า' if context == 'import' else 'พบตัวแปรที่ต้องแก้'
+            message = f'{done} · ต้องแก้ {red} ช่อง (สีแดง) ก่อนรัน' + (f'\nยังไม่ได้เช็ค {amber} ช่อง (สีเหลือง)' if amber else '')
+        elif amber:
+            kind = 'warn'
+            title = 'นำเข้าแล้ว · ยังเช็คตัวแปรไม่ได้' if context == 'import' else 'ยังเช็คตัวแปรไม่ได้'
+            message = f'{done} · ยังเช็คกับ Lyche ไม่ได้ {amber} ช่อง (สีเหลือง)\n{later}'
+        elif context == 'import':
             kind, title, message = 'ok', 'นำเข้าสำเร็จ', f'นำเข้าคิว {count} แถวเรียบร้อย\nตรวจตัวแปร Banner Manual และ Filter ผ่านแล้ว'
+        else:
+            kind, title, message = 'ok', 'เช็คตัวแปรผ่าน', \
+                f'ตัวแปร Banner Manual และ Filter ของ {count} แถวตรงกับ Lyche\n(แถวที่ไม่มี Filter / Banner Manual ข้ามไป)'
         ImportResultDialog(self, kind, title, message, problems).exec()
 
-    def check_imported_jobs(self, jobs, notify=False):
-        """Check all imported Manual/Filter variable names once, then mark only the bad cells."""
+    def check_imported_jobs(self, jobs, notify=False, context='import', on_done=None):
+        """Check all Manual/Filter variable names of `jobs` with Lyche in one worker run, then mark the cells:
+        red ('error') = variable not found / unreadable, yellow ('unchecked') = could not check (no Lyche
+        window, worker busy, check failed or cancelled). notify: True = always show the summary,
+        'problems' = only when a cell is red or yellow. on_done(red, amber) runs after marking."""
         wanted = {job.id for job in jobs}
         refs, variables = [], []
         project = self.project_key()
@@ -8851,16 +9355,31 @@ class App(MacWindowMixin, QMainWindow):
                 refs.append((job.id, column, value, items))
                 variables.extend(items)
                 self.mark_queue_check(row, column, 'pending', 'กำลังเช็คตัวแปรกับ Lyche…')
+        def finish(red, amber):
+            show = notify is True or (notify == 'problems' and (red or amber))
+            if show:
+                self.show_import_result(wanted, context)
+            else:
+                self.finish_import_progress()
+            if on_done is not None:
+                on_done(red, amber)
         if not variables:
-            if notify:
-                self.show_import_result(wanted)
+            red, amber = self.queue_checks(wanted)
+            finish(len(red), len(amber))
             return
+        self.check_token = getattr(self, 'check_token', 0) + 1
+        token = self.check_token
+        self.running_check_token = token
         def completed(results, error=''):
+            if token in getattr(self, 'cancelled_checks', set()):
+                return  # v3 N6: cancelled — the cells were already marked 'ยังไม่ได้เช็ค'
+            if getattr(self, 'running_check_token', None) == token:
+                self.running_check_token = None
             if project != self.project_key():
-                error = 'เปลี่ยนโปรเจกต์ Lyche ระหว่างเช็ค — กรุณานำเข้าหรือแก้ข้อมูลเพื่อเช็คใหม่'
+                error = 'เปลี่ยนหน้าต่าง / โปรเจกต์ Lyche ระหว่างเช็ค'
             found = {result['item'].casefold(): result['found'] for result in results or []}
             current = {job.id: (row, job) for row, job in enumerate(self.jobs())}
-            failures = 0
+            failures = amber = 0
             for job_id, column, value, items in refs:
                 if job_id not in current:
                     continue
@@ -8870,16 +9389,95 @@ class App(MacWindowMixin, QMainWindow):
                     continue  # a delayed callback must not colour an edited or removed row
                 missing = [item for item in items if found.get(item.casefold()) is False]
                 unchecked = [item for item in items if item.casefold() not in found]
-                message = (f'เช็คกับ Lyche ไม่สำเร็จ: {error}' if error else
-                           f'ยังไม่ได้ผลเช็คจาก Lyche: {", ".join(unchecked)}' if unchecked else
-                           f'ไม่พบตัวแปรใน Lyche: {", ".join(missing)}' if missing else '')
-                self.mark_queue_check(row, column, 'error' if message else '', message)
-                failures += bool(message)
+                # v3 N1: only a variable Lyche says is missing is red; 'could not check' is yellow
+                if missing:
+                    state, message = 'error', f'ไม่พบตัวแปรใน Lyche: {", ".join(missing)}'
+                elif error or unchecked:
+                    state = 'unchecked'
+                    message = (f'ยังเช็คกับ Lyche ไม่ได้: {error}' if error else
+                               f'ยังไม่ได้ผลเช็คจาก Lyche: {", ".join(unchecked)}') + RECHECK_HINT
+                else:
+                    state, message = '', ''
+                self.mark_queue_check(row, column, state, message)
+                failures += state == 'error'
+                amber += state == 'unchecked'
             self.table.viewport().update()
-            self.write_log(f'เช็คตัวแปรคิวที่นำเข้ากับ Lyche แล้ว · พบช่องที่มีปัญหา {failures} ช่อง')
-            if notify:
-                self.show_import_result(wanted)
+            self.write_log(f'เช็คตัวแปรกับ Lyche แล้ว · ไม่พบตัวแปร {failures} ช่อง (สีแดง)'
+                           + (f' · ยังเช็คไม่ได้ {amber} ช่อง (สีเหลือง)' + (f': {error}' if error else '') if amber else ''))
+            finish(failures, amber)
         self.check_manual_items(manual_items(', '.join(variables)), completed)
+
+    def queue_checks(self, wanted=None):
+        """Marked cells as (row, field, message) lists: red (must fix) and amber (not checked yet)."""
+        red, amber = [], []
+        for row in range(self.table.rowCount()):
+            if wanted is not None and self.table.item(row, 0).data(Qt.UserRole) not in wanted:
+                continue
+            for column, field in ((MANUAL_COLUMN, 'Banner Manual'), (2, 'Filter')):
+                check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
+                if check and check.get('state'):
+                    (red if check['state'] == 'error' else amber).append((row, field, check.get('message', '')))
+        return red, amber
+
+    @staticmethod
+    def unchecked_text(amber):
+        row, field, _ = amber[0]
+        more = f' (รวม {len(amber)} ช่องสีเหลือง)' if len(amber) > 1 else ''
+        return f'แถว {row + 1} · {field} ยังเช็คกับ Lyche ไม่ได้{more} — กด “เช็คตัวแปรใหม่” หลังเลือกหน้าต่าง Lyche'
+
+    def recheck_variables(self, then_run=False):
+        """v3 N1: toolbar 'เช็คตัวแปรใหม่' — check every row's Banner Manual / Filter with Lyche again.
+        then_run: start the run straight away when nothing is red or yellow afterwards."""
+        if self.busy:
+            return
+        if not self.window_combo.currentData():
+            self.error('ค้นหาและเลือกหน้าต่าง Lyche ก่อน แล้วกด “เช็คตัวแปรใหม่” อีกครั้ง')
+            return
+        jobs = self.jobs()
+        if not jobs:
+            return
+        self.start_import_progress()
+        on_done = None
+        if then_run:
+            def on_done(red, amber):
+                if not red and not amber:
+                    QTimer.singleShot(0, self.start_run)
+        self.check_imported_jobs(jobs, notify='problems' if then_run else True, context='recheck', on_done=on_done)
+
+    def auto_recheck(self):
+        """v3 N1: once a Lyche window is selected (after its Banners were read), re-check the yellow cells."""
+        if self.busy or not self.window_combo.currentData():
+            return
+        _, amber = self.queue_checks()
+        rows = sorted({row for row, _, _ in amber})
+        if not rows:
+            return
+        jobs = self.jobs()
+        self.write_log(f'เลือกหน้าต่าง Lyche แล้ว — เช็คตัวแปรที่ยังไม่ได้เช็คใหม่อัตโนมัติ ({len(rows)} แถว)')
+        self.check_imported_jobs([jobs[row] for row in rows], context='recheck')
+
+    def cancel_variable_check(self):
+        """v3 N6: 'ยกเลิกการเช็ค' in the progress dialog. Asks the worker to stop (it stops between items and
+        clears Lyche's search box), and leaves the cells being checked as 'ยังไม่ได้เช็ค' (yellow)."""
+        token = getattr(self, 'running_check_token', None)
+        if token is not None:
+            self.cancelled_checks = getattr(self, 'cancelled_checks', set()) | {token}
+            self.running_check_token = None
+        for row in range(self.table.rowCount()):
+            for column in (MANUAL_COLUMN, 2):
+                check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
+                if check and check.get('state') == 'pending':
+                    self.mark_queue_check(row, column, 'unchecked',
+                                          'ยกเลิกการเช็คแล้ว — กด “เช็คตัวแปรใหม่” เพื่อเช็คอีกครั้ง')
+        self.table.viewport().update()
+        self.finish_import_progress()
+        self.write_log('ยกเลิกการเช็คตัวแปรกับ Lyche — ช่องที่ยังไม่ได้เช็คเป็นสีเหลือง')
+        if self.busy and self.action in ('check_items', 'items') and self.control_dir is not None:
+            (self.control_dir / 'stop').touch()
+            self.state.setText('กำลังยกเลิกการเช็ค…')
+            process = self.process
+            # the worker stops at its next checkpoint; kill only if it does not end by itself
+            QTimer.singleShot(8000, lambda: process.kill() if process.state() != QProcess.NotRunning else None)
 
     def export_excel(self):
         """Save the queue as .xlsx with every Step 1-3 setting (core.QUEUE_COLUMNS), so it can be
@@ -8967,7 +9565,7 @@ class App(MacWindowMixin, QMainWindow):
         if item.column() < 4:
             self.table.blockSignals(True)
             if item.column() == 1:
-                item.setToolTip(item.text())
+                self.refresh_output_hint(item.row())
             self.table.item(item.row(), 4).setText('รอรัน')
             self.table.item(item.row(), 5).setText('')
             self.table.blockSignals(False)
@@ -9052,17 +9650,17 @@ class App(MacWindowMixin, QMainWindow):
 
     def validate(self, notify=True):
         try:
-            for row in range(self.table.rowCount()):
-                for column in (MANUAL_COLUMN, 2):
-                    check = self.table.item(row, column).data(QUEUE_CHECK_ROLE)
-                    if check:
-                        field = 'Banner Manual' if column == MANUAL_COLUMN else 'Filter'
-                        raise ValueError(f'แถว {row + 1} · {field}: {check["message"]}')
+            red, amber = self.queue_checks()
+            if red:  # v3: only red cells (variable not found / unreadable) block; yellow ones are asked about
+                row, field, message = red[0]
+                more = f'\n(ยังมีช่องสีแดงอีก {len(red) - 1} ช่อง)' if len(red) > 1 else ''
+                raise ValueError(f'แถว {row + 1} · {field}: {message}{more}')
             if not self.folder.text().strip():
                 raise ValueError('ยังไม่ได้เลือกโฟลเดอร์ผลลัพธ์')
             validate_jobs(self.jobs(), Path(self.folder.text().strip()))
             if notify:
-                self.write_log('ตรวจคิวผ่าน: ชื่อไฟล์ / Filter / Base / ไฟล์ซ้ำ')
+                self.write_log('ตรวจคิวผ่าน: ชื่อไฟล์ / Filter / Base / ไฟล์ซ้ำ'
+                               + (f' · แต่{self.unchecked_text(amber)}' if amber else ''))
             return True
         except ValueError as exc:
             self.error(str(exc))
@@ -9125,9 +9723,27 @@ class App(MacWindowMixin, QMainWindow):
 
     def start_run(self):
         self.table.clearFocus()
-        if self.validate(False):
-            self.autosave()
-            self.launch('run')
+        if not self.validate(False):
+            return
+        _, amber = self.queue_checks()
+        if amber:  # v3 N1: yellow cells do not block — offer to check now (then run), run anyway, or cancel
+            if not self.window_combo.currentData():
+                self.error(self.unchecked_text(amber))
+                return
+            choice = ask_choice(
+                self, self.unchecked_text(amber),
+                '“เช็คแล้วรัน” (แนะนำ): เช็คกับ Lyche ตอนนี้ ถ้าตัวแปรครบจะเริ่มรันให้ทันที\n'
+                '“รันโดยไม่เช็ค”: แถวที่ตัวแปรไม่มีใน Lyche จะขึ้นผิดพลาดตอนรัน',
+                [('check', 'เช็คแล้วรัน', QMessageBox.AcceptRole), ('run', 'รันโดยไม่เช็ค', QMessageBox.ActionRole),
+                 ('cancel', 'ยกเลิก', QMessageBox.RejectRole)], 'check')
+            if choice == 'check':
+                self.recheck_variables(then_run=True)
+                return
+            if choice != 'run':
+                return
+            self.write_log(f'รันโดยไม่เช็คตัวแปร {len(amber)} ช่องที่ยังเช็คไม่ได้ (ผู้ใช้เลือก)')
+        self.autosave()
+        self.launch('run')
 
     def launch(self, action, **extra):
         if self.busy:
@@ -9292,6 +9908,8 @@ class App(MacWindowMixin, QMainWindow):
             QTimer.singleShot(0, lambda: self.show_run_summary(code))
         if code == 0 and self.action == 'windows':
             QTimer.singleShot(0, self.after_scan)
+        if code == 0 and self.action == 'banners':  # v3 N1: a Lyche window is selected and answering
+            QTimer.singleShot(0, self.auto_recheck)
         if self.action == 'items' and getattr(self, 'items_request', None):
             (callback, path, project), self.items_request = self.items_request, None
             data, error = None, self.check_error
@@ -9308,6 +9926,9 @@ class App(MacWindowMixin, QMainWindow):
             callback, self.check_callback = self.check_callback, None
             error = self.check_error or ('' if self.check_results is not None else 'Worker สิ้นสุดก่อนได้ผล ดูรายละเอียดในบันทึก')
             QTimer.singleShot(0, lambda: callback(self.check_results, error))
+        if self.control_dir is not None:  # request.json + stop/pause flags of this run only
+            import shutil
+            shutil.rmtree(self.control_dir, ignore_errors=True)
 
     def after_scan(self):
         """After looking for Lyche: none → ask to open it; several → ask which one; one → Get Banner."""
