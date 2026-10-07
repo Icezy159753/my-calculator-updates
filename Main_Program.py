@@ -67,6 +67,9 @@ def _fast_write_output(stream, text):
     """Keep subprocess diagnostics usable on Thai Windows console encodings."""
     if stream is None:
         return
+    if hasattr(stream, 'reconfigure') and not stream.isatty():
+        # Subprocess readers use UTF-8 regardless of the Windows console locale.
+        stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     try:
         stream.write(text)
     except UnicodeEncodeError:
@@ -255,7 +258,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.107"
+CURRENT_VERSION = "1.1.108"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:

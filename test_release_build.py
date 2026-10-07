@@ -187,6 +187,17 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn(b'12 sections OK', buffer.getvalue())
         namespace['_fast_write_output'](None, 'windowed app has no stream')
 
+    def test_redirected_launcher_diagnostics_are_utf8_on_western_windows(self):
+        tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fast_write_output')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<console diagnostics>', 'exec'), namespace)
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding='cp1252')
+        text = '12 sections OK · data: แบบสอบถาม'
+        namespace['_fast_write_output'](stream, text)
+        self.assertEqual(buffer.getvalue().decode('utf-8'), text)
+
     def test_failed_auto_check_exits_without_error_dialog(self):
         tree = ast.parse(Path(__file__).with_name('Main_Program.py').read_text(encoding='utf-8-sig'))
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_fast_launch_submodule')
