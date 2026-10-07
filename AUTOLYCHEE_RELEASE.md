@@ -166,6 +166,12 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
   ไม่มีหน่วง 15 วินาที; เมื่อพบรุ่นใหม่ต้องแสดงกล่องถามอัปเดตบน GUI thread
   ใช้ผลตรวจเดิมสำหรับกล่องและปุ่มอัปเดต ไม่เรียก latest API ซ้ำ; offline ให้แสดงสถานะและใช้งานโปรแกรมต่อได้
 
+- บทเรียนจาก v1.1.106: เมื่อตัด dependency ออกจาก runtime ต้องลบโฟลเดอร์ว่างของไฟล์ managed ที่ถูกถอดออกด้วย
+  มิฉะนั้น Python/PyInstaller อาจ import โฟลเดอร์นั้นเป็น namespace package เช่น NumPy ว่างทำให้ OpenPyXL พัง
+  checksum ของไฟล์ยังตรงกับ Full Package ได้แม้ runtime เปิดไม่ผ่าน จึงต้องรักษา transition smoke test ไว้
+  updater ลบเฉพาะโฟลเดอร์ที่ว่างด้วย rmdir โดยไม่ลบไฟล์งานหรือโฟลเดอร์ว่างอื่นของผู้ใช้; rollback ต้องสร้าง parent กลับได้
+  AutoLychee --check/--smoke-test/--post ที่ผิดพลาดต้องพิมพ์ traceback และ exit 1 โดยไม่รอกล่อง error ของ PyInstaller
+
 ## 8. Deploy ด้วยการดับเบิลคลิก
 
 - ใช้ `Deploy_GitHub.bat` จากโฟลเดอร์โครงการ; ต้องมี Python พร้อม dependencies ของโปรแกรม, Git และ GitHub CLI ที่ login แล้ว

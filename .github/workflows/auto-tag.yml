@@ -16,7 +16,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
 
       - name: Detect version change
         id: version
@@ -64,7 +63,15 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Checkout uses the built-in token so an expired PAT cannot break manual releases.
+          # A PAT is still required here to trigger the tag-push release workflow.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_PAT is required when creating a new automatic release tag."
+            exit 1
+          fi
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          gh auth setup-git
           git tag "$tag"
           git push origin "$tag"
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}

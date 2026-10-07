@@ -255,7 +255,15 @@ def _main() -> None:
 
 
 if __name__ == '__main__':
-    _main()
+    try:
+        _main()
+    except Exception:
+        if _sys.argv[1:2] in (['--check'], ['--smoke-test'], ['--post']):
+            # CI must receive a failing exit code, never a windowed bootloader dialog.
+            import traceback
+            traceback.print_exc()
+            raise SystemExit(1)
+        raise
     raise SystemExit(0)
 raise ImportError('AutoLychee_OneFile.py is a program: run it, do not import it')
 # ============================== END OF LOADER ==============================

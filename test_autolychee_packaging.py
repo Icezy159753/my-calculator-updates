@@ -86,6 +86,20 @@ class AutoLycheePackagingTests(unittest.TestCase):
         self.assertIn("elif args == ['--smoke-test']:", source)
         self.assertIn("print('Auto Lychee GUI smoke test OK', flush=True)", source)
 
+    def test_autolychee_cli_errors_exit_without_bootloader_dialog(self):
+        source = (ROOT / 'All_Programs/158_AutoLychee_OneFile.py').read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        guard = next(node for node in tree.body if isinstance(node, ast.If)
+                     and ast.unparse(node.test) == "__name__ == '__main__'")
+        for flag in ('--check', '--smoke-test', '--post'):
+            with self.subTest(flag=flag):
+                namespace = {'__name__': '__main__', '_sys': SimpleNamespace(argv=['AutoLychee.exe', flag]),
+                             '_main': Mock(side_effect=AttributeError('missing optional dependency'))}
+                with patch('traceback.print_exc') as diagnostic, self.assertRaises(SystemExit) as result:
+                    exec(compile(ast.Module(body=[guard], type_ignores=[]), '<autolychee-cli>', 'exec'), namespace)
+                self.assertEqual(result.exception.code, 1)
+                diagnostic.assert_called_once()
+
     def test_autolychee_build_keeps_runtime_outside_executable(self):
         # Qt must live beside the EXE so launch does not unpack it into TEMP each time.
         hooks = ModuleType('PyInstaller.utils.hooks')

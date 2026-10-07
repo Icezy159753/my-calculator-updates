@@ -1,4 +1,5 @@
 import json
+import importlib.machinery
 import os
 from pathlib import Path
 import shutil
@@ -45,6 +46,48 @@ class ReleaseFilesTests(unittest.TestCase):
     def test_updates_adds_and_deletes_match_full_package(self):
         self.apply()
         self.assertEqual(files.inventory(self.app), files.inventory(self.new))
+
+    def test_removed_package_does_not_survive_as_namespace_package(self):
+        name = '_internal/AutoLychee/_internal/removed_optional_package/core/native.pyd'
+        self.write(self.old, name, b'old optional dependency')
+        self.write(self.app, name, b'old optional dependency')
+        files.make_file_package(files.inventory(self.old), self.new, '1.1.96', '1.1.97', self.package)
+        self.apply()
+        runtime = self.app / '_internal/AutoLychee/_internal'
+        self.assertIsNone(importlib.machinery.PathFinder.find_spec('removed_optional_package', [str(runtime)]))
+
+    def test_removed_package_preserves_unmanaged_files_and_unrelated_empty_folders(self):
+        name = '_internal/AutoLychee/_internal/removed_optional_package/core/native.pyd'
+        self.write(self.old, name, b'old optional dependency')
+        self.write(self.app, name, b'old optional dependency')
+        user_file = '_internal/AutoLychee/_internal/removed_optional_package/notes.txt'
+        self.write(self.app, user_file, b'user notes')
+        unrelated = self.app / 'empty-user-folder'
+        unrelated.mkdir()
+        files.make_file_package(files.inventory(self.old), self.new, '1.1.96', '1.1.97', self.package)
+        self.apply()
+        self.assertEqual((self.app / user_file).read_bytes(), b'user notes')
+        self.assertFalse((self.app / name).parent.exists())
+        self.assertTrue(unrelated.is_dir())
+
+    def test_crash_after_package_directory_cleanup_restores_removed_files(self):
+        name = '_internal/AutoLychee/_internal/removed_optional_package/core/native.pyd'
+        self.write(self.old, name, b'old optional dependency')
+        self.write(self.app, name, b'old optional dependency')
+        files.make_file_package(files.inventory(self.old), self.new, '1.1.96', '1.1.97', self.package)
+        write_json = files._write_json
+
+        def crash_before_commit(path, data):
+            if data['state'] == 'committed':
+                self.assertFalse((self.app / name).parent.exists())
+                raise KeyboardInterrupt('crash after removing empty package directories')
+            return write_json(path, data)
+
+        with patch('release_files._write_json', side_effect=crash_before_commit):
+            with self.assertRaises(KeyboardInterrupt):
+                self.apply()
+        files.recover_pending(self.app)
+        self.assertEqual(files.inventory(self.app), files.inventory(self.old))
 
     def test_user_files_and_settings_are_preserved(self):
         for name in files.PROTECTED:

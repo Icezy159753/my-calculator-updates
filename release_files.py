@@ -1,4 +1,5 @@
 """Verified file updates with a durable rollback journal (no GUI/network dependencies)."""
+import errno
 import hashlib
 import json
 import os
@@ -197,6 +198,23 @@ def apply_file_update(root, package, current_version, target_version):
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(destination(transaction / 'stage', entry['path']), target)
+        # An empty dependency directory is still importable as a namespace package.
+        # Prune only parents of removed managed files; rmdir preserves user files.
+        installation = Path(root).resolve()
+        directories = set()
+        for entry in entries:
+            if entry.get('after') is None:
+                directory = destination(installation, entry['path']).parent
+                while directory != installation:
+                    directories.add(directory)
+                    directory = directory.parent
+        for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+            destination(installation, directory.relative_to(installation).as_posix())
+            try:
+                directory.rmdir()
+            except OSError as error:
+                if error.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+                    raise
         _write_json(transaction / 'journal.json', {**journal, 'state': 'committed'})
         applying = False
     except Exception:
