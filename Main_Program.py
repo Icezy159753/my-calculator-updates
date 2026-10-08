@@ -258,7 +258,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.108"
+CURRENT_VERSION = "1.1.109"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:
