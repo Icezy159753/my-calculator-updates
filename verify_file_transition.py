@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from release_build import BUILD, DIST, ROOT
 from release_files import apply_file_update, inventory, digest
@@ -37,6 +38,11 @@ def verify():
     env['QT_QPA_PLATFORM'] = 'offscreen'
     env['AUTOLYCHEE_DATA'] = str(BUILD / 'transition-smoke')
     env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+    source = (programs / '158_AutoLychee_OneFile.py').read_text(encoding='utf-8-sig')
+    section_count = len(re.findall(r'^# ====== MODULE: [A-Za-z_]\w* ======$', source, re.M))
+    if not section_count:
+        raise RuntimeError('No Auto Lychee sections found in source')
+    check_marker = f'{section_count} sections OK'.encode('utf-8')
     for executable, args in [
         (previous / '_internal/AutoLychee/AutoLychee.exe', ['--smoke-test']),
         (previous / '_internal/AutoLychee/AutoLychee.exe', ['--post']),
@@ -51,8 +57,10 @@ def verify():
             raise
         if process.returncode or ('--smoke-test' in args and b'Auto Lychee GUI smoke test OK' not in stdout):
             raise RuntimeError(f'Transition smoke failed: {executable.name}; {stderr.decode("utf-8", errors="replace")}')
-        if '--check' in args and b'12 sections OK' not in stdout:
-            raise RuntimeError('Launcher did not return the Auto Lychee check output')
+        if '--check' in args and check_marker not in stdout:
+            raise RuntimeError(f'Launcher did not return {check_marker.decode()}; '
+                               f'stdout: {stdout.decode("utf-8", errors="replace")}; '
+                               f'stderr: {stderr.decode("utf-8", errors="replace")}')
     print('Previous installed version upgraded successfully; all managed files and smoke tests verified')
 
 

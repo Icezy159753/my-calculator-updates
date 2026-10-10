@@ -16,6 +16,7 @@ import threading
 from release_files import inventory, make_file_package, apply_file_update
 
 import release_build as build
+import verify_file_transition as transition
 
 
 class ReleaseBuildTests(unittest.TestCase):
@@ -38,6 +39,42 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def change(self, name, text):
         (self.root / name).write_text(text, encoding='utf-8')
+
+    def test_transition_checks_section_count_from_current_source(self):
+        work = self.root / 'build'
+        dist = self.root / 'dist'
+        work.mkdir()
+        dist.mkdir()
+        (work / 'plan.json').write_text(json.dumps({'previous': '1.1.109', 'version': '1.1.111'}))
+        (dist / 'release_manifest.json').write_text(json.dumps({'files': {}}))
+        for source in (self.root / 'All_Programs').glob('*.py'):
+            bundled = dist / 'Main_Program/_internal/All_Programs' / source.name
+            bundled.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, bundled)
+        for count in (12, 13):
+            for output, passes in ((f'{count} sections OK'.encode(), True),
+                                   (f'{count - 1} sections OK'.encode(), False), (b'', False)):
+                with self.subTest(count=count, output=output):
+                    self.change('All_Programs/158_AutoLychee_OneFile.py', ''.join(
+                        f'# ====== MODULE: section_{i} ======\n' for i in range(count)))
+                    shutil.copy2(self.root / 'All_Programs/158_AutoLychee_OneFile.py',
+                                 dist / 'Main_Program/_internal/All_Programs/158_AutoLychee_OneFile.py')
+                    processes = []
+                    for stdout in (b'Updater transaction self-test OK',
+                                   b'Auto Lychee GUI smoke test OK', b'', output):
+                        process = Mock(returncode=0)
+                        process.communicate.return_value = (stdout, b'')
+                        processes.append(process)
+                    with patch.object(transition, 'ROOT', self.root), \
+                         patch.object(transition, 'BUILD', work), patch.object(transition, 'DIST', dist), \
+                         patch.object(transition, 'apply_file_update'), \
+                         patch.object(transition, 'inventory', return_value={}), \
+                         patch.object(transition.subprocess, 'Popen', side_effect=processes):
+                        if passes:
+                            transition.verify()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, f'{count} sections OK'):
+                                transition.verify()
 
     def test_version_bump_does_not_rebuild_main(self):
         before = build.fingerprints()
