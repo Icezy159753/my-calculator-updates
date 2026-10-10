@@ -100,6 +100,10 @@ def snapshot(names):
 def release_gates():
     print('\nกำลังทดสอบ release (หากไม่ผ่านจะไม่ commit/push)...', flush=True)
     run_preflight(ROOT)
+    source = (ROOT / 'All_Programs/158_AutoLychee_OneFile.py').read_text(encoding='utf-8-sig')
+    section_count = len(re.findall(r'^# ====== MODULE: [A-Za-z_]\w* ======$', source, re.M))
+    if not section_count:
+        raise RuntimeError('ไม่พบ sections ในไฟล์ AutoLychee')
     env = os.environ.copy()
     env['QT_QPA_PLATFORM'] = 'offscreen'
     (ROOT / 'build').mkdir(exist_ok=True)
@@ -109,11 +113,11 @@ def release_gates():
         for args, marker, timeout in [
             (['All_Programs/158_AutoLychee_OneFile.py', '--smoke-test'], 'Auto Lychee GUI smoke test OK', 120),
             (['All_Programs/158_AutoLychee_OneFile.py', '--post'], None, 60),
-            (['Main_Program.py', '--run-module', '158_AutoLychee_OneFile', '--entry-point', 'run_this_app', '--check'], '12 sections OK', 120),
+            (['Main_Program.py', '--run-module', '158_AutoLychee_OneFile', '--entry-point', 'run_this_app', '--check'], f'{section_count} sections OK', 120),
         ]:
             output = run([sys.executable, '-X', 'utf8', *args], capture=True, timeout=timeout, env=env)
             if marker and marker not in output:
-                raise RuntimeError(f'ไม่พบผลตรวจ {marker}; ดู AUTOLYCHEE_RELEASE.md')
+                raise RuntimeError(f'ไม่พบผลตรวจ {marker}; ผลที่ได้รับ:\n{output or "(ไม่มี output)"}\nดู AUTOLYCHEE_RELEASE.md')
             print(f'  {args[-1]} ผ่าน', flush=True)
 
 

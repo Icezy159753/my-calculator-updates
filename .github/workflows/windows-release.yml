@@ -112,6 +112,8 @@ jobs:
           AUTOLYCHEE_DATA: ${{ runner.temp }}/autolychee-smoke
         run: |
           @'
+          from pathlib import Path
+          import re
           import subprocess
           import sys
 
@@ -144,7 +146,9 @@ jobs:
                         "158_AutoLychee_OneFile", "--entry-point", "run_this_app", "--check"], timeout=120)
           print(routed.stdout)
           print(routed.stderr)
-          if routed.returncode != 0 or "12 sections OK" not in routed.stdout:
+          source = Path("All_Programs/158_AutoLychee_OneFile.py").read_text(encoding="utf-8-sig")
+          section_count = len(re.findall(r"^# ====== MODULE: [A-Za-z_]\w* ======$", source, re.M))
+          if not section_count or routed.returncode != 0 or f"{section_count} sections OK" not in routed.stdout:
               raise SystemExit("Frozen Launcher Auto Lychee routing failed")
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,6 +1,7 @@
 """Launcher routing checks without loading the Launcher UI or starting Lychee jobs."""
 import ast
 import os
+import re
 import runpy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -106,13 +107,18 @@ class AutoLycheePackagingTests(unittest.TestCase):
         hooks.collect_submodules = lambda name: []
         analysis = SimpleNamespace(pure=[], scripts=['loader'], binaries=['Qt runtime'], datas=['source'])
         executable, collect = Mock(return_value='exe'), Mock()
+        analyse = Mock(return_value=analysis)
         with patch.dict(sys.modules, {'PyInstaller.utils.hooks': hooks}):
             runpy.run_path(str(ROOT / 'AutoLychee.spec'), init_globals={
-                'Analysis': Mock(return_value=analysis), 'PYZ': Mock(return_value='pyz'),
+                'Analysis': analyse, 'PYZ': Mock(return_value='pyz'),
                 'EXE': executable, 'COLLECT': collect,
             })
         self.assertTrue(executable.call_args.kwargs['exclude_binaries'])
         self.assertNotIn(analysis.binaries, executable.call_args.args)
+        source = (ROOT / 'All_Programs/158_AutoLychee_OneFile.py').read_text(encoding='utf-8-sig')
+        sections = set(re.findall(r'^# ====== MODULE: ([A-Za-z_]\w*) ======$', source, re.M))
+        self.assertTrue(sections)
+        self.assertFalse(sections - set(analyse.call_args.kwargs['excludes']))
         self.assertEqual(collect.call_args.args, ('exe', analysis.binaries, analysis.datas))
         self.assertEqual(collect.call_args.kwargs['name'], 'AutoLychee')
 

@@ -8,7 +8,7 @@ r"""Auto Lychee — the whole program in ONE readable Python file.
 HOW THIS FILE IS ORGANISED
     1. This loader (up to "END OF LOADER").
     2. One section per original module, in this order:
-           core, fast_styles, history, chrome, driver, sounds, post_total_na, post_del_sig,
+           core, fast_styles, history, chrome, lyche_windows, driver, sounds, post_total_na, post_del_sig,
            post_cut_percent, worker, app, onefile_assets
        Each section starts with a line of the form  "# ====== MODULE: <name> ======"  and is the
        unchanged source of <name>.py from the multi-file project, except where it is marked
@@ -469,6 +469,7 @@ def save_json(path: Path, value):
     temporary.replace(path)
 
 
+VERSION = '2026.10.10'  # shown in the title bar, the log and error files; bump with every delivered change
 ON, OFF = 'เปิด', 'ปิด'
 CUT_MODE_LABELS = {'both': 'N + %', 'count': 'N Only', 'percent': '% Only'}
 EXPORT_MODE_LABELS = {'sheets': 'แยกชีท', 'onesheet': 'One Sheet'}
@@ -1000,6 +1001,132 @@ class MacWindowMixin:
         return HTCLIENT
 
 
+# ====== MODULE: lyche_windows ======
+"""Win32 helpers shared by the GUI (app.py, which must not import the UIA driver) and driver.py:
+WS_EX_NOACTIVATE on Lyche's windows while the bot works, and its cleanup.
+
+A window this program styles is marked with a window property, so cleanup only ever touches
+windows we changed — never a style Lyche set itself, never another application whose title
+happens to look like Lyche's (review 2026-10-10)."""
+# from __future__ import annotations  (applied to this section by the loader)
+
+import ctypes
+from ctypes import wintypes
+
+import win32gui
+import win32process
+
+NO_ACTIVATE = 0x08000000  # WS_EX_NOACTIVATE
+MARK = 'AutoLychee.NoActivate'
+
+_user32 = ctypes.windll.user32
+_user32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+_user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+_user32.GetPropW.restype = wintypes.HANDLE
+_user32.RemovePropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+_user32.RemovePropW.restype = wintypes.HANDLE
+
+
+def lyche_pids():
+    """Process ids of every Lyche-Epoch window: the project window ('Lyche-Epoch <code:name>') and
+    the tabulation windows ('… - Lyche-Epoch <…>')."""
+    pids = set()
+    def collect(hwnd, _):
+        title = win32gui.GetWindowText(hwnd)
+        if title.startswith('Lyche-Epoch <') or ' - Lyche-Epoch' in title:
+            pids.add(win32process.GetWindowThreadProcessId(hwnd)[1])
+    win32gui.EnumWindows(collect, None)
+    return pids
+
+
+def set_no_activate(hwnd):
+    """Give a window WS_EX_NOACTIVATE and mark it as ours; returns its previous extended style
+    (None if the window is gone)."""
+    try:
+        ex = win32gui.GetWindowLong(hwnd, -20)  # GWL_EXSTYLE
+        if not ex & NO_ACTIVATE:
+            win32gui.SetWindowLong(hwnd, -20, ex | NO_ACTIVATE)
+            _user32.SetPropW(hwnd, MARK, 1)
+        return ex
+    except win32gui.error:
+        return None
+
+
+def restore_style(hwnd, ex, pid=None):
+    """Put a saved extended style back on a window that still exists and (when given) still belongs
+    to `pid` — window handles are reused, so a dead dialog's handle may be someone else's window."""
+    try:
+        if not win32gui.IsWindow(hwnd) or (pid is not None and win32process.GetWindowThreadProcessId(hwnd)[1] != pid):
+            return
+        if win32gui.GetWindowLong(hwnd, -20) != ex:
+            win32gui.SetWindowLong(hwnd, -20, ex)
+        _user32.RemovePropW(hwnd, MARK)
+    except win32gui.error:
+        pass
+
+
+def clear_no_activate(pids=None):
+    """Take WS_EX_NOACTIVATE off every window this program marked (default: in every Lyche process):
+    Lyche must always be clickable after a run, also after a worker that was killed before its own
+    cleanup ran. Idempotent; windows we did not mark are left alone."""
+    if pids is None:
+        pids = lyche_pids()
+    cleared = []
+    def collect(hwnd, _):
+        if win32process.GetWindowThreadProcessId(hwnd)[1] in pids and _user32.GetPropW(hwnd, MARK):
+            try:
+                ex = win32gui.GetWindowLong(hwnd, -20)
+                if ex & NO_ACTIVATE:
+                    win32gui.SetWindowLong(hwnd, -20, ex & ~NO_ACTIVATE)
+                _user32.RemovePropW(hwnd, MARK)
+                cleared.append(hwnd)
+            except win32gui.error:
+                pass
+    if pids:
+        win32gui.EnumWindows(collect, None)
+    return cleared
+
+
+def process_memory_mb(pid):
+    """Private bytes of a process in MB, or None. A Lyche session grows with every table it runs and
+    with the automation peers WPF keeps for UI Automation (live 2026-10-10: 0.6 GB after a few rows,
+    2.0 GB after ~100 exports, and every step 2-3x slower)."""
+    try:
+        import win32api
+        handle = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        try:
+            return win32process.GetProcessMemoryInfo(handle)['PagefileUsage'] // (1024 * 1024)
+        finally:
+            win32api.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def lyche_memory_mb():
+    """The largest private-bytes figure over all Lyche processes, or None."""
+    sizes = [process_memory_mb(pid) for pid in lyche_pids()]
+    return max((size for size in sizes if size), default=None)
+
+
+def unpark_windows(pids=None):
+    """Bring every visible Lyche window that a killed worker left parked off-screen (x <= -15000, not
+    minimised) back onto the monitor without activating it; returns the handles moved."""
+    if pids is None:
+        pids = lyche_pids()
+    moved = []
+    def collect(hwnd, _):
+        if win32process.GetWindowThreadProcessId(hwnd)[1] in pids and win32gui.IsWindowVisible(hwnd) \
+                and not win32gui.IsIconic(hwnd) and win32gui.GetWindowRect(hwnd)[0] <= -15000:
+            try:
+                win32gui.SetWindowPos(hwnd, 0, 120 + 30 * len(moved), 120 + 30 * len(moved), 0, 0, 0x0001 | 0x0004 | 0x0010)
+                moved.append(hwnd)
+            except win32gui.error:
+                pass
+    if pids:
+        win32gui.EnumWindows(collect, None)
+    return moved
+
+
 # ====== MODULE: driver ======
 """Lyche-Epoch UIA adapter. All lookups are scoped to the selected process/window.
 
@@ -1062,6 +1189,40 @@ def windows():
 class _FLASHWINFO(ctypes.Structure):
     _fields_ = [('cbSize', wintypes.UINT), ('hwnd', wintypes.HWND), ('dwFlags', wintypes.DWORD),
                 ('uCount', wintypes.UINT), ('dwTimeout', wintypes.DWORD)]
+
+
+from lyche_windows import NO_ACTIVATE, clear_no_activate, process_memory_mb, restore_style, set_no_activate  # noqa: F401 (re-exported)
+
+
+@contextmanager
+def no_activation(pid, extra=(), only=None):
+    """Keep every current top-level window of the Lyche process (plus `extra`) from taking the
+    foreground while the bot works. UI Automation grants the provider process the foreground on
+    every pattern action (SetValue, Invoke, Select; reads do not) — measured live 2026-10-10: the
+    same Confirm box shown by a posted WM_CLOSE changed nothing, shown by an Invoke it took the
+    foreground within 10 ms, so a BG run moved the foreground 288 times in two rows and the guards
+    had to pull it back each time. With WS_EX_NOACTIVATE the actions still work and the dialogs they
+    open stay where they are. New windows get the style from HideLycheDialogs.hide; the original
+    styles come back afterwards. `only`: style just these windows (a read-only step while the user
+    may be working in Lyche's project window must not make that window unclickable)."""
+    originals = {}
+    if only is None:
+        def collect(hwnd, _):
+            if win32process.GetWindowThreadProcessId(hwnd)[1] == pid and not win32gui.GetWindowLong(hwnd, -16) & 0x40000000:
+                originals[hwnd] = None
+        win32gui.EnumWindows(collect, None)
+    else:
+        originals = {hwnd: None for hwnd in only}
+    for hwnd in extra:
+        originals[hwnd] = None
+    for hwnd in list(originals):
+        originals[hwnd] = set_no_activate(hwnd)
+    try:
+        yield
+    finally:
+        for hwnd, ex in originals.items():
+            if ex is not None:
+                restore_style(hwnd, ex, pid)
 
 
 def stop_flash(hwnd):
@@ -1195,14 +1356,15 @@ def launchers():
     return result
 
 
-def open_cross_tabulation(emit, timeout=120):
-    """No Cross Tabulation window yet: on each Lyche-Epoch project window select the
-    Tabulation tab (pnlTabulation) then press Cross Tabulation (btnQuestionCross).
-    UIA Select/Invoke first (no mouse); fall back to clicking the control itself."""
+def open_cross_tabulation(emit, timeout=120, project='', stop=None):
+    """No Cross Tabulation window yet: on the Lyche-Epoch project window (`project` = '<code:name>'
+    from the selected title; every open project when empty) select the Tabulation tab
+    (pnlTabulation) then press Cross Tabulation (btnQuestionCross). UIA only, no mouse.
+    `stop()` True (the worker's stop flag) ends the wait early with Stopped."""
     launchers = []
     def collect(handle, _):
         title = win32gui.GetWindowText(handle)
-        if win32gui.IsWindowVisible(handle) and re.match(r'^Lyche-Epoch <[^>]+>', title):
+        if win32gui.IsWindowVisible(handle) and re.match(r'^Lyche-Epoch <[^>]+>', title) and (not project or project in title):
             launchers.append((handle, title))
     win32gui.EnumWindows(collect, None)
     if not launchers:
@@ -1218,13 +1380,15 @@ def open_cross_tabulation(emit, timeout=120):
             result = fn()
             if result:
                 return result
+            if stop and stop():
+                raise Stopped('หยุดแล้ว (F8 / Stop)')
             time.sleep(.1)  # poll fast so the new window is minimised before it draws
         return None
     pid = win32process.GetWindowThreadProcessId(launchers[0][0])[1]
     user_window = user_foreground(pid)  # Lyche activates the new window: hand the focus straight back
     # Park the new window off-screen the moment it shows (2 ms poller), then minimise it without an
     # animation and give it back its normal on-screen restore position — nothing pops up.
-    with HideLycheDialogs(pid) as hider:
+    with no_activation(pid), HideLycheDialogs(pid) as hider:
         hider.burst(15)
         for handle, title in launchers:
             root = api.ElementFromHandle(handle)
@@ -1234,8 +1398,8 @@ def open_cross_tabulation(emit, timeout=120):
                 continue
             try:
                 tab.iface_selection_item.Select()
-            except Exception:
-                tab.click_input()
+            except Exception as exc:
+                raise RuntimeError('เปิดแท็บ Tabulation ผ่าน UIA ไม่ได้ — กรุณาเปิด Cross Tabulation เอง') from exc
             button = wait_for(lambda: (b := element(root, 'btnQuestionCross')) and b.is_enabled() and b, 10)
             if button is None:
                 emit('log', text=f'ไม่พบปุ่ม Cross Tabulation ใน {title}')
@@ -1243,8 +1407,8 @@ def open_cross_tabulation(emit, timeout=120):
             hider.burst(15)
             try:
                 button.iface_invoke.Invoke()
-            except Exception:
-                button.click_input()
+            except Exception as exc:
+                raise RuntimeError('เปิด Cross Tabulation ผ่าน UIA ไม่ได้ — กรุณาเปิดเองใน Lyche') from exc
             emit('log', text=f'เปิด Tabulation → Cross Tabulation ให้ {title} (ย่อไว้เบื้องหลัง)')
         opened = wait_for(windows, timeout) or []
         for item in opened:
@@ -1363,6 +1527,8 @@ class HideLycheDialogs:
             def check(hwnd, _):
                 if visible(hwnd):
                     self._consider(hwnd, 'poll')
+                elif hwnd not in self._existing and hwnd not in self.touched and hwnd not in self._hiding:
+                    self._prestyle(hwnd)
                 return True
             while not self._stop.is_set():
                 if self._paused.is_set():
@@ -1376,7 +1542,7 @@ class HideLycheDialogs:
                     except win32gui.error:
                         pass
                 # Never a busy spin (user request: keep CPU low): 1 ms right after a press, else 5 ms.
-                time.sleep(.001 if time.monotonic() < self._burst_until else .005)
+                self._stop.wait(.005 if time.monotonic() < self._burst_until else .02)
         self._poller = threading.Thread(target=poll, name='lyche-poller', daemon=True)
         self._poller.start()
         return self
@@ -1390,12 +1556,8 @@ class HideLycheDialogs:
             win32api.PostThreadMessage(self._thread_id, 0x0012, 0, 0)  # WM_QUIT
             self._thread.join(2)
             self._thread_id = None
-        for hwnd, ex in list(self.touched.items()):  # windows that survive get their taskbar style back
-            try:
-                if win32gui.IsWindow(hwnd) and win32gui.GetWindowLong(hwnd, -20) != ex:
-                    win32gui.SetWindowLong(hwnd, -20, ex)
-            except win32gui.error:
-                pass
+        for hwnd, ex in list(self.touched.items()):  # windows that survive get their styles back
+            restore_style(hwnd, ex, self.pid)
 
     def _on_event(self, _hook, event, hwnd, id_object, _child, _thread, _time):
         if id_object == 0 and hwnd and event in (0x8000, 0x8002, 0x800B):
@@ -1427,6 +1589,29 @@ class HideLycheDialogs:
         except Exception:
             pass
 
+    def _prestyle(self, hwnd):
+        """A Lyche top-level window that exists but is not shown yet (the poller sees it 5-20 ms after
+        creation): give it WS_EX_NOACTIVATE before Lyche shows it. A box shown without the style asks for
+        the foreground, is refused, and Windows pulses Lyche's taskbar button for ~1 s (live 2026-10-10:
+        every Save As); FLASHW_STOP afterwards cannot take that pulse back. On its own thread: the style
+        change waits for Lyche's UI thread."""
+        try:
+            if win32gui.GetWindowLong(hwnd, -16) & 0x40000000:  # WS_CHILD
+                return
+        except win32gui.error:
+            return
+        self._hiding.add(hwnd)
+        def apply():
+            try:
+                self.touched.setdefault(hwnd, win32gui.GetWindowLong(hwnd, -20))
+                set_no_activate(hwnd)
+            except win32gui.error:
+                self.touched.pop(hwnd, None)
+            finally:
+                self._hiding.discard(hwnd)
+        import threading
+        threading.Thread(target=apply, name='lyche-prestyle', daemon=True).start()
+
     def _park(self, hwnd, source):
         detected = time.time()
         try:
@@ -1443,14 +1628,17 @@ class HideLycheDialogs:
         live). An empty window region at creation was tried and dropped: it waits for the same
         thread, did not shorten the flash, and a run then missed the 'Saved.' box."""
         try:
-            if hwnd not in self.touched:
-                ex = win32gui.GetWindowLong(hwnd, -20)  # GWL_EXSTYLE
-                self.touched[hwnd] = ex
-                title = win32gui.GetWindowText(hwnd)
-                if not title.startswith(WINDOW_PREFIXES):
+            self.touched.setdefault(hwnd, win32gui.GetWindowLong(hwnd, -20))  # GWL_EXSTYLE
+            set_no_activate(hwnd)  # a new box must not take the foreground either (see no_activation)
+            if not win32gui.GetWindowText(hwnd).startswith(WINDOW_PREFIXES):
+                ex = win32gui.GetWindowLong(hwnd, -20)
+                if not ex & 0x00000080:
                     win32gui.SetWindowLong(hwnd, -20, ex | 0x00000080)  # TOOLWINDOW: no taskbar button
             if win32gui.GetWindowRect(hwnd)[0] <= -15000:
                 return False  # already parked (avoids LOCATIONCHANGE recursion)
+            # The park waits for Lyche's UI thread (66-242 ms live; ~370 ms for Save As, whose thread is
+            # still initialising — but DWM shows nothing of it before its first paint, so no flash: 20 ms
+            # screenshots of that corner stayed unchanged, 2026-10-10).
             win32gui.SetWindowPos(hwnd, 0, -20000, -20000, 0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE NOZORDER NOACTIVATE
             # A parked modal box that is denied the foreground makes Windows blink Lyche's taskbar button
             # (user notices it while working elsewhere): cancel the blink on the box and on its owner.
@@ -1470,6 +1658,7 @@ class Lyche:
     def __init__(self, handle: int, control_dir: Path, emit, timeout=900, background=True):
         self.background = background  # UIA patterns only, Lyche kept off-screen (see background_session)
         self.hider = None
+        self.muter = None  # sounds.SessionMute while background_session runs
         self.focus_guard = None  # FocusGuard while background_session runs
         self.user_window_hint = None  # the user's window when Run was pressed (from the app)
         self.last_user_window = None  # the window the last FocusGuard protected
@@ -1622,6 +1811,8 @@ class Lyche:
         """Activate a control through UIA patterns only (no mouse, no focus change)."""
         if self.hider:
             self.hider.burst()  # any press may open a Lyche window
+        if self.muter:
+            self.muter.mute()  # a no-op once muted; retried while the System Sounds session did not exist
         info = control.element_info.element
         for pattern_id, action in ((10000, 'Invoke'), (10015, 'Toggle'), (10010, 'Select'), (10005, 'Expand')):
             try:
@@ -1676,8 +1867,11 @@ class Lyche:
             ctypes.windll.dwmapi.DwmSetWindowAttribute(handle, 3, ctypes.byref(value), 4)  # DWMWA_TRANSITIONS_FORCEDISABLED
         transitions(True)
         switch = sys.getswitchinterval()
+        from sounds import SessionMute
+        self.muter = SessionMute(self.control_dir.parent / 'sounds-muted')  # every Lyche box dings otherwise
+        self.muter.mute()
         try:
-            with HideLycheDialogs(self.pid, also=(handle,)) as hider, \
+            with no_activation(self.pid), HideLycheDialogs(self.pid, also=(handle,)) as hider, \
                     FocusGuard(self.pid, (self.control_dir / 'hold-focus').exists,
                                self.last_user_window or self.user_window_hint) as guard:
                 self.hider, self.focus_guard = hider, guard
@@ -1712,6 +1906,8 @@ class Lyche:
         finally:
             sys.setswitchinterval(switch)
             self.hider = self.focus_guard = None
+            self.muter.restore()
+            self.muter = None
             # The hook is gone now, so putting the window back is not undone by it.
             if win32gui.IsWindow(handle):
                 if was_iconic:
@@ -1723,8 +1919,14 @@ class Lyche:
                 transitions(False)
 
     def focus(self, root):
+        self.interactive_only('เปลี่ยนโฟกัสหน้าต่าง')
         self.checkpoint()
         root.set_focus()
+
+    def interactive_only(self, action):
+        """BG never borrows physical input, even when a UIA action fails."""
+        if self.background:
+            raise RuntimeError(f'BG ทำขั้นตอน {action} ผ่าน UIA ไม่ได้ — กรุณาใช้ Preview สำหรับขั้นตอนนี้')
 
     def text(self, root, aid):
         control = self.find(root, aid=aid, required=False)
@@ -1798,7 +2000,7 @@ class Lyche:
     def menu_background(self, aid, item):
         """Open a ribbon (split) button's drop-down with ExpandCollapse and Invoke the item — without
         touching the user's foreground window (user rule 2026-10-02: BG must not disturb other work).
-        See popup_cloak. Falls back to the old foreground way if the item does not show up."""
+        See popup_cloak. If UIA fails, report a Preview requirement without borrowing input."""
         root = self.main()
         control = self.find(root, aid=aid)
         self.checkpoint()
@@ -1821,13 +2023,14 @@ class Lyche:
                 control.iface_expand_collapse.Collapse()
             except Exception:
                 pass
-        self.emit('log', text=f'เมนู {item} ไม่เปิดแบบไม่แย่งโฟกัส — ใช้วิธีเดิม (โฟกัสชั่วครู่)')
+        self.emit('log', text=f'เมนู {item} ไม่เปิดผ่าน UIA — BG จะไม่เปลี่ยนโฟกัส')
         self._menu_background_foreground(aid, item)
 
     def _menu_background_foreground(self, aid, item):
         """Open a ribbon (split) button's drop-down with ExpandCollapse and Invoke the item.
         A WPF ribbon drop-down closes at once unless its window is active (live failure on Beppu:
         Expand left the state at Collapsed), so the off-screen window gets the foreground first."""
+        self.interactive_only(f'เมนู {item}')
         root = self.main()
         control = self.find(root, aid=aid)
         self.checkpoint()
@@ -1943,9 +2146,10 @@ class Lyche:
             self.emit('unfreeze')
             flag.unlink(missing_ok=True)
 
-    def _popup_item(self, item):
+    def _popup_item(self, item, with_window=False):
         """A ribbon drop-down's ListItem copy of `item` inside one of Lyche's untitled popup windows (the
-        drop-down is its own HWND), whatever UIA says about 'offscreen' (the owner is parked)."""
+        drop-down is its own HWND), whatever UIA says about 'offscreen' (the owner is parked).
+        with_window: also the HWND of the popup the item was found in (queue_click posts to it)."""
         condition = self.api.CreateAndCondition(self.api.CreatePropertyCondition(30005, item),
                                                 self.api.CreatePropertyCondition(30003, 50007))
         handles = []
@@ -1967,19 +2171,20 @@ class Lyche:
                 try:
                     rect = element.CurrentBoundingRectangle
                     if element.CurrentIsEnabled and rect.right > rect.left and box[0] <= rect.left and rect.right <= box[2]:
-                        return UIAWrapper(UIAElementInfo(element))
+                        wrapper = UIAWrapper(UIAElementInfo(element))
+                        return (wrapper, handle) if with_window else wrapper
                 except Exception:
                     pass
         return None
 
     def gallery_click(self, aid, item, expect=None):
-        """BG: click a ribbon gallery item (they react to a real click only) with nothing on screen but a
-        ~100 ms cursor flick and ~0.3 s of foreground — no screen freeze, the window stays parked.
-        Live 2026-10-02: Expand while the owner is parked and the popup is NOT parked → WPF clamps the
-        drop-down onto the monitor at (0,0); popup_cloak makes it invisible within ~25 ms; the owner has to
-        be made foreground AFTER the drop-down is open (before → it opens next to the parked owner, out of
-        reach) and a real click on the popup's ListItem copy then works (without the foreground it did not;
-        UIA patterns, posted mouse/keys never did). Falls back to menu_click_on_screen (screen freeze)."""
+        """BG uses UIA only. The legacy physical click path below is Preview-only.
+
+        Some WPF galleries previously required foreground and a real click. BG now
+        reports that unsupported step instead of interrupting the user's input.
+        """
+        if self.background:
+            return self.gallery_invoke(aid, item, expect)
         import win32api
         hold = self.control_dir / 'hold-focus'  # the app's focus guard waits meanwhile
         hold.touch()
@@ -2029,12 +2234,58 @@ class Lyche:
         self.emit('log', text=f'เมนู {item} แบบไม่แช่จอไม่สำเร็จ — ใช้วิธีแช่จอ')
         self.menu_click_on_screen(aid, item, expect)
 
+    def gallery_invoke(self, aid, item, expect=None):
+        """BG gallery item: open the drop-down through UIA, then click its item with queue_click.
+        Live 2026-10-10 on Export all → Excel(One Sheet): UIA Select (also after RemoveFromSelection),
+        LegacyIAccessible DoDefaultAction, posted keys and a plain posted click all opened nothing."""
+        control = self.find(self.main(), aid=aid)
+        with self.popup_cloak():
+            try:
+                try:
+                    control.iface_expand_collapse.Expand()
+                    found, popup = self.wait(lambda: self._popup_item(item, with_window=True), item, 3, poll=.1)
+                except (TimeoutError, NoPatternInterfaceError) as exc:  # the drop-down or its item never showed
+                    raise RuntimeError(f'BG เปิดเมนู {item} ผ่าน UIA ไม่ได้ — ใช้ Preview เพื่อ Export รูปแบบนี้') from exc
+                self.queue_click(popup, found.element_info.element.CurrentBoundingRectangle)
+                if expect:  # the window the click opens; a tired Lyche takes seconds (export_all waits 15 s too)
+                    self.wait(lambda: self.dialog(expect, visible_only=False), expect, 15, poll=.1)
+            finally:
+                try:
+                    control.iface_expand_collapse.Collapse()
+                except Exception:
+                    pass
+
+    def queue_click(self, hwnd, rect):
+        """Click the centre of `rect` in Lyche's popup `hwnd` with no real input: share this thread's
+        input queue with Lyche's UI thread (never the user's), give the popup mouse capture inside that
+        queue, post move/down/up. WPF drops posted mouse messages unless the real cursor is over the
+        window or the window holds capture; with capture it takes them (live 2026-10-10: Export All
+        Setting opened, foreground and cursor untouched). Capture is released at once."""
+        x, y = win32gui.ScreenToClient(hwnd, ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2))
+        lparam = (y << 16) | (x & 0xFFFF)
+        user32 = ctypes.windll.user32
+        me, theirs = ctypes.windll.kernel32.GetCurrentThreadId(), win32process.GetWindowThreadProcessId(hwnd)[0]
+        attached = user32.AttachThreadInput(me, theirs, True)
+        try:
+            user32.SetCapture(hwnd)
+            if not attached or user32.GetCapture() != hwnd:  # UIPI: Lyche running elevated, or the popup is gone
+                raise RuntimeError('ส่งคลิกให้เมนูของ Lyche ไม่ได้ (ถ้า Lyche เปิดแบบ Run as administrator ให้เปิดแบบปกติ) — '
+                                   'หรือใช้ Preview สำหรับ Export รูปแบบนี้')
+            for message, wparam in ((0x0200, 0), (0x0201, 1), (0x0202, 0)):  # WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP
+                win32gui.PostMessage(hwnd, message, wparam, lparam)
+                time.sleep(.05)
+        finally:
+            user32.ReleaseCapture()
+            if attached:
+                user32.AttachThreadInput(me, theirs, False)
+
     def menu_click_on_screen(self, aid, item, expect=None):
         """BG mode, for ribbon gallery items that react to a real click only. Live (2026-10-01) Matrix
         Export all → Excel(Separated Sheets) ignored every UIA pattern (Invoke/LegacyIA/Select) and a
         posted or typed Enter. User choice: under the app's screen freeze bring the window on screen,
         open the drop-down, click the item at its current rectangle, put the cursor back and park the
         window again. `expect` = title prefix of the window the click opens (waited for, then parked)."""
+        self.interactive_only(f'คลิกเมนู {item}')
         import win32api
         hold = self.control_dir / 'hold-focus'  # the app's focus guard waits meanwhile
         hold.touch()
@@ -2107,15 +2358,19 @@ class Lyche:
             def opened():
                 confirm = self.dialog('Confirm -')
                 if confirm:
-                    text = ' '.join(x.window_text() for x in self.all(confirm, kind=50020))
-                    if text.strip() != 'Change will not be saved. Proceed?':
+                    text = ' '.join(x.window_text() for x in self.all(confirm, kind=50020)).strip()
+                    if not text:  # live 2026-10-10: the box just answered Yes, read again while it closes
+                        return None
+                    if text != 'Change will not be saved. Proceed?':
                         raise ValueError(f'พบคำถามที่ไม่รู้จัก: {text}')
                     yes = self.find(confirm, name='Yes', kind=50000, required=False) or self.find(confirm, name='&Yes', kind=50000)
                     self.click(yes)
                     self.emit('log', text='Change will not be saved. Proceed? → กด Yes อัตโนมัติ')
                     return None
                 return self.dialog('Tabulation List -')
-            dialog = self.wait(opened, 'Import History')
+            # Live 2026-10-10 14:18: a tired Lyche session took 9 s just to show the Confirm box, and the
+            # list after it missed the default 20 s. Waiting longer costs nothing when Lyche is quick.
+            dialog = self.wait(opened, 'Import History', 90)
         tab = self.find(dialog, aid='tabPersonal' if source == 'Personal' else 'tabShare', required=False) \
             or self.find(dialog, name='Personal Tabulation' if source == 'Personal' else 'Shared Tabulation', kind=50019)
         self.checkpoint()
@@ -2134,27 +2389,67 @@ class Lyche:
         return result
 
     def scan_pages(self, grid, collect):
-        """Visit UIA virtualized rows without guessing scrollbar coordinates."""
+        """Visit UIA virtualized rows without guessing scrollbar coordinates.
+
+        Two large increments (viewports) per page: WPF realises more rows than one viewport, so pages
+        still overlap; when a page of texts shares no row with the previous one the scan steps back
+        one viewport and reads again, so no row can be skipped. No fixed settle sleep per page (0.15 s
+        x 60 pages was 9 of 16 s on a fresh Lyche, 2026-10-10); a page that is still realising shows
+        as disjoint and is simply read again."""
         try:
             scroll = grid.iface_scroll
             if scroll.CurrentVerticallyScrollable:
                 scroll.SetScrollPercent(-1, 0)
+                self.wait(lambda: scroll.CurrentVerticalScrollPercent <= .01,
+                          'เลื่อนรายการกลับต้น', 3, poll=.01)
+                time.sleep(.05)
         except (AttributeError, NotImplementedError, NoPatternInterfaceError):
             scroll = None
-        previous = None
+        def step(amount):
+            # WPF scroll/layout is asynchronous. An unchanged position is not EOF:
+            # wait for progress, and surface a read error if the scroll stalls.
+            percent = scroll.CurrentVerticalScrollPercent
+            scroll.Scroll(2, amount)  # no horizontal scroll; 3 = one vertical large increment, 0 = one back
+            self.wait(lambda: not scroll.CurrentVerticallyScrollable or
+                      scroll.CurrentVerticalScrollPercent != percent,
+                      'เลื่อนรายการหน้าถัดไป', 3, poll=.01)
+        previous, stepped_twice, single = None, False, False
         for _ in range(500):
             self.checkpoint()
             result = collect()
+            if previous is not None and stepped_twice and self._pages_disjoint(previous, result):
+                step(0)  # two viewports was one too many here: back one, and one viewport per page from now on
+                stepped_twice, single = False, True
+                result = collect()
+            if previous is not None and self._pages_disjoint(previous, result):
+                time.sleep(.15)  # rows still realising
+                result = collect()
             yield result
+            previous = result
             if scroll is None or not scroll.CurrentVerticallyScrollable:
                 return
-            percent = scroll.CurrentVerticalScrollPercent
-            if percent >= 100 or percent == previous:
+            if scroll.CurrentVerticalScrollPercent >= 100:
                 return
-            previous = percent
-            scroll.Scroll(2, 3)  # No horizontal scroll; one vertical large increment.
-            time.sleep(.15)
+            step(3)
+            stepped_twice = False
+            # Only pages of texts can be checked for overlap (review 2026-10-10: row objects and
+            # (name, row) pairs got no guard and could skip rows) — anything else keeps one viewport.
+            if not single and self._text_page(result) and scroll.CurrentVerticalScrollPercent < 100:
+                step(3)
+                stepped_twice = True
         raise RuntimeError('รายการยาวเกินขอบเขตการอ่าน โปรดใช้ช่องพิมพ์ชื่อแทน')
+
+    @staticmethod
+    def _text_page(page):
+        return isinstance(page, (list, tuple)) and bool(page) and isinstance(page[0], str)
+
+    @classmethod
+    def _pages_disjoint(cls, previous, current):
+        """True when two pages of row texts share no item row (judged for text pages only; the
+        'Item List' root row is on every page and does not count, nor do blank rows)."""
+        if not cls._text_page(previous) or not cls._text_page(current):
+            return False
+        return not (set(previous) & set(current)) - {'Item List', ''}
 
     def get_banners(self, source):
         """UI read of the Import History list — used only for Shared, which lives on the Lyche
@@ -2196,6 +2491,8 @@ class Lyche:
                     if confirm:
                         hider.hide(confirm.handle)
                         text = ' '.join(x.window_text() for x in self.all(confirm, kind=50020)).strip()
+                        if not text:  # the box just answered Yes, read again while it closes
+                            continue
                         if text != 'Change will not be saved. Proceed?':
                             raise ValueError(f'พบคำถามที่ไม่รู้จัก: {text}')
                         yes = self.find(confirm, name='Yes', kind=50000, required=False) or self.find(confirm, name='&Yes', kind=50000)
@@ -2366,30 +2663,95 @@ class Lyche:
         # other questions' labels. A miss is not proof of absence in this virtualised
         # tree. Clear the keyword and inspect each live page; return the actual row
         # so Filter and Banner Manual can select it, rather than trusting a cached list.
-        self.emit('log', text=f'ค้นหา {item} ไม่พบ — ตรวจรายการ Item จริงใน Lyche')
         self.find(search_panel, aid='txtKeyWord').set_edit_text('')
-        for rows in self.scan_pages(tree, lambda: self.all(tree, kind=50029)):
-            match = exact_row(rows)
-            if match:
+        # Every row of a queue repeats the same misses (live: Q18 and Q2, ~25 s of each row). The first
+        # scan of this run notes where each code sits in this kind of list; later rows jump straight there.
+        places = self.__dict__.setdefault('_item_places', {}).setdefault(root.window_text().split(' - ')[0], {})
+        try:
+            scroll = tree.iface_scroll if tree.iface_scroll.CurrentVerticallyScrollable else None
+        except (AttributeError, NotImplementedError, NoPatternInterfaceError, COMError):
+            scroll = None
+        place = places.get(item.casefold())
+        if place is not None and scroll is not None:
+            try:
+                scroll.SetScrollPercent(-1, place)
+                match = self.wait(exact_row, f'ข้อ {item}', 1.5)
+                self.emit('log', text=f'ค้นหา {item} ไม่พบ — ไปที่ตำแหน่งเดิมในรายการ Item ของ Lyche')
                 return match
+            except (TimeoutError, COMError):
+                pass
+        self.emit('log', text=f'ค้นหา {item} ไม่พบ — ตรวจรายการ Item จริงใน Lyche')
+        for rows in self.scan_pages(tree, lambda: self.all(tree, kind=50029)):
+            percent = scroll.CurrentVerticalScrollPercent if scroll is not None else None
+            for row in rows:
+                found = row.element_info.element.FindFirst(4, cell)
+                text = ' '.join(found.CurrentName.split()) if found else ''
+                code = text.split(' ', 1)[0].casefold()
+                if percent is not None and code:
+                    places.setdefault(code, percent)
+                if code == item.casefold():
+                    return row, text
         return None, ''
 
-    def item_list(self):
+    def item_page(self, tree):
+        """Read one page with a UIA cache snapshot instead of per-row remote reads.
+
+        The snapshot exists only for this call, never across checks/projects. Older
+        UIA providers retain the original first-Text-per-row path as a fallback.
+        """
+        self.checkpoint()
+        text_condition = self.api.CreatePropertyCondition(30003, 50020)
+        try:
+            if getattr(self, '_item_cache_unsupported', False):
+                raise NotImplementedError('UIA cache unavailable for this worker')
+            cache = self.api.CreateCacheRequest()
+            cache.TreeScope = 5  # Element | Descendants
+            cache.AutomationElementMode = 0  # cached-only elements, no live proxy per descendant
+            cache.AddProperty(30003)  # ControlType
+            cache.AddProperty(30005)  # Name
+            condition = self.api.CreatePropertyCondition(30003, 50029)
+            rows = tree.element_info.element.FindAllBuildCache(4, condition, cache)
+            def first_text(element):
+                if element.CachedControlType == 50020:
+                    return element.CachedName
+                children = element.GetCachedChildren()
+                if children:
+                    for index in range(children.Length):
+                        value = first_text(children.GetElement(index))
+                        if value is not None:
+                            return value
+                return None
+            texts = [first_text(rows.GetElement(index)) for index in range(rows.Length)]
+            if texts and all(text is not None and text.strip() for text in texts):
+                return texts
+        except Exception:
+            self._item_cache_unsupported = True  # do not repeat an expensive failed probe on every page
+        texts = []
+        for row in self.all(tree, kind=50029):
+            found = row.element_info.element.FindFirst(4, text_condition)
+            texts.append(found.CurrentName if found else '')
+        return texts
+
+    def item_list(self, wanted=None):
         """Every item (variable) in the settings window's item list as [code, label], in Lyche's order — for the
         Filter dialog's search. Read through UIA page by page (~500 items in ~12 s, verified live); the window
         is neither moved nor restored, the list is scrolled back to the top afterwards."""
         root = self.settings()
         tree = self.find(root, aid='treeListViewQ')
-        cell = self.api.CreatePropertyCondition(30003, 50020)
         items, seen = [], set()
-        for page in self.scan_pages(tree, lambda: self.all(tree, kind=50029)):
-            for row in page:
-                found = row.element_info.element.FindFirst(4, cell)
-                text = ' '.join(found.CurrentName.split()) if found else ''
+        targets = {code.casefold() for code in wanted or []}
+        self._item_list_complete = False
+        for page in self.scan_pages(tree, lambda: self.item_page(tree)):
+            for raw in page:
+                text = ' '.join(raw.split())
                 code, _, label = text.partition(' ')
                 if label and text != 'Item List' and code.casefold() not in seen and re.fullmatch(VARIABLE, code):
                     seen.add(code.casefold())
                     items.append([code, label[:160]])
+            if targets and targets <= seen:
+                break
+        else:
+            self._item_list_complete = True
         try:
             tree.iface_scroll.SetScrollPercent(-1, 0)
         except Exception:
@@ -2398,31 +2760,39 @@ class Lyche:
         return items
 
     def check_items(self, items):
-        """Banner Manual 'เช็คกับ Lyche': which items exist in the project's item list. Search only — the
-        Banner is not touched; the search box is cleared afterwards."""
+        """Check exact codes against a fresh complete live list, without changing Banner.
+
+        Keyword search matches question labels and is stateful; importing many names
+        must not rely on search hits or a previously cached suggestion list.
+        """
         if self.is_matrix():
             raise RuntimeError('หน้าต่าง Lyche ตอนนี้เป็น Matrix — Banner Manual ใช้กับ Banner แบบ Matrix ไม่ได้')
         root = self.settings()
-        results = []
         try:
+            panel = self.find(root, aid='searchPanel')
+            self.find(panel, aid='txtKeyWord').set_edit_text('')
+            fresh = self.item_list(wanted=items)
+            known = {code.casefold(): (code, label) for code, label in fresh}
+            if not known:
+                raise RuntimeError('อ่านรายการตัวแปรจาก Lyche ไม่ได้ — กรุณาเช็คใหม่')
+            if any(item.casefold() not in known for item in items):
+                # A second live pass gives delayed row rendering a chance to settle.
+                # A failed scan propagates as a check error, never a missing name.
+                self.emit('log', text='กำลังอ่านรายการ Lyche ซ้ำเพื่อยืนยันตัวแปรที่ยังไม่พบ')
+                retry = self.item_list()
+                if not retry:
+                    raise RuntimeError('อ่านรายการตัวแปรจาก Lyche ไม่ครบ — กรุณาเช็คใหม่')
+                known.update({code.casefold(): (code, label) for code, label in retry})
+            fresh = list(known.values())
+            results = []
             for item in items:
                 self.checkpoint()
-                row, text = self.find_item(root, item)
-                results.append({'item': item, 'found': row is not None, 'label': text})
-            if any(not result['found'] for result in results):
-                # Search navigates a virtualised tree and can miss an existing item until a full
-                # list read resets its scroll position. Confirm misses against a fresh live scan,
-                # never the GUI's cached suggestion list. A scan failure remains a check error.
-                self.emit('log', text='ค้นหาบางตัวแปรไม่พบ — กำลังอ่านรายการล่าสุดจาก Lyche เพื่อยืนยันอัตโนมัติ')
-                panel = self.find(root, aid='searchPanel')
-                self.find(panel, aid='txtKeyWord').set_edit_text('')
-                fresh = self.item_list()
-                known = {code.casefold(): (code, label) for code, label in fresh}
-                for result in results:
-                    if not result['found'] and result['item'].casefold() in known:
-                        code, label = known[result['item'].casefold()]
-                        result.update(found=True, label=f'{code} {label}')
-                self.emit('items', items=fresh)
+                value = known.get(item.casefold())
+                results.append({'item': item, 'found': value is not None,
+                                'label': f'{value[0]} {value[1]}' if value else ''})
+            # complete False: the scan stopped once every name was found; the app keeps these
+            # names for later checks but never treats them as Lyche's whole list.
+            self.emit('items', items=fresh, complete=getattr(self, '_item_list_complete', False))
         finally:
             try:
                 panel = self.find(root, aid='searchPanel')
@@ -2448,7 +2818,7 @@ class Lyche:
         combo = self.find(dialog, aid=aid)
         if self.combo_value(combo) == value:
             return
-        if self.background and value in options:
+        if self.background:
             return self.choose_combo_background(combo, value, options)
         self.click(combo)
         def option():
@@ -2488,16 +2858,13 @@ class Lyche:
         2026-10-02). Live: once a category is selected, the expanded ComboBox exposes one ListItem per option
         (name 'System.Data.DataRowView', a Text child with the option text) and SelectionItem.Select picks
         it even while the popup is parked off-screen; verified by the row label (not(...)). The caller still
-        checks that label. Falls back to the old posted-keys way if the items do not show up."""
+        checks that label. If UIA fails, BG reports a Preview requirement instead of posting keys."""
         self.checkpoint()
         item = None
         cloak = self.popup_cloak()  # parking the drop-down closes it (live: no items within 3 s) — keep it, invisible
         cloak.__enter__()
-        # A WPF drop-down closes when its window is deactivated: the focus guard (which hands the foreground
-        # straight back to the user) must wait the ~0.2 s from Expand to Select; then the user gets it back.
-        hold = self.control_dir / 'hold-focus'
-        hold.touch()
-        user_window = (self.focus_guard.user_window if self.focus_guard else None) or user_foreground(self.pid)
+        # Keep the focus guard active: BG may not borrow the user's keyboard while
+        # a provider expands a combo. If UIA cannot select it, report that limitation.
         try:
             combo.iface_expand_collapse.Expand()
         except Exception:
@@ -2514,7 +2881,7 @@ class Lyche:
             item.iface_selection_item.Select()
             time.sleep(.2)
         except Exception as exc:
-            self.emit('log', text=f'dropdown ไม่แสดงตัวเลือก {value} ({type(exc).__name__}) — ใช้วิธีเดิม (โฟกัสชั่วครู่)')
+            self.emit('log', text=f'dropdown ไม่แสดงตัวเลือก {value} ผ่าน UIA ({type(exc).__name__})')
             item = None
         try:
             if combo.iface_expand_collapse.CurrentExpandCollapseState:
@@ -2523,8 +2890,6 @@ class Lyche:
             pass
         finally:
             cloak.__exit__(None, None, None)
-            hold.unlink(missing_ok=True)
-            give_back_foreground(user_window, settle=0)
         if item is None:
             return self._choose_combo_keys(combo, value, options)
         self.emit('log', text=f'เลือก {value} (UIA ไม่แย่งโฟกัส — ตรวจจากป้ายเงื่อนไขหลังเพิ่ม)')
@@ -2535,6 +2900,7 @@ class Lyche:
         checked for not(...) afterwards, which catches a wrong pick."""
         # Live finding: the open drop-down exposes no items to UIA (and no Value/Name), so keys are
         # posted to the off-screen dialog instead of typed: focus the combo, open it, Home, Down×n, Enter.
+        self.interactive_only(f'เลือก {value}')
         self.checkpoint()
         dialog_hwnd = combo.top_level_parent().handle
         hold = self.control_dir / 'hold-focus'  # tells the app's focus guard to wait (see App.keep_focus)
@@ -2773,13 +3139,9 @@ class Lyche:
           Excel(Separated Sheets) + Export All Setting;
         - one_sheet: Cross and Matrix → Export all → Excel(One Sheet) (+ 'Some tables could not be
           generated' → Yes, if asked) + Export All Setting.
-        In the background Windows' System Sounds are muted meanwhile (user request: Lyche's message
-        boxes ding although they are kept off-screen) and given back right after."""
-        if not self.background:
-            return self._run_export(destination, one_sheet)
-        from sounds import system_sounds_muted
-        with system_sounds_muted(self.control_dir.parent / 'sounds-muted'):
-            return self._run_export(destination, one_sheet)
+        Windows' System Sounds are muted for the whole background session (sounds.SessionMute):
+        Lyche's message boxes ding although they are kept off-screen."""
+        return self._run_export(destination, one_sheet)  # System Sounds: muted for the whole background_session
 
     def _run_export(self, destination: Path, one_sheet=False):
         if destination.exists():
@@ -2798,14 +3160,20 @@ class Lyche:
                 return 0 < pattern.CurrentValue < pattern.CurrentMaximum
             except Exception:
                 return False
+        report_at = [time.monotonic() + 20]
         def ready():
             root = self.main()
             if export_all:  # Matrix ('Export with Analysis Axis' stays disabled) or One Sheet: Export all
                 export = self.find(root, aid='rbnOutputExcel', required=False)
             else:
                 export = self.find(root, name='Export with Analysis Axis', kind=50000, required=False)
-            progress = self.all(root, kind=50012)
-            return export if export and export.is_enabled() and not any(busy(p) for p in progress) else None
+            busy_bars = [p for p in self.all(root, kind=50012) if busy(p)]
+            if export and export.is_enabled() and not busy_bars:
+                return export
+            if time.monotonic() >= report_at[0]:  # live 2026-10-09: a 5-minute stall here left no clue
+                report_at[0] = time.monotonic() + 30
+                self.emit('log', text='ยังรอปุ่ม Export: ' + self.export_wait_state(export, busy_bars))
+            return None
         export = self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)  # long wait: poll gently
         def open_prompt():
             self.ack_copy_warning()
@@ -2823,22 +3191,15 @@ class Lyche:
         # clicked with the window off-screen (gallery_click); every dialog is parked by the hider within ms.
         frozen = nullcontext
         with frozen():
-            # In the background an Invoke that lands while Lyche is still finishing can be ignored:
-            # press again (up to 3 times) until "Open file?" appears. A modal prompt blocks repeats.
-            for attempt in range(3 if self.background else 1):
-                try:
-                    if export_all:
-                        # User's flow (2026-10-01): Export all → the item, the Export All Setting ticks,
-                        # OK; from 'Open file?' on it is the same as Export with Analysis Axis.
-                        self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)
-                        self.export_all(export_all)
-                    else:
-                        self.click(self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5))
-                    prompt = self.wait(open_prompt, 'Open file?', 15 if self.background else 20)
-                    break
-                except TimeoutError:
-                    if attempt == (2 if self.background else 0):
-                        raise
+            def press():
+                if export_all:
+                    # User's flow (2026-10-01): Export all → the item, the Export All Setting ticks,
+                    # OK; from 'Open file?' on it is the same as Export with Analysis Axis.
+                    self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)
+                    self.export_all(export_all)
+                else:
+                    self.click(self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5))
+            prompt = self.press_until_prompt(press, ready, open_prompt, 3 if self.background else 1)
             no = self.find(prompt, name='No', kind=50000, required=False) or self.find(prompt, name='&No', kind=50000, required=False)
             if no is None:
                 raise RuntimeError('ไม่พบปุ่ม No ใน Open file?')
@@ -2861,6 +3222,51 @@ class Lyche:
                           'Saved.', self.timeout, poll=.5)
         self.close_saved(saved)
         self.settings()
+
+    def press_until_prompt(self, press, ready, open_prompt, attempts):
+        """Press Export until 'Open file?' appears. In the background an Invoke that lands while Lyche
+        is still finishing can be ignored, so press again (up to `attempts` times) — but only when
+        Export is pressable again: a late 'Open file?' (live 2026-10-09, slow Lyche, after the 15 s)
+        disables Export with its modal box, and waiting for Export alone stalled for the whole timeout."""
+        for _ in range(attempts):
+            press()
+            try:
+                return self.wait(open_prompt, 'Open file?', 15 if self.background else 20)
+            except TimeoutError:
+                late = self.wait(lambda: open_prompt() or (ready() and 'press again'),
+                                 'Open file? หรือปุ่ม Export', self.timeout, poll=.5)
+                if late != 'press again':
+                    return late
+        raise TimeoutError('กด Export แล้ว Lyche ไม่ถาม Open file?')
+
+    def export_wait_state(self, export, busy_bars):
+        """Why the Export wait is not over: the button, busy progress bars, and every other titled
+        Lyche top-level window (a hidden or parked message box blocks the ribbon without a sign)."""
+        parts = ['ไม่พบปุ่ม' if export is None else 'ปุ่มยังกดไม่ได้' if not export.is_enabled() else 'ปุ่มพร้อม']
+        for bar in busy_bars:
+            try:
+                parts.append(f'progress {bar.iface_range_value.CurrentValue:g}/{bar.iface_range_value.CurrentMaximum:g}')
+            except Exception:
+                parts.append('progress ไม่ทราบค่า')
+        windows = []
+        def collect(handle, _):
+            if handle != self.handle and win32process.GetWindowThreadProcessId(handle)[1] == self.pid:
+                title = win32gui.GetWindowText(handle)
+                if title:
+                    windows.append(f'"{title}"' + ('' if win32gui.IsWindowVisible(handle) else ' (ซ่อน)'))
+        win32gui.EnumWindows(collect, None)
+        texts = []
+        for title in ('Warning', 'Information', 'Question', 'Confirm', 'Error'):
+            try:
+                box = self.dialog(title, visible_only=False)
+                if box:
+                    texts.append(' '.join(x.window_text() for x in self.all(box, kind=50020)).strip()[:160])
+            except (RuntimeError, COMError) as exc:
+                texts.append(f'{title}: {exc}')
+        parts.append('หน้าต่าง Lyche อื่น: ' + (', '.join(windows) if windows else 'ไม่มี'))
+        if texts:
+            parts.append('ข้อความ: ' + ' | '.join(texts))
+        return ' · '.join(parts)
 
     def export_all(self, item):
         """Export all → `item` ('Excel(Separated Sheets)' / 'Excel(One Sheet)'); answer Lyche's
@@ -2984,6 +3390,9 @@ class Lyche:
             confirm = self.dialog('Confirm -', visible_only=False)
             if confirm:
                 text = ' '.join(x.window_text() for x in self.all(confirm, kind=50020)).strip()
+                if not text:  # a box that was just answered, read while it closes
+                    time.sleep(.2)
+                    continue
                 if text != 'Change will not be saved. Proceed?':
                     raise ValueError(f'ปิด Cross Tabulation ไม่ได้ — พบคำถามที่ไม่รู้จัก: {text}')
                 self.press(self.find(confirm, name='Yes', kind=50000, required=False) or self.find(confirm, name='&Yes', kind=50000))
@@ -3190,6 +3599,36 @@ def system_sounds_muted(marker: Path):
         if previous is False:
             set_system_sounds_mute(False)
             marker.unlink(missing_ok=True)
+
+
+class SessionMute:
+    """Mute System Sounds for a whole BG session (user 2026-10-10: Lyche's Confirm / Filter / Clear-all
+    boxes ding too, not only the export ones). The System Sounds session may not exist yet when the run
+    starts (nothing has played since boot); `mute()` is then retried on later bot actions until it
+    works. `restore()` gives the previous state back; `marker` lets the app do that after a crash."""
+    def __init__(self, marker: Path):
+        self.marker = marker
+        self.done = False
+        self.previous = None
+
+    def mute(self):
+        if self.done:
+            return
+        previous = set_system_sounds_mute(True)
+        if previous is None:
+            return  # no System Sounds session yet: try again on the next action
+        self.done, self.previous = True, previous
+        if previous is False:
+            try:
+                self.marker.write_text('0', encoding='utf-8')
+            except OSError:
+                pass
+
+    def restore(self):
+        if self.done and self.previous is False:
+            set_system_sounds_mute(False)
+            self.marker.unlink(missing_ok=True)
+        self.done = False
 
 
 def restore_if_left_muted(marker: Path):
@@ -6046,7 +6485,7 @@ from contextlib import contextmanager, nullcontext
 import traceback
 from datetime import datetime
 from pathlib import Path
-from core import Job, manual_items, output_name, job_output_name, validate_jobs
+from core import VERSION, Job, manual_items, output_name, job_output_name, validate_jobs
 
 
 _emit_lock = threading.Lock()
@@ -6264,7 +6703,7 @@ def resolve_handle(config, windows, open_cross_tabulation):
     if not items:
         emit('log', text='หน้าต่าง Cross Tabulation ปิดอยู่ — กำลังเปิดใหม่เบื้องหลัง')
         with screen_freeze(config):
-            items = open_cross_tabulation(emit)
+            items = open_cross_tabulation(emit, project=project, stop=(Path(config['control_dir']) / 'stop').exists)
         opened = bool(items)
     emit('windows', items=items, opened=opened)
     for item in items:
@@ -6309,7 +6748,28 @@ def main():
             emit('error', text=str(exc))
             sys.exit(1)
         return
-    from driver import Lyche, Stopped, launchers, open_cross_tabulation, windows
+    from driver import Lyche, Stopped, clear_no_activate, launchers, open_cross_tabulation, windows
+    if config['action'] == 'rescue':
+        # "กู้หน้าต่าง Lyche": undo whatever a killed worker left behind, without a Cross Tabulation
+        # handle: parked windows back on screen, our WS_EX_NOACTIVATE off, stray boxes closed, sounds back.
+        from lyche_windows import unpark_windows
+        from sounds import restore_if_left_muted
+        moved = unpark_windows()
+        cleared = clear_no_activate()
+        restore_if_left_muted(Path(config['control_dir']).parent / 'sounds-muted')
+        closed = 0
+        for item in windows():
+            try:
+                Lyche(item['handle'], Path(config['control_dir']), emit, config.get('timeout', 900), background=True).close_leftover_dialogs()
+                closed += 1
+            except Exception as exc:
+                emit('log', text=f'ปิดกล่องค้างใน {item["title"][:40]} ไม่สำเร็จ: {exc}')
+        emit('log', text=f'กู้หน้าต่าง Lyche แล้ว: ดึงกลับมาบนจอ {len(moved)} บาน · ปลดล็อก {len(cleared)} บาน · '
+                         f'ตรวจกล่องค้างใน {closed} หน้าต่าง · คืนเสียงระบบแล้ว')
+        return
+    import atexit
+    atexit.register(clear_no_activate)  # whatever way this worker ends, Lyche's windows are clickable again
+    clear_no_activate()  # and a worker that died before its cleanup leaves nothing behind
     bot = None
     current = None
     post = None
@@ -6327,13 +6787,19 @@ def main():
                     items.append(item)
             emit('windows', items=items, opened=False)
             return
-        fresh = not windows()  # resolve_handle is about to open Cross Tabulation
+        opened_for_this = not windows()  # no Cross Tabulation window yet: resolve_handle opens one
         bot = Lyche(resolve_handle(config, windows, open_cross_tabulation), Path(config['control_dir']), emit,
                     config.get('timeout', 900),
                     # Reading Lyche's variable list / checking Banner Manual items only reads: always in the
                     # background, also in Preview mode (user request) — Preview would restore the window.
                     background=config.get('background', True) or config['action'] in ('items', 'check_items'))
         bot.user_window_hint = config.get('user_window')  # where the user was when they pressed Run
+        if config['action'] == 'run':
+            from driver import process_memory_mb
+            memory = process_memory_mb(bot.pid)
+            if memory and memory >= 1200:
+                emit('log', text=f'Lyche ใช้หน่วยความจำ {memory:,} MB (เปิดมานาน/รันหลายตารางแล้ว) — '
+                                 'ถ้ารันช้ากว่าปกติ ปิดแล้วเปิด Lyche ใหม่ก่อนรันจะช่วยได้')
         source = config.get('source', 'Personal')
         if config['action'] == 'banners':
             # Shared History exists only on the Lyche server: read it from the Import History list.
@@ -6345,24 +6811,26 @@ def main():
             with bot.background_session():
                 bot.load(config['banner'], source)
         elif config['action'] in ('check_items', 'items'):
-            # Banner Manual 'เช็คกับ Lyche' (search only, the Banner is not changed) / the Filter dialog's
-            # variable list (read only). UIA works with the window as it is (verified live), so nothing pops
-            # up (user request): a window on screen is not moved at all; a minimised one (also one just
-            # opened) stays minimised, and the parker hides it if Lyche shows it by itself — for 2 s more
-            # after a fresh open — then it is minimised again.
-            import win32gui
+            # These UIA reads open no dialogs. On a window the user has open they run without
+            # parking, focus guard or sound muting; only the Cross Tabulation window gets
+            # WS_EX_NOACTIVATE (the project window the user may be working in stays clickable).
+            # A window this worker opened itself (the app's prefetch right after start) is closed
+            # again afterwards, inside a full background session: the close can raise Lyche's
+            # Confirm box, which must stay off-screen and silent like any other (review 2026-10-10).
             work = (lambda: bot.check_items(config['items'])) if config['action'] == 'check_items' else bot.item_list
-            if bot.background and win32gui.IsIconic(bot.handle):
-                with bot.background_session(keep_minimised=True):
-                    results = work()
-                    if fresh:
-                        time.sleep(2)
-            else:
+            from driver import no_activation
+            session = bot.background_session(keep_minimised=True) if opened_for_this else no_activation(bot.pid, only=(bot.handle,))
+            with session:
                 results = work()
-            if config['action'] == 'check_items':
-                emit('items_checked', results=results)
-            else:
-                emit('items', items=results)
+                if config['action'] == 'check_items':
+                    emit('items_checked', results=results)
+                else:
+                    emit('items', items=results)
+                if opened_for_this:
+                    try:
+                        bot.close_window()
+                    except Exception as exc:  # the read succeeded; a close problem is only logged
+                        emit('log', text=f'ปิดหน้าต่าง Cross Tabulation ไม่สำเร็จ: {exc}')
         elif config['action'] == 'run':
             jobs = [Job(**job) for job in config['jobs']]
             folder = Path(config['folder'])
@@ -6440,7 +6908,7 @@ def main():
         log_dir = Path(config['control_dir']).parent / 'logs'
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        (log_dir / f'error-{stamp}.txt').write_text(traceback.format_exc(), encoding='utf-8')
+        (log_dir / f'error-{stamp}.txt').write_text(f'Auto Lychee {VERSION}\n' + traceback.format_exc(), encoding='utf-8')
         if bot:
             try:
                 bot.main().capture_as_image().save(log_dir / f'error-{stamp}.png')
@@ -6461,6 +6929,10 @@ import json
 import os
 import re
 import sys
+import platform
+import threading
+import zipfile
+import time
 from dataclasses import asdict
 from datetime import datetime
 from html import escape
@@ -6482,7 +6954,8 @@ from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QRadioButton, QStyleOptionViewItem, QGridLayout, QScrollArea, QCompleter, QMenu, QProgressBar, QListView,
 )
 from chrome import MacWindowMixin
-from core import MAX_FILTER_ROWS, VARIABLE, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
+from lyche_windows import clear_no_activate, lyche_memory_mb
+from core import MAX_FILTER_ROWS, VARIABLE, VERSION, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -6653,6 +7126,9 @@ def post_settings(job):
 # Step 1 Delete Total + NA, Step 2 Del Sig, Step 3 Cut N / %, then Export — always the LAST Step (user
 # rule): a new Step goes before it (new column before the last, new card before the Export card).
 STEP_COLUMNS = (6, 7, 8, 9)
+# One-line headers: the step number and what it does (user 2026-10-10: 'Step 1'..'Step 4' alone said nothing,
+# and two lines were not wanted). Their columns are sized to the text at start-up (fonts differ per machine).
+STEP_HEADERS = ('Step 1 Total+NA', 'Step 2 Del Sig', 'Step 3 N/%', 'Step 4 Export')
 STEP_NAMES = ('Delete Total + NA', 'Del Sig (ตัด Sig)', 'ตัด N / %', 'Export')
 # Banner Manual is appended after the Steps (so no other column index changes) and shown next to Banner.
 # A new Step would take this index: move Banner Manual to the end then.
@@ -8007,20 +8483,16 @@ class ImportResultDialog(ResultDialog):
             self.move(screen.availableGeometry().center() - self.rect().center())
 
 
-class ImportModeDialog(ImportResultDialog):
-    """Explicit choice before an imported workbook changes the queue."""
-    def __init__(self, parent, old_count, new_count):
-        super().__init__(parent, 'info', 'เลือกวิธีนำเข้าคิว',
-                         f'คิวเดิม {old_count} แถว · ไฟล์ที่เลือก {new_count} แถว', [])
+class ChoiceDialog(ImportResultDialog):
+    """A question with big labelled choices (and Cancel); `mode` is the chosen key or None.
+    choices: (key, title, description, symbol, accent, soft, border, hover) per button."""
+    def __init__(self, parent, kind, title, message, choices):
+        super().__init__(parent, kind, title, message, [])
         self.mode = None
         layout = self.findChild(QFrame, 'sheet').layout()
-        choices = QVBoxLayout()
-        choices.setSpacing(12)
-        for mode, title, description, symbol, accent, soft, border, hover in (
-                ('replace', 'แทนที่คิวเดิม', 'ลบทุกแถวเดิม แล้วใช้คิวจากไฟล์นี้', '↺',
-                 '#9a4a16', '#fff4e9', '#f0d1b7', '#ffe8d4'),
-                ('append', 'ต่อท้ายคิวเดิม', 'เก็บคิวเดิม แล้วเพิ่มรายการใหม่ไว้ด้านล่าง', '＋',
-                 '#205c9b', '#edf5ff', '#bdd6f1', '#dfedff')):
+        choices_layout = QVBoxLayout()
+        choices_layout.setSpacing(12)
+        for mode, title, description, symbol, accent, soft, border, hover in choices:
             button = QPushButton()
             button.setObjectName('importChoice')
             button.setAccessibleName(title + ' · ' + description)
@@ -8057,8 +8529,8 @@ class ImportModeDialog(ImportResultDialog):
             for label in button.findChildren(QLabel):
                 label.setAttribute(Qt.WA_TransparentForMouseEvents)
             button.clicked.connect(lambda checked=False, value=mode: self.choose(value))
-            choices.addWidget(button)
-        layout.insertLayout(layout.count() - 1, choices)
+            choices_layout.addWidget(button)
+        layout.insertLayout(layout.count() - 1, choices_layout)
         cancel = layout.itemAt(layout.count() - 1).layout().itemAt(0).widget()
         cancel.setText('ยกเลิก')
         cancel.setObjectName('secondary')
@@ -8072,6 +8544,17 @@ class ImportModeDialog(ImportResultDialog):
     def choose(self, mode):
         self.mode = mode
         self.accept()
+
+
+class ImportModeDialog(ChoiceDialog):
+    """Explicit choice before an imported workbook changes the queue."""
+    def __init__(self, parent, old_count, new_count):
+        super().__init__(parent, 'info', 'เลือกวิธีนำเข้าคิว',
+                         f'คิวเดิม {old_count} แถว · ไฟล์ที่เลือก {new_count} แถว',
+                         [('replace', 'แทนที่คิวเดิม', 'ลบทุกแถวเดิม แล้วใช้คิวจากไฟล์นี้', '↺',
+                           '#9a4a16', '#fff4e9', '#f0d1b7', '#ffe8d4'),
+                          ('append', 'ต่อท้ายคิวเดิม', 'เก็บคิวเดิม แล้วเพิ่มรายการใหม่ไว้ด้านล่าง', '＋',
+                           '#205c9b', '#edf5ff', '#bdd6f1', '#dfedff')])
 
 
 class ImportProgressDialog(QDialog):
@@ -8122,7 +8605,8 @@ class App(MacWindowMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.restore_sounds()  # in case the last run ended while System Sounds were muted
-        self.setWindowTitle(f'{APP_NAME} — Table Runner')
+        clear_no_activate()  # and if a worker died before giving Lyche's windows their styles back
+        self.setWindowTitle(f'{APP_NAME} — Table Runner · v{VERSION}')
         self.setWindowIcon(QIcon(str(LOGO)))
         self.resize(1210, 820)
         self.setMinimumSize(980, 660)
@@ -8145,7 +8629,10 @@ class App(MacWindowMixin, QMainWindow):
         self.restore_settings()
         if not self.table.rowCount():
             self.add_job(Job())
+        self.write_log(f'{APP_NAME} v{VERSION} · {"exe" if FROZEN else "python"} · ข้อมูลที่ {DATA}')
         QTimer.singleShot(250, self.scan_windows)
+        # Importing openpyxl takes ~1 s; do it while the app is idle, not when Import/Export is clicked.
+        QTimer.singleShot(1500, lambda: threading.Thread(target=__import__, args=('openpyxl',), daemon=True).start())
 
     def center_on_screen(self):
         """Open centred on the monitor under the mouse, shrinking to fit small screens."""
@@ -8284,7 +8771,7 @@ class App(MacWindowMixin, QMainWindow):
             self.table.setItemDelegateForColumn(column, self.step_delegate)
         self.table.setItemDelegateForColumn(GEAR_COLUMN, GearDelegate(self.table))
         self.table.setHorizontalHeaderLabels(['Banner', 'ชื่อไฟล์ผลลัพธ์', 'Filter', 'Base', 'สถานะ', 'รายละเอียด',
-                                              *[f'Step {n}' for n in range(1, len(STEP_COLUMNS) + 1)], 'Banner Manual', '', 'Type'])
+                                              *STEP_HEADERS, 'Banner Manual', '', 'Type'])
         # Columns 6+ (the Steps, Export last) are appended so every other column index stays the
         # same; they are only *shown* between Base and สถานะ. Column 5 (detail) keeps its data for
         # the run summary / queue export but is hidden: progress is shown in the log below.
@@ -8338,11 +8825,18 @@ class App(MacWindowMixin, QMainWindow):
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.setWordWrap(False)  # one line per cell; long Sig groups end with … (full text in the tooltip)
         # Leave more space for filenames: compact the short labels/settings before stretching that column.
-        for index, width in enumerate([120, 240, 84, 48, 60, 300, 80, 90, 72, 72, 102, 38]):
+        # Short labels/settings stay compact so the stretching filename column keeps most of the width.
+        for index, width in enumerate([100, 240, 80, 44, 56, 300, 80, 90, 72, 72, 96, 34]):
             self.table.setColumnWidth(index, width)
+        bold = QFont(self.table.horizontalHeader().font())
+        bold.setBold(True)  # the stylesheet paints headers bold; the widget font does not say so
+        metrics = QFontMetrics(bold)
+        for column, label in zip((*STEP_COLUMNS, MANUAL_COLUMN), (*STEP_HEADERS, 'Banner Manual')):
+            # the whole label on one line, 8 px padding each side (96 px clipped 'Banner Manual' live)
+            self.table.setColumnWidth(column, max(72, metrics.horizontalAdvance(label) + 18))
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(GEAR_COLUMN, QHeaderView.Fixed)
-        self.table.setColumnWidth(TYPE_COLUMN, 72)
+        self.table.setColumnWidth(TYPE_COLUMN, 66)
         self.table.horizontalHeader().setSectionResizeMode(TYPE_COLUMN, QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.itemChanged.connect(self.edited)
@@ -8383,7 +8877,8 @@ class App(MacWindowMixin, QMainWindow):
         # Action bar
         row = QHBoxLayout()
         row.setSpacing(8)
-        for label, callback in [('บันทึกคิว', self.save_as), ('เปิดคิว', self.open_queue), ('ตรวจคิว', self.validate), ('รีเซ็ตสถานะแถวที่เลือก', self.reset_status)]:
+        for label, callback in [('บันทึกคิว', self.save_as), ('เปิดคิว', self.open_queue), ('ตรวจคิว', self.validate), ('รีเซ็ตสถานะแถวที่เลือก', self.reset_status),
+                                ('กู้หน้าต่าง Lyche', self.rescue_lyche), ('ส่ง log ให้ผู้พัฒนา', self.export_diagnostics)]:
             self.button(label, callback, row, kind='plain')
         row.addStretch()
         # Run mode toggle: BG (default) = Lyche kept out of sight; Preview = visible, mouse/keyboard.
@@ -8416,7 +8911,13 @@ class App(MacWindowMixin, QMainWindow):
         self.stop_button.setEnabled(False)
         layout.addLayout(row)
 
-        self.locked_widgets += [self.table, self.window_combo, self.source, self.banner, self.folder, self.timeout]
+        self.locked_widgets += [self.window_combo, self.source, self.banner, self.folder, self.timeout]
+        self.edit_triggers = self.table.editTriggers()  # restored after a run (set_busy locks editing, not the table)
+        self.user_scrolled_at = 0.0  # the queue follows the running row unless the user scrolled lately
+        self.items_refreshed = False  # prefetch_items reads the latest variable list once per app start
+        self.side_process = None  # the prefetch worker (prefetch_items), separate from self.process
+        self.table.verticalScrollBar().sliderPressed.connect(self.note_user_scroll)
+        self.table.verticalScrollBar().actionTriggered.connect(lambda *_: self.note_user_scroll())  # arrows, trough, keys
         self.source.currentTextChanged.connect(self.clear_banners)
         self.window_combo.currentIndexChanged.connect(self.clear_banners)
         self.paste_shortcut = QShortcut(QKeySequence('Ctrl+V'), self.table)
@@ -8509,6 +9010,9 @@ class App(MacWindowMixin, QMainWindow):
                                 'QComboBox::drop-down { width: 20px; }')
         type_combo.currentTextChanged.connect(lambda value, job_id=job.id: self.type_changed(job_id, value))
         self.table.setCellWidget(row, TYPE_COLUMN, type_combo)
+        if self.busy:  # a row added while a worker runs (Get Banner's blank row) is locked like the others
+            combo.setEnabled(False)
+            type_combo.setEnabled(False)
         self.color_status(row)
 
     def type_changed(self, job_id, value):
@@ -8544,8 +9048,16 @@ class App(MacWindowMixin, QMainWindow):
         item.setToolTip(('Banner Manual: ' + manual if manual else 'Banner Manual ปิดอยู่ (ใช้ Banner จาก History)')
                         + '\nคลิกเพื่อตั้งค่า Banner Manual')
 
+    def note_user_scroll(self):
+        self.user_scrolled_at = time.monotonic()
+
+    def user_is_browsing(self, seconds=10):
+        return time.monotonic() - self.user_scrolled_at < seconds
+
     def eventFilter(self, obj, event):
         if hasattr(self, 'table') and obj is self.table.viewport():
+            if event.type() == QEvent.Wheel:
+                self.note_user_scroll()
             if event.type() == QEvent.MouseMove:
                 index = self.table.indexAt(event.position().toPoint())
                 on_chip = index.isValid() and index.column() in (2, *STEP_COLUMNS, MANUAL_COLUMN, GEAR_COLUMN) and not self.busy
@@ -8742,13 +9254,17 @@ class App(MacWindowMixin, QMainWindow):
         checks = {self.table.item(row, 0).data(Qt.UserRole):
                   {col: self.table.item(row, col).data(QUEUE_CHECK_ROLE) for col in (2, MANUAL_COLUMN)}
                   for row in range(self.table.rowCount())}
-        self.table.setRowCount(0)
-        for job in jobs:
-            self.add_job(job)
-            row = self.table.rowCount() - 1
-            for column, check in checks.get(job.id, {}).items():
-                if check:
-                    self.mark_queue_check(row, column, check['state'], check['message'])
+        self.table.setUpdatesEnabled(False)  # one repaint for the whole queue: halves the fill time
+        try:
+            self.table.setRowCount(0)
+            for job in jobs:
+                self.add_job(job)
+                row = self.table.rowCount() - 1
+                for column, check in checks.get(job.id, {}).items():
+                    if check:
+                        self.mark_queue_check(row, column, check['state'], check['message'])
+        finally:
+            self.table.setUpdatesEnabled(True)
 
     def paste(self):
         if self.busy:
@@ -8785,8 +9301,12 @@ class App(MacWindowMixin, QMainWindow):
             if mode == 'replace':
                 self.replace_jobs(jobs)
             else:
-                for job in jobs:
-                    self.add_job(job)
+                self.table.setUpdatesEnabled(False)
+                try:
+                    for job in jobs:
+                        self.add_job(job)
+                finally:
+                    self.table.setUpdatesEnabled(True)
             self.autosave()
             self.write_log(f'นำเข้าคิว {len(jobs)} แถว (พร้อมค่าตั้ง Step 1-3 ถ้ามีในไฟล์) ← {Path(filename).name}')
             self.check_imported_jobs(jobs, notify=True)
@@ -8842,6 +9362,9 @@ class App(MacWindowMixin, QMainWindow):
                 f'นำเข้า {count} แถว · พบปัญหา {len(problems)} ช่อง\nกรุณาแก้ช่องสีแดงก่อนรัน'
         else:
             kind, title, message = 'ok', 'นำเข้าสำเร็จ', f'นำเข้าคิว {count} แถวเรียบร้อย\nตรวจตัวแปร Banner Manual และ Filter ผ่านแล้ว'
+        cache = self.item_cache(self.project_key())
+        if count and cache and cache.get('time'):
+            message += f'\nรายชื่อตัวแปรจาก Lyche ที่ใช้ตรวจ: ดึงเมื่อ {cache["time"]}'
         ImportResultDialog(self, kind, title, message, problems).exec()
 
     def check_imported_jobs(self, jobs, notify=False):
@@ -9002,12 +9525,16 @@ class App(MacWindowMixin, QMainWindow):
         colors = {'OK': ('#1f9a3e', '#e2f5e7'), 'ผิดพลาด': ('#c62828', '#fde4e4'),
                   'กำลังรัน': ('#1f6fd1', '#e1eefc'), 'หยุด': ('#b26a00', '#fff0d9')}
         fg, bg = colors.get(item.text(), ('#5f6f8a', None))
-        item.setForeground(QColor(fg))
-        item.setBackground(QColor(bg) if bg else QColor(0, 0, 0, 0))
-        font = item.font()
-        font.setWeight(QFont.DemiBold if item.text() in colors else QFont.Normal)
-        item.setFont(font)
-        item.setTextAlignment(Qt.AlignCenter)
+        blocked = self.table.blockSignals(True)  # styling is not an edit: each itemChanged saved the whole queue
+        try:
+            item.setForeground(QColor(fg))
+            item.setBackground(QColor(bg) if bg else QColor(0, 0, 0, 0))
+            font = item.font()
+            font.setWeight(QFont.DemiBold if item.text() in colors else QFont.Normal)
+            item.setFont(font)
+            item.setTextAlignment(Qt.AlignCenter)
+        finally:
+            self.table.blockSignals(blocked)
 
     def reset_status(self):
         for row in self.selected_rows():
@@ -9106,6 +9633,87 @@ class App(MacWindowMixin, QMainWindow):
         title = self.window_combo.currentText()
         return title[title.find('<') + 1:title.find('>')] if '<' in title and '>' in title else ''
 
+    def prefetch_items(self):
+        """Right after Get Banner: read this project's variable list in the background once, so the
+        Filter dialog's search and the import check never wait for Lyche (user 2026-10-10). Skipped
+        when a complete list is cached already or a worker is busy."""
+        project = self.project_key()
+        if not project or self.busy or not self.window_combo.currentData():
+            return
+        if self.side_process is not None:
+            return
+        refresh = not self.items_refreshed  # the first time after start: always the latest list (user 2026-10-10)
+        cache = self.item_cache(project)
+        if not refresh and cache and cache.get('complete', True):
+            return
+        # Its own worker process, not `launch`: the app stays fully usable meanwhile (user 2026-10-10:
+        # the start must not feel slow). A real action stops it first (see launch / stop_prefetch).
+        self.side_control = DATA / ('session-' + uuid4().hex)
+        self.side_control.mkdir(parents=True, exist_ok=True)
+        config = {**self.config(), 'action': 'items', 'handle': self.window_combo.currentData(),
+                  'window_title': self.window_combo.currentText(), 'control_dir': str(self.side_control), 'background': True}
+        request = self.side_control / 'request.json'
+        save_json(request, config)
+        self.side_project, self.side_items, self.side_buffer = project, None, ''
+        self.write_log('ดึงรายชื่อตัวแปรล่าสุดของโปรเจกต์นี้ (เบื้องหลัง ไม่ขยับหน้าต่าง Lyche ใช้โปรแกรมต่อได้เลย)…')
+        self.side_process = QProcess(self)
+        self.side_process.setWorkingDirectory(str(ROOT))
+        self.side_process.readyReadStandardOutput.connect(self.read_side_output)
+        self.side_process.finished.connect(self.side_finished)
+        if FROZEN:
+            self.side_process.start(sys.executable, ['--worker', str(request)])
+        else:
+            self.side_process.start(sys.executable, ['-X', 'utf8', '-u', str(ROOT / 'worker.py'), str(request)])
+
+    def read_side_output(self):
+        self.side_buffer += bytes(self.side_process.readAllStandardOutput()).decode('utf-8', errors='replace')
+        while chr(10) in self.side_buffer:
+            line, self.side_buffer = self.side_buffer.split(chr(10), 1)
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            kind = event.get('event')
+            if kind == 'items':
+                self.side_items = event['items']
+            elif kind == 'windows':
+                self.apply_windows(event, keep_project=True)
+            elif kind == 'freeze':
+                self.freeze_screen(self.side_control)
+            elif kind == 'unfreeze':
+                self.unfreeze_screen()
+            elif kind in ('log', 'error', 'stopped'):
+                self.write_log(event['text'])
+
+    def side_finished(self, *_):
+        self.unfreeze_screen()
+        self.read_side_output()
+        self.unlock_lyche_windows()
+        process, self.side_process = self.side_process, None
+        if process is not None:
+            process.deleteLater()
+        if self.side_items is not None:
+            self.items_refreshed = True  # only a finished read counts; a stopped one is retried after the next Get Banner
+            self.save_item_cache(self.side_project, self.side_items)
+            self.write_log(f'เตรียมรายชื่อตัวแปร {len(self.side_items)} ตัวไว้แล้ว — ค้นหาใน Filter ได้ทันที')
+        else:
+            self.write_log('ดึงตัวแปรล่วงหน้าไม่สำเร็จ (กด “ดึงตัวแปรใหม่” ในหน้า Filter ได้ภายหลัง)')
+
+    def stop_prefetch(self):
+        """A real action must not share Lyche with the prefetch: ask it to stop and wait (it checks
+        the stop flag between pages, ~0.3 s), then kill it if it did not."""
+        process = self.side_process
+        if process is None:
+            return
+        try:
+            (self.side_control / 'stop').touch()
+        except OSError:
+            pass
+        if not process.waitForFinished(4000):
+            process.kill()
+            process.waitForFinished(2000)
+        self.side_items = None  # a stopped read is not a list
+
     def variable_items(self, callback, refresh=False):
         """Lyche's variable list for the Filter dialog's search: from DATA/item-lists/<project>.json, or read
         from Lyche by a background worker (action 'items'). callback({'project', 'time', 'items'}, error)."""
@@ -9113,26 +9721,58 @@ class App(MacWindowMixin, QMainWindow):
         if not project:
             callback(None, 'ยังไม่ได้เลือกหน้าต่าง Lyche')
             return
-        path = DATA / 'item-lists' / (re.sub(r'[^\w.-]+', '_', project) + '.json')
-        if not refresh and path.exists():
-            try:
-                callback(json.loads(path.read_text(encoding='utf-8')), '')
-                return
-            except (OSError, ValueError):
-                pass
+        data = None if refresh else self.item_cache(project)
+        if data and data.get('complete', True):
+            callback(data, '')
+            return
         if self.busy:
             callback(None, 'โปรแกรมกำลังทำงานอยู่ รอให้เสร็จก่อน')
             return
         if not self.window_combo.currentData():
             callback(None, 'ค้นหาและเลือกหน้าต่าง Lyche ก่อน')
             return
-        self.items_request = (callback, path, project)
+        self.items_request = (callback, project)
         self.items_result, self.check_error = None, ''
         self.launch('items')
 
+    @staticmethod
+    def item_cache_path(project):
+        return DATA / 'item-lists' / (re.sub(r'[^\w.-]+', '_', project) + '.json')
+
+    def item_cache(self, project):
+        """{'project', 'time', 'items', 'complete'} saved from live reads of this project, or None.
+        complete False: only the names a targeted check confirmed, not Lyche's whole list."""
+        if not project:
+            return None
+        try:
+            return json.loads(self.item_cache_path(project).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+
+    def save_item_cache(self, project, items, complete=True):
+        if not complete:  # a targeted check stopped once it found its names: add them, keep the rest
+            old = self.item_cache(project) or {}
+            merged = {code.casefold(): [code, label] for code, label in old.get('items', [])}
+            merged.update({code.casefold(): [code, label] for code, label in items})
+            items, complete = list(merged.values()), old.get('complete', bool(old))
+        data = {'project': project, 'time': datetime.now().strftime('%d/%m %H:%M'), 'items': items,
+                'complete': complete}
+        try:
+            save_json(self.item_cache_path(project), data)
+        except OSError:
+            pass
+        return data
+
     def check_manual_items(self, items, callback):
-        """Banner Manual 'เช็คกับ Lyche': a background worker searches each item in Lyche's item list;
-        `callback(results, error)` gets [{'item', 'found', 'label'}] or an error text."""
+        """Banner Manual 'เช็คกับ Lyche' and the import check: `callback(results, error)` gets
+        [{'item', 'found', 'label'}] or an error text. Names an earlier live read of this project
+        confirmed answer at once without touching Lyche; any other name sends every name to a
+        background worker that reads Lyche's item list (a new variable must never read as missing)."""
+        known = {code.casefold(): f'{code} {label}'
+                 for code, label in (self.item_cache(self.project_key()) or {}).get('items', [])}
+        if items and all(item.casefold() in known for item in items):
+            callback([{'item': item, 'found': True, 'label': known[item.casefold()]} for item in items], '')
+            return
         if self.busy:
             callback(None, 'โปรแกรมกำลังทำงานอยู่ รอให้เสร็จก่อน')
             return
@@ -9146,15 +9786,91 @@ class App(MacWindowMixin, QMainWindow):
 
     def start_run(self):
         self.table.clearFocus()
-        if self.validate(False):
+        if self.validate(False) and self.lyche_memory_ok():
             self.autosave()
             self.launch('run')
+
+    MEMORY_WARNING_MB = 1200
+
+    def lyche_memory_ok(self):
+        """A Lyche session that has run many tables gets slow (measured 2026-10-10: 2 GB after ~100
+        exports, every step 2-3x slower, one load timed out). Before a run, offer a restart first."""
+        memory = lyche_memory_mb()
+        if not memory or memory < self.MEMORY_WARNING_MB:
+            return True
+        dialog = ChoiceDialog(self, 'warn', 'Lyche เปิดมานานแล้ว',
+                              f'Lyche ใช้หน่วยความจำ {memory:,} MB (รันหลายตารางแล้ว) — มักทำให้ทุกขั้นช้าลง 2-3 เท่า',
+                              [('restart', 'ปิด-เปิด Lyche ก่อน', 'ยกเลิกการรันนี้ ปิดแล้วเปิด Lyche ใหม่ แล้วกดรันอีกครั้ง (แนะนำ)', '↻',
+                                '#9a4a16', '#fff4e9', '#f0d1b7', '#ffe8d4'),
+                               ('run', 'รันเลยตอนนี้', 'รันต่อโดยไม่ปิด Lyche', '▶',
+                                '#205c9b', '#edf5ff', '#bdd6f1', '#dfedff')])
+        dialog.exec()
+        if dialog.mode != 'run':
+            self.write_log(f'ยังไม่รัน: Lyche ใช้หน่วยความจำ {memory:,} MB — ปิด-เปิด Lyche ใหม่ก่อน')
+            return False
+        return True
+
+    def rescue_lyche(self):
+        """'กู้หน้าต่าง Lyche': a worker killed mid-run can leave Lyche's windows parked off-screen,
+        unclickable, with a modal box open or System Sounds muted. The worker's 'rescue' action undoes
+        all of that; nothing else is touched."""
+        if self.busy:
+            return
+        self.launch('rescue')
+
+    def export_diagnostics(self):
+        """'ส่ง log ให้ผู้พัฒนา': one zip with the last week's logs and error files, the variable lists,
+        the latest worker request, the queue, the on-screen log and an info.txt (version, machine,
+        screen, Lyche). Nothing is sent anywhere; the user attaches the file themselves."""
+        default = Path.home() / 'Desktop' / f'AutoLychee-log-{datetime.now():%Y%m%d-%H%M}.zip'
+        filename, _ = QFileDialog.getSaveFileName(self, 'บันทึกไฟล์ log สำหรับส่งผู้พัฒนา', str(default), 'Zip (*.zip)')
+        if not filename:
+            return
+        try:
+            added = self.write_diagnostics(Path(filename))
+        except OSError as exc:
+            self.error(f'สร้างไฟล์ log ไม่สำเร็จ: {exc}')
+            return
+        self.write_log(f'บันทึก log สำหรับผู้พัฒนาแล้ว ({added} ไฟล์) → {filename}')
+        ResultDialog(self, 'ok', 'บันทึก log แล้ว', f'ส่งไฟล์นี้ให้ผู้พัฒนาได้เลย\n{filename}', None, str(Path(filename).parent)).exec()
+
+    def write_diagnostics(self, target):
+        recent = datetime.now().timestamp() - 7 * 86400
+        with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('info.txt', self.diagnostic_info())
+            archive.writestr('screen-log.txt', self.log.toPlainText())
+            added = 2
+            for folder, pattern in ((DATA / 'logs', '*'), (DATA / 'item-lists', '*.json')):
+                for file in sorted(folder.glob(pattern)) if folder.exists() else []:
+                    if file.is_file() and file.stat().st_mtime >= recent:
+                        archive.write(file, f'{folder.name}/{file.name}')
+                        added += 1
+            requests = sorted((p for p in DATA.glob('session-*/request.json')), key=lambda p: p.stat().st_mtime)
+            if requests:
+                archive.write(requests[-1], 'last-request.json')
+                added += 1
+            if QUEUE.exists():
+                archive.write(QUEUE, 'last_queue.json')
+                added += 1
+        return added
+
+    def diagnostic_info(self):
+        screen = self.screen()
+        lines = [f'{APP_NAME} {VERSION}', f'saved {datetime.now():%Y-%m-%d %H:%M:%S}',
+                 f'run as {"exe " + sys.executable if FROZEN else "python " + sys.version.split()[0]}',
+                 f'windows {platform.platform()}', f'data {DATA}',
+                 f'screen {screen.size().width()}x{screen.size().height()} scale {screen.devicePixelRatio():.2f}' if screen else 'screen ?',
+                 f'lyche window {self.window_combo.currentText() or "-"}', f'lyche memory MB {lyche_memory_mb()}',
+                 f'source {self.source.currentText()} · mode {"BG" if self.bg_button.isChecked() else "Preview"} · folder {self.folder.text()}',
+                 f'queue rows {self.table.rowCount()}']
+        return chr(10).join(lines) + chr(10)
 
     def launch(self, action, **extra):
         if self.busy:
             return
+        self.stop_prefetch()
         handle = self.window_combo.currentData()
-        if action != 'windows' and not handle:
+        if action not in ('windows', 'rescue') and not handle:
             self.error('ค้นหาและเลือกหน้าต่าง Lyche ก่อน')
             return
         self.control_dir = DATA / ('session-' + uuid4().hex)
@@ -9171,9 +9887,11 @@ class App(MacWindowMixin, QMainWindow):
         self.run_results = {}
         self.run_message = ''
         self.run_event = ''
+        self.run_started = datetime.now()
         self.set_busy(True)
         self.state.setText({'windows': 'กำลังค้นหาหน้าต่าง…', 'banners': 'กำลังดึง Banner…', 'load': 'กำลังโหลด Banner…',
                             'check_items': 'กำลังเช็คข้อกับ Lyche…', 'items': 'กำลังดึงตัวแปรจาก Lyche…',
+                            'rescue': 'กำลังกู้หน้าต่าง Lyche…',
                             'run': 'กำลังรันคิว • F8 หยุดได้ทุกเมื่อ'}[action])
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(ROOT))
@@ -9200,24 +9918,7 @@ class App(MacWindowMixin, QMainWindow):
                 continue
             kind = event.get('event')
             if kind == 'windows':
-                # Mid-action refresh (the worker reopened a closed window): don't trigger Get Banner.
-                previous = self.window_combo.currentText()
-                project = previous[previous.find('<'):previous.find('>') + 1] if '<' in previous else ''
-                self.window_combo.blockSignals(True)
-                self.window_combo.clear()
-                for item in event['items']:
-                    self.window_combo.addItem(item['title'], item['handle'])
-                if self.action == 'windows' and len(event['items']) > 1:
-                    self.window_combo.setCurrentIndex(-1)  # several projects: the user must choose
-                elif event['items']:
-                    # with a placeholder set, Qt does not pick the first item by itself
-                    self.window_combo.setCurrentIndex(0)
-                    for index in range(self.window_combo.count()):  # mid-action refresh: same project
-                        if project and project in self.window_combo.itemText(index):
-                            self.window_combo.setCurrentIndex(index)
-                            break
-                self.window_combo.blockSignals(False)
-                self.write_log(f'พบ {len(event["items"])} หน้าต่าง Lyche')
+                self.apply_windows(event)
                 if event.get('opened'):  # Lyche grabbed focus when it opened
                     if self.action in ('run', 'load', 'check_items', 'items') and getattr(self, 'user_window', None):
                         QTimer.singleShot(0, lambda: self.activate_window(self.user_window))  # back to the user's work
@@ -9230,13 +9931,7 @@ class App(MacWindowMixin, QMainWindow):
             elif kind == 'items':
                 self.items_result = event['items']
                 if self.action == 'check_items' and getattr(self, 'check_project', ''):
-                    project = self.check_project
-                    path = DATA / 'item-lists' / (re.sub(r'[^\w.-]+', '_', project) + '.json')
-                    try:
-                        save_json(path, {'project': project, 'time': datetime.now().strftime('%d/%m %H:%M'),
-                                         'items': self.items_result})
-                    except OSError:
-                        pass
+                    self.save_item_cache(self.check_project, self.items_result, event.get('complete', True))
             elif kind == 'items_checked':
                 self.check_results = event['results']
             elif kind == 'banners':
@@ -9259,7 +9954,9 @@ class App(MacWindowMixin, QMainWindow):
                         if event['status'] in ResultDialog.PILLS:
                             self.run_results[event['id']] = (self.table.item(row, 1).text(), event['status'], event.get('detail', ''))
                         self.color_status(row)
-                        if not event.get('background'):  # post-processing of an earlier row: keep the selection on Lyche's row
+                        if not event.get('background') and not self.user_is_browsing():
+                            # post-processing of an earlier row keeps the selection on Lyche's row; a user who
+                            # scrolled the queue lately is not pulled back to it
                             self.table.selectRow(row)
                             self.table.scrollToItem(self.table.item(row, 0))
                         self.autosave()
@@ -9273,6 +9970,30 @@ class App(MacWindowMixin, QMainWindow):
                 elif kind == 'error':
                     self.error(event['text'])
 
+    def apply_windows(self, event, keep_project=False):
+        """Refresh the window list. Mid-action (the worker reopened a closed window) the same project
+        stays selected and Get Banner is not triggered. keep_project (the prefetch worker): never
+        switch the user's project; a list without it is ignored."""
+        previous = self.window_combo.currentText()
+        project = previous[previous.find('<'):previous.find('>') + 1] if '<' in previous else ''
+        if keep_project and project and not any(project in item['title'] for item in event['items']):
+            return
+        self.window_combo.blockSignals(True)
+        self.window_combo.clear()
+        for item in event['items']:
+            self.window_combo.addItem(item['title'], item['handle'])
+        if self.action == 'windows' and len(event['items']) > 1 and not keep_project:
+            self.window_combo.setCurrentIndex(-1)  # several projects: the user must choose
+        elif event['items']:
+            # with a placeholder set, Qt does not pick the first item by itself
+            self.window_combo.setCurrentIndex(0)
+            for index in range(self.window_combo.count()):  # mid-action refresh: same project
+                if project and project in self.window_combo.itemText(index):
+                    self.window_combo.setCurrentIndex(index)
+                    break
+        self.window_combo.blockSignals(False)
+        self.write_log(f'พบ {len(event["items"])} หน้าต่าง Lyche')
+
     def process_error(self, error):
         if error == QProcess.FailedToStart:
             self.set_busy(False)
@@ -9282,6 +10003,13 @@ class App(MacWindowMixin, QMainWindow):
         text = bytes(self.process.readAllStandardError()).decode('utf-8', errors='replace').strip()
         if text:
             self.write_log(text)
+
+    @staticmethod
+    def unlock_lyche_windows():
+        """The worker gives Lyche's windows WS_EX_NOACTIVATE while it works (BG: they must not take the
+        user's foreground) and takes it off when it ends. A worker killed mid-run cannot, so the app does
+        it again (only windows the program marked): Lyche must always be clickable after a run."""
+        clear_no_activate()
 
     @staticmethod
     def restore_sounds():
@@ -9298,6 +10026,7 @@ class App(MacWindowMixin, QMainWindow):
         self.unfreeze_screen()
         self.restore_sounds()
         self.read_output()
+        self.unlock_lyche_windows()
         for row in range(self.table.rowCount()):
             if self.table.item(row, 4).text() == 'กำลังรัน':
                 self.table.item(row, 4).setText('หยุด')
@@ -9313,15 +10042,13 @@ class App(MacWindowMixin, QMainWindow):
             QTimer.singleShot(0, lambda: self.show_run_summary(code))
         if code == 0 and self.action == 'windows':
             QTimer.singleShot(0, self.after_scan)
+        if code == 0 and self.action == 'banners':
+            QTimer.singleShot(300, self.prefetch_items)  # the Filter search is instant later
         if self.action == 'items' and getattr(self, 'items_request', None):
-            (callback, path, project), self.items_request = self.items_request, None
+            (callback, project), self.items_request = self.items_request, None
             data, error = None, self.check_error
             if self.items_result is not None:
-                data = {'project': project, 'time': datetime.now().strftime('%d/%m %H:%M'), 'items': self.items_result}
-                try:
-                    save_json(path, data)
-                except OSError:
-                    pass
+                data = self.save_item_cache(project, self.items_result)
             elif not error:
                 error = 'Worker สิ้นสุดก่อนได้ผล ดูรายละเอียดในบันทึก'
             QTimer.singleShot(0, lambda: callback(data, error))
@@ -9359,19 +10086,32 @@ class App(MacWindowMixin, QMainWindow):
         else:
             kind, title = 'error', 'รันไม่สำเร็จ'
             message = self.run_message or 'ดูรายละเอียดในบันทึกด้านล่าง'
+        message += chr(10) + self.elapsed_text(datetime.now() - self.run_started, len(results))
         self.bring_to_front()
         if sys.platform == 'win32':
             import winsound
             winsound.MessageBeep(winsound.MB_ICONASTERISK if kind == 'ok' else winsound.MB_ICONEXCLAMATION)
         ResultDialog(self, kind, title, message, results, self.folder.text().strip()).exec()
 
-    def freeze_screen(self):
+    @staticmethod
+    def elapsed_text(elapsed, rows):
+        """'ใช้เวลา 15 นาที 34 วินาที (28 แถว · เฉลี่ย 33 วินาที/แถว)' for the run summary."""
+        seconds = max(0, int(elapsed.total_seconds()))
+        minutes, secs = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        spent = (f'{hours} ชั่วโมง ' if hours else '') + (f'{minutes} นาที ' if hours or minutes else '') + f'{secs} วินาที'
+        text = f'ใช้เวลา {spent}'
+        if rows > 1:
+            text += f' ({rows} แถว · เฉลี่ย {round(seconds / rows)} วินาที/แถว)'
+        return text
+
+    def freeze_screen(self, control=None):
         self.unfreeze_screen()
         self.overlays = [FreezeOverlay(screen) for screen in QApplication.screens()]
         for overlay in self.overlays:
             overlay.show()
         QApplication.processEvents()
-        control = self.control_dir
+        control = control or self.control_dir
         # give DWM a frame to put the overlay on screen before the worker lets Lyche open anything
         QTimer.singleShot(80, lambda: control and control.exists() and (control / 'frozen').touch())
         self.freeze_timer.start(15000)  # never leave the screen frozen
@@ -9456,9 +10196,18 @@ class App(MacWindowMixin, QMainWindow):
             QApplication.alert(self)
 
     def set_busy(self, busy):
+        """Lock what must not change during a run. The queue table itself stays enabled (user 2026-10-10:
+        the window must not feel frozen — scrolling, selecting and reading the queue keep working); its
+        cells cannot be edited and its Banner / Type drop-downs are disabled instead."""
         self.busy = busy
         for widget in self.locked_widgets:
             widget.setEnabled(not busy)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers if busy else self.edit_triggers)
+        for row in range(self.table.rowCount()):
+            for column in (0, TYPE_COLUMN):
+                widget = self.table.cellWidget(row, column)
+                if widget is not None:
+                    widget.setEnabled(not busy)
         self.pause_button.setEnabled(busy)
         self.stop_button.setEnabled(busy)
         self.pause_button.setText('พัก')
@@ -9534,6 +10283,8 @@ class App(MacWindowMixin, QMainWindow):
             self.state.setText('กำลังหยุด กรุณาปิดอีกครั้งเมื่อบอตหยุดแล้ว')
             event.ignore()
         else:
+            self.stop_prefetch()  # a killed prefetch must not leave Lyche's windows unclickable
+            self.unlock_lyche_windows()
             self.autosave()
             event.accept()
 

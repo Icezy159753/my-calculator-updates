@@ -27,6 +27,26 @@ class DeployTests(unittest.TestCase):
         for name in ('Test3.json', 'openrouter.json', '.env', 'client-job.xlsx', 'outputs/raw.csv', 'build/output.exe'):
             self.assertFalse(deploy.release_input(name))
 
+    def test_release_gates_require_current_source_section_count(self):
+        for count in (12, 13):
+            for output, passes in ((f'{count} sections OK · data: test', True),
+                                   (f'{count - 1} sections OK · data: test', False),
+                                   ('', False)):
+                with self.subTest(count=count, output=output), TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    (root / 'All_Programs').mkdir()
+                    (root / 'All_Programs/158_AutoLychee_OneFile.py').write_text(
+                        ''.join(f'# ====== MODULE: section_{i} ======\n' for i in range(count)),
+                        encoding='utf-8')
+                    runner = Mock(side_effect=['', 'Auto Lychee GUI smoke test OK', '', output])
+                    with patch.object(deploy, 'ROOT', root), patch.object(deploy, 'run_preflight'), \
+                         patch.object(deploy, 'run', runner), contextlib.redirect_stdout(io.StringIO()):
+                        if passes:
+                            deploy.release_gates()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, f'{count} sections OK'):
+                                deploy.release_gates()
+
     def fixture(self, folder):
         root = Path(folder)
         (root / 'All_Programs').mkdir()

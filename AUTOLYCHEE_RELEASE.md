@@ -78,7 +78,7 @@ def _smoke_test() -> None:
 
 - เช็ค section: `grep -n "^# ====== MODULE:" All_Programs/158_AutoLychee_OneFile.py`
 - ถ้ามี section ใหม่ ให้เพิ่มชื่อใน `excludes` ของ `AutoLychee.spec`
-  ตอนนี้มี: core, fast_styles, history, chrome, driver, sounds, post_total_na, post_del_sig,
+  ตอนนี้มี: core, fast_styles, history, chrome, lyche_windows, driver, sounds, post_total_na, post_del_sig,
   post_cut_percent, worker, app, onefile_assets
 - ถ้ามี package ภายนอกใหม่ ให้เพิ่มใน `hiddenimports` ของ `AutoLychee.spec`
   และในขั้น "Install dependencies" ของ `.github/workflows/windows-release.yml`
@@ -159,7 +159,8 @@ QT_QPA_PLATFORM=offscreen timeout 120 dist/Main_Program/_internal/AutoLychee/Aut
   ดาวน์โหลดลงไฟล์ชั่วคราวและตรวจ EXE/checksum ก่อนแทนไฟล์เดิม
 - ตั้งแต่ v1.1.101 ผลตรวจผ่าน Main ต้องพิมพ์ได้บน CP874 และ UTF-8
   คำสั่งตรวจ AutoLychee ที่ล้มเหลวต้อง exit 1 โดยไม่เปิดกล่อง error รอผู้ใช้
-  CI ต้องเห็น `12 sections OK` จาก Main ด้วย ไม่ตรวจแค่ exit code
+  CI และ Deploy ต้องเห็น `<จำนวน sections ใน source> sections OK` จาก Main ด้วย ไม่ตรวจแค่ exit code
+  ให้นับจากหัวข้อ `# ====== MODULE: ... ======` ใน source เพื่อรองรับ section ใหม่ (ปัจจุบัน 13 sections)
 - ตั้งแต่ v1.1.102 Bot Token/Chat ID ของ updater ต้องตรงกับ Main และผ่าน getMe/getChat
   แจ้งอัปเดตสำเร็จทั้งแบบเฉพาะไฟล์และ Full Package; log สถานะส่งโดยไม่แสดง token/response body
 - ตั้งแต่ v1.1.103 เปิด Main แล้วเริ่มตรวจ release เบื้องหลังทันทีหลังแสดงหน้าต่าง

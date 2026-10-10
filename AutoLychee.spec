@@ -24,7 +24,7 @@ a = Analysis(
     excludes=[
         'PyQt5', 'PyQt6', 'PySide2',
         # These modules are served by the one-file section importer at runtime.
-        'onefile', 'core', 'fast_styles', 'history', 'chrome', 'driver', 'sounds',
+        'onefile', 'core', 'fast_styles', 'history', 'chrome', 'lyche_windows', 'driver', 'sounds',
         'post_total_na', 'post_del_sig', 'post_cut_percent', 'worker', 'app', 'onefile_assets',
     ],
     noarchive=False,
