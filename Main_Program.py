@@ -258,7 +258,7 @@ UPDATE_HISTORY_URL = "https://dp1234.vercel.app"
 PROGRAM_SUBFOLDER = "All_Programs"
 ICON_FOLDER = "Icon"
 # --- ข้อมูลโปรแกรมและ GitHub (สำคัญมาก: ต้องเปลี่ยนเป็นของคุณ) ---
-CURRENT_VERSION = "1.1.111"
+CURRENT_VERSION = "1.1.112"
 # Reused launchers read the release version without rebuilding their Python runtime.
 if getattr(sys, 'frozen', False):
     try:
@@ -1236,6 +1236,17 @@ PROGRAMS = [
         "category": "SPSS", # <--- เพิ่ม category
         "enabled": True
     },  
+    {
+        "id": "Program ตัดชีท MKT V1",
+        "name": "Program ตัดชีท MKT V1",
+        "description": "เอาไว้ตัดชีทในไฟล์ MKT",
+        "type": "local_py_module",
+        "module_path": "159_Cut_MKT", # <--- ปรับชื่อ module_path
+        "entry_point": "run_this_app",
+        "icon": "table_studio.png",
+        "category": "SPSS", # <--- เพิ่ม category
+        "enabled": True
+    }, 
 ]
 
 # --- ขนาดไอคอน ---
