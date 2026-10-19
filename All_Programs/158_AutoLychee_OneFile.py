@@ -401,6 +401,11 @@ def manual_items(text: str) -> list[str]:
     return items
 
 
+def manual_requires_sheets(settings) -> bool:
+    """Only a single Manual Banner variable supports One Sheet export."""
+    return bool(settings.get('banner_manual')) and len(manual_items(settings.get('banner_manual_items', ''))) != 1
+
+
 def output_name(value: str) -> str:
     value = value.strip()
     if value.lower().endswith('.xlsx'):
@@ -6485,7 +6490,7 @@ from contextlib import contextmanager, nullcontext
 import traceback
 from datetime import datetime
 from pathlib import Path
-from core import VERSION, Job, manual_items, output_name, job_output_name, validate_jobs
+from core import VERSION, Job, manual_items, manual_requires_sheets, output_name, job_output_name, validate_jobs
 
 
 _emit_lock = threading.Lock()
@@ -6857,9 +6862,8 @@ def main():
                     base = bot.set_filter(job.filter, job.base)
                     emit('status', id=job.id, status='กำลังรัน', detail='Tabulate / Export')
                     path = folder / job_output_name(job)
-                    # the row's last Step; Banner Manual rows export with Analysis Axis only (user rule:
-                    # a One Sheet export of a manual Banner said Saved but left no file)
-                    bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not job.banner_manual)
+                    # Multiple Manual Banner variables still require Analysis Axis export.
+                    bot.run_export(path, one_sheet=job.export_mode == 'onesheet' and not manual_requires_sheets(vars(job)))
                     detail = f'Saved | {path}'
                     if bot.matrix and job.del_sig and job.del_sig_mode != 'MATRIX':
                         job.del_sig_mode = 'MATRIX'  # user rule: a Matrix History → Del Sig in Matrix mode
@@ -6955,7 +6959,7 @@ from PySide6.QtWidgets import (
 )
 from chrome import MacWindowMixin
 from lyche_windows import clear_no_activate, lyche_memory_mb
-from core import MAX_FILTER_ROWS, VARIABLE, VERSION, Job, compact_codes, expand_codes, format_filter, manual_items, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
+from core import MAX_FILTER_ROWS, VARIABLE, VERSION, Job, compact_codes, expand_codes, format_filter, manual_items, manual_requires_sheets, parse_filters, save_json, read_jobs, validate_jobs, step3_allowed
 
 # ONEFILE: queue/settings/logs and the icons live in onefile.DATA (%LOCALAPPDATA%\AutoLychee\OneFile).
 ROOT = onefile.SINGLE_FILE.parent
@@ -7138,9 +7142,8 @@ TYPE_COLUMN = GEAR_COLUMN + 1
 
 
 def export_mode(post):
-    """The row's Step 4 export. Banner Manual rows always export separated sheets (Export with Analysis
-    Axis): user rule 2026-10-01 — a One Sheet export of a manual Banner said Saved but left no file."""
-    return 'sheets' if post.get('banner_manual') else post.get('export_mode', 'sheets')
+    """The row's Step 4 export; multiple Manual Banner variables require separated sheets."""
+    return 'sheets' if manual_requires_sheets(post) else post.get('export_mode', 'sheets')
 
 
 def manual_text(post):
@@ -7379,9 +7382,9 @@ class PostProcessDialog(QDialog):
         export_label.setToolTip('แยกชีท: Cross = Export with Analysis Axis · Matrix = Export all → Excel(Separated Sheets)\n'
                                 'One Sheet: ทั้ง Cross และ Matrix = Export all → Excel(One Sheet)')
         export.addWidget(export_label)
-        manual = bool(settings.get('banner_manual'))
+        manual = manual_requires_sheets(settings)
         if manual:
-            locked = QLabel('Banner Manual → แยกชีทเท่านั้น')
+            locked = QLabel('Banner Manual ต้องมี 1 ตัวแปรจึงเลือก One Sheet ได้')
             locked.setStyleSheet('color: #8b97ab; font-size: 12px;')
             export.addWidget(locked)
         export.addStretch(1)
@@ -7396,9 +7399,9 @@ class PostProcessDialog(QDialog):
             export.addWidget(radio)
         if self.export_group.checkedButton() is None:
             self.export_radios['sheets'].setChecked(True)
-        if manual:  # Banner Manual rows: Export with Analysis Axis only (user rule)
+        if manual:
             self.export_radios['onesheet'].setEnabled(False)
-            self.export_radios['onesheet'].setToolTip('แถวที่ใช้ Banner Manual Export ได้แบบแยกชีท (Export with Analysis Axis) เท่านั้น')
+            self.export_radios['onesheet'].setToolTip('One Sheet ใช้ได้เมื่อ Banner Manual มีเพียง 1 ตัวแปร')
         layout.addWidget(export_card)
 
         self.message = QLabel('')
@@ -7691,7 +7694,8 @@ class BannerManualDialog(VariableSearch, QDialog):
         self.check_result.setStyleSheet('font-size: 12px;')
         check_row.addWidget(self.check_result, 1)
         inner.addLayout(check_row)
-        how = QLabel('ตอนรัน: Clear all Banner เดิม → Yes → ค้นหาทีละข้อ → To Banner แล้วรันต่อตามปกติ · Export แยกชีทเท่านั้น\n'
+        how = QLabel('ตอนรัน: Clear all Banner เดิม → Yes → ค้นหาทีละข้อ → To Banner แล้วรันต่อตามปกติ\n'
+                     'Banner Manual 1 ตัวแปรเลือก One Sheet ได้ · หลายตัวแปรใช้แยกชีทเท่านั้น\n'
                      'ใช้กับ Banner แบบ Matrix ไม่ได้')
         how.setStyleSheet('color: #4a5a78; font-size: 12px;')
         how.setWordWrap(True)
@@ -7975,8 +7979,8 @@ class BannerManualDialog(VariableSearch, QDialog):
     def settings(self):
         on = self.enabled.isChecked()
         settings = {'banner_manual': on, 'banner_manual_items': ', '.join(self.entered())}
-        if on:
-            settings['export_mode'] = 'sheets'  # Banner Manual exports with Analysis Axis only (user rule)
+        if manual_requires_sheets(settings):
+            settings['export_mode'] = 'sheets'
         return settings
 
     def accept(self):
@@ -9129,8 +9133,10 @@ class App(MacWindowMixin, QMainWindow):
                             self.table.item(target, 2).setToolTip(f'Filter: {text}\nคลิกเพื่อตั้งค่า Filter')
                 else:
                     items = banner_manual_from_text(text)
-                    self.apply_post(targets, {'banner_manual': True, 'banner_manual_items': ', '.join(items),
-                                              'export_mode': 'sheets'})
+                    settings = {'banner_manual': True, 'banner_manual_items': ', '.join(items)}
+                    if manual_requires_sheets(settings):
+                        settings['export_mode'] = 'sheets'
+                    self.apply_post(targets, settings)
                     text = ', '.join(items)
             except ValueError as exc:
                 self.error(str(exc) if not filter_cell else
