@@ -1039,6 +1039,13 @@ class SpssProcessorApp(QMainWindow):
         buttons = QHBoxLayout()
         clear = QPushButton("ไม่ถ่วงน้ำหนัก")
         choose = QPushButton("ใช้ตัวแปรที่เลือก")
+        clear.setStyleSheet(_BTN_STYLES["outline"])
+        choose.setStyleSheet(_BTN_STYLES["danger"])
+        for btn in (clear, choose):
+            btn.setMinimumHeight(38)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        variables.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         buttons.addWidget(clear)
         buttons.addWidget(choose)
         layout.addLayout(buttons)
@@ -5804,8 +5811,8 @@ class SpssProcessorApp(QMainWindow):
         self.log_message(
             f"E Correlation Mode: {self._ui.get('e_group_mode', 'default')}")
         self.log_message(
-            "Correlation Mode: ABS (cor_S_* / cor_P_* / CorE_* "
-            "ใช้ค่าสัมบูรณ์)")
+            "Correlation Mode: ABS กับ Index รายคน (cor_S_* / cor_P_* / "
+            "CorE_* ใช้ค่าสัมบูรณ์)")
         self.log_message(
             "B.S–B.E Mode: ABS (ใช้ |beta| — ไม่มีค่าติดลบ/เกิน 100)")
         self.log_message("")
@@ -5897,6 +5904,8 @@ class SpssProcessorApp(QMainWindow):
                 self.set_progress(current_step, total_steps)
                 continue
             self.log_message(f"   ✓ วิเคราะห์สำเร็จ ({len(part_results)} กลุ่ม)")
+            part_summary = self._add_index_correlation(
+                part_summary, part_results, primary_filter, cross_filter)
             self.set_progress(current_step, total_steps)
 
             # --- ตัด Overall และ Index1-only ออกจาก filter ตัวที่ 2 เป็นต้นไป ---
@@ -5981,7 +5990,7 @@ class SpssProcessorApp(QMainWindow):
         self.update_status("กำลังบันทึกผลลัพธ์ลง Excel...")
         self.log_message(f"[{current_step}/{total_steps}] กำลังบันทึกผลลัพธ์ลง Excel...")
         final_message = self.save_all_results_to_excel(
-            final_summary, all_results, final_output)
+            final_summary, all_results, final_output, cross_filters)
         self.log_message("   ✓ บันทึก Excel สำเร็จ")
         self.set_progress(current_step, total_steps)
 
@@ -6197,17 +6206,9 @@ class SpssProcessorApp(QMainWindow):
             if not cols_to_average:
                 raise RuntimeError(
                     "ไม่พบข้อมูลคอลัมน์ S, P, C, E สำหรับสร้างสรุป")
-            corr_df = self.transformed_df.copy()
-
-            # --- E Group Mode: E columns ถูก merge แล้วจาก transformation (เช่น E_45) ---
-            # ไม่ต้อง merge ซ้ำที่นี่
-
             df_for_summary = self._weighted_frame(self.transformed_df)
-            corr_df = self._weighted_frame(corr_df)
             groups_to_summarize = OrderedDict()
-            corr_groups = OrderedDict()
             groups_to_summarize['Overall'] = df_for_summary
-            corr_groups['Overall'] = corr_df
 
             primary_values = []
             if primary_filter and primary_filter in df_for_summary.columns:
@@ -6216,7 +6217,6 @@ class SpssProcessorApp(QMainWindow):
                     filter_name = self._format_filter_val(primary_filter, p_val)
                     if filter_name not in groups_to_summarize:
                             groups_to_summarize[filter_name] = df_for_summary[df_for_summary[primary_filter] == p_val]
-                            corr_groups[filter_name] = corr_df[corr_df[primary_filter] == p_val]
 
             if cross_filter and cross_filter in df_for_summary.columns:
                 cross_values = sorted(df_for_summary[cross_filter].dropna().unique())
@@ -6224,14 +6224,12 @@ class SpssProcessorApp(QMainWindow):
                     filter_name_cross = self._format_filter_val(cross_filter, c_val)
                     if filter_name_cross not in groups_to_summarize:
                             groups_to_summarize[filter_name_cross] = df_for_summary[df_for_summary[cross_filter] == c_val]
-                            corr_groups[filter_name_cross] = corr_df[corr_df[cross_filter] == c_val]
 
                     if primary_filter and primary_filter in df_for_summary.columns:
                         for p_val in primary_values:
                             nested_name = f"{self._format_filter_val(primary_filter, p_val)}+{self._format_filter_val(cross_filter, c_val)}"
                             subset = df_for_summary[(df_for_summary[primary_filter] == p_val) & (df_for_summary[cross_filter] == c_val)]
                             groups_to_summarize[nested_name] = subset
-                            corr_groups[nested_name] = corr_df[(corr_df[primary_filter] == p_val) & (corr_df[cross_filter] == c_val)]
 
             summary_list = []
             avg_cols_base = cols_to_average.copy()
@@ -6312,47 +6310,160 @@ class SpssProcessorApp(QMainWindow):
                 if col in final_summary_df.columns:
                     final_summary_df[col] *= 100
 
-            s_cols = sorted([c for c in cols_to_average if c.startswith('S_')], key=lambda x: int(x.split('_')[1]))
-            p_cols = sorted([c for c in cols_to_average if c.startswith('P_')], key=lambda x: int(x.split('_')[1]))
-
-            if 'A' in corr_df.columns:
-                e_cols_for_corr = sorted([c for c in corr_df.columns if re.match(r'^E_\d+$', c)], key=lambda x: int(x.split('_')[1]))
-                e_corr_map = {f'CorE_{col.split("_")[1]}': col for col in e_cols_for_corr}
-                source_e_cols = [col for col in e_corr_map.values() if col in corr_df.columns]
-                rename_dict = {v: k for k, v in e_corr_map.items()}
-
-                corr_rows = []
-                for name, df_group in corr_groups.items():
-                    if df_group.empty:
-                        continue
-                    # ใช้ค่าสัมบูรณ์ของ correlation ทุกรอบการรัน
-                    # เพื่อไม่ให้ cor_S_* / cor_P_* / CorE_* ติดลบ
-                    # (ดูความแรงของความสัมพันธ์ ไม่สนทิศทาง)
-                    row = {'Filter': name}
-                    if s_cols:
-                        s_corr = self._weighted_corrwith(df_group, s_cols, 'A').abs()
-                        for col, val in s_corr.items():
-                            row['cor_' + col] = val
-                    if p_cols:
-                        p_corr = self._weighted_corrwith(df_group, p_cols, 'A').abs()
-                        for col, val in p_corr.items():
-                            row['cor_' + col] = val
-                    if source_e_cols:
-                        e_corr = self._weighted_corrwith(df_group, source_e_cols, 'A').abs()
-                        for col, val in e_corr.items():
-                            row[rename_dict.get(col, col)] = val
-                    corr_rows.append(row)
-
-                if corr_rows:
-                    corr_by_filter_df = pd.DataFrame(corr_rows)
-                    final_summary_df = pd.merge(final_summary_df, corr_by_filter_df, on='Filter', how='left')
-
             return final_summary_df
         except RuntimeError:
             raise
         except Exception as e:
             raise RuntimeError(
                 f"ไม่สามารถสร้างข้อมูลสรุปได้: {e}") from e
+
+    def _beta_shares(self, beta_sorted_df):
+        """B.S–B.E (%) ของกลุ่มเดียว คิดแบบเดียวกับ Factor_Template"""
+        betas = beta_sorted_df['Beta'].reindex(
+            ['N_S', 'N_P', 'N_C', 'N_E']).fillna(0)
+        if self._use_abs_beta():
+            betas = betas.abs()
+        total = betas.sum()
+        return betas / total * 100 if total != 0 else betas * 0
+
+    @staticmethod
+    def _person_index(df, shares):
+        """Index รายคน สเกลเดียวกับคอลัมน์ Index ใน Summary
+
+        Summary: Index = Σ (mean(X) × 100) × B.X / 100 จึงรายคน = Σ N_X × B.X
+        คืน None ถ้าไม่มีปัจจัยที่ใช้ได้
+        """
+        terms = [df[f] * share for f, share in shares.items()
+                 if share != 0 and f in df.columns]
+        return sum(terms) if terms else None
+
+    def _rawdata_cal_df(self, results, cross_filters=()):
+        """ชีท Rawdata Cal: ข้อมูลแบบยาว (คน × Index1) ที่ใช้คำนวณจริง
+
+        เฉพาะแถวที่ผ่านเงื่อนไข Weight / S13 แล้วเติม B.S–B.E และ Index
+        รายคน โดยใช้ B.x ของกลุ่มย่อยที่แถวนั้นอยู่ (Index1+cross filter
+        เช่น Index1=131+S13_AUTO_1=Users) แถวที่ไม่มีค่า cross filter ใช้
+        กลุ่ม Index1 คอลัมน์ Filter บอกชื่อกลุ่มที่ใช้ ถ้ามีหลาย cross
+        filter แถวจะซ้ำ 1 ชุดต่อ filter กลุ่มที่ไม่มีผล Regression เว้นว่าง
+        """
+        share_cols = {'N_S': 'B.S', 'N_P': 'B.P',
+                      'N_C': 'B.C', 'N_E': 'B.E'}
+        new_cols = list(share_cols.values()) + ['Index']
+        data = self._weighted_frame(self.transformed_df)
+        data = data.drop(columns=[c for c in new_cols + ['Filter']
+                                  if c in data.columns])
+
+        def names(col):
+            labels = {v: self._format_filter_val(col, v)
+                      for v in data[col].dropna().unique()}
+            return data[col].map(labels)
+
+        index_names = names('Index1')
+        filter_sets = [index_names]
+        for cf in cross_filters:
+            if cf and cf in data.columns and cf != 'Index1':
+                filter_sets.append(
+                    (index_names + '+' + names(cf)).fillna(index_names))
+        if len(filter_sets) > 1:
+            filter_sets = filter_sets[1:]
+
+        shares = pd.DataFrame({
+            name: self._beta_shares(res['beta_sorted'])
+            for name, res in results.items()
+            if res and res.get('beta_sorted') is not None}).T
+        factors = [f for f in share_cols if f in data.columns]
+        blocks = []
+        for filter_names in filter_sets:
+            block = data.assign(Filter=filter_names)
+            for factor, col in share_cols.items():
+                block[col] = filter_names.map(
+                    shares[factor]) if factor in shares else np.nan
+            # ปัจจัยที่ B.x = 0 ไม่นับ (เหมือน _person_index)
+            terms = pd.DataFrame({
+                f: block[f].where(block[share_cols[f]] != 0, 0)
+                * block[share_cols[f]] for f in factors})
+            block['Index'] = (terms.sum(axis=1, skipna=False)
+                              if factors else np.nan)
+            blocks.append(block)
+        data = pd.concat(blocks)
+
+        # รหัสผู้ตอบ (เช่น KEY, SBJNUM) = id ที่ไม่ซ้ำภายใน Index1 เดียวกัน
+        slices = [rows for _, rows in data.groupby(['Filter', 'Index1'])]
+        id_cols = [c for c in self.id_vars
+                   if c in data.columns and c not in ('Filter', 'Index1')
+                   and data[c].notna().all()
+                   and not any(s[c].duplicated().any() for s in slices)]
+        front = id_cols + [c for c in ['Filter', 'Index1', *share_cols]
+                           if c in data.columns] + new_cols
+        return data[front + [c for c in data.columns if c not in front]]
+
+    def _rawdata_with_index(self, rawdata_df, cal_df):
+        """แทรกคอลัมน์ IndexScore_<Index1> ต่อจากคอลัมน์รหัสผู้ตอบ
+
+        ค่ามาจากคอลัมน์ Index ของ Rawdata Cal (ถ้ามีหลาย cross filter
+        ใช้ชุดของ filter แรก) แถวที่ไม่ได้ใช้จะเว้นว่าง
+        """
+        key = self._detect_respondent_key()
+        if rawdata_df is None or key is None \
+                or key not in rawdata_df.columns \
+                or rawdata_df is self.transformed_df:
+            return rawdata_df
+        scored = cal_df[~cal_df.index.duplicated()].dropna(subset=['Index'])
+        if scored.empty:
+            return rawdata_df
+        wide = scored.pivot(index=key, columns='Index1', values='Index')
+        wide.columns = [f'IndexScore_{int(c)}' for c in wide.columns]
+        out = rawdata_df.drop(
+            columns=[c for c in wide.columns if c in rawdata_df.columns])
+        pos = out.columns.get_loc(key) + 1
+        for i, col in enumerate(wide.columns):
+            out.insert(pos + i, col, out[key].map(wide[col]))
+        return out
+
+    def _add_index_correlation(self, summary_df, results,
+                               primary_filter, cross_filter):
+        """เพิ่ม cor_S_* / cor_P_* / CorE_* = |corr(attribute, Index รายคน)|
+
+        Index รายคน = N_S × B.S + N_P × B.P + N_C × B.C + N_E × B.E
+        โดยใช้ B.x ของกลุ่มนั้นเอง กลุ่มที่ไม่มีผล Regression จะได้ค่าว่าง
+        """
+        def by_number(cols):
+            return sorted(cols, key=lambda x: int(x.split('_')[1]))
+
+        columns = self.transformed_df.columns
+        s_cols = by_number(c for c in columns if re.match(r'^S_\d+$', c))
+        p_cols = by_number(c for c in columns if re.match(r'^P_\d+$', c))
+        e_cols = by_number(c for c in columns if re.match(r'^E_\d+$', c))
+        out_names = {c: 'cor_' + c for c in s_cols + p_cols}
+        out_names.update({c: 'CorE_' + c.split('_')[1] for c in e_cols})
+        attr_cols = s_cols + p_cols + e_cols
+        if not attr_cols:
+            return summary_df
+
+        groups = self._build_analysis_groups(
+            primary_filter, cross_filter,
+            self._weighted_frame(self.transformed_df))
+        corr_rows = []
+        for name, df_group in groups.items():
+            beta_sorted = (results.get(name) or {}).get('beta_sorted')
+            if df_group.empty or beta_sorted is None:
+                continue
+            score = self._person_index(
+                df_group, self._beta_shares(beta_sorted))
+            if score is None:
+                continue
+            data = df_group.assign(_IndexScore=score)
+            # ใช้ค่าสัมบูรณ์ ดูความแรงของความสัมพันธ์ ไม่สนทิศทาง
+            corr = self._weighted_corrwith(
+                data, attr_cols, '_IndexScore').abs()
+            row = {'Filter': name}
+            row.update({out_names[c]: v for c, v in corr.items()})
+            corr_rows.append(row)
+
+        if not corr_rows:
+            return summary_df
+        return pd.merge(summary_df, pd.DataFrame(corr_rows),
+                        on='Filter', how='left')
 
     def _calculate_and_add_t2b_values(self, summary_df, primary_filter="Index1", cross_filter=None):
         """คำนวณ %T2B สำหรับ AgreeS/P ตามลำดับการเลือก"""
@@ -6820,13 +6931,15 @@ class SpssProcessorApp(QMainWindow):
             'Correspondence(S)': 'FF0000',
             'Correspondence(P)': 'FF0000',
             'Rawdata': '7030A0',
+            'Rawdata Cal': '7030A0',
             'QC Excluded': 'FFC000'
         }
         for sname, color in tab_map.items():
             if sname in workbook.sheetnames:
                 workbook[sname].sheet_properties.tabColor = color
 
-    def save_all_results_to_excel(self, summary_df, results_dict, full_output_text):
+    def save_all_results_to_excel(self, summary_df, results_dict,
+                                  full_output_text, cross_filters=()):
         """บันทึกข้อมูลสรุปและผลวิเคราะห์ลง Excel — คืนข้อความสรุปผล
 
         รันบน worker thread จึงห้ามเปิด dialog จากที่นี่
@@ -6984,6 +7097,9 @@ class SpssProcessorApp(QMainWindow):
                 worksheet = writer.sheets['Summary']
 
                 headers = [cell.value for cell in worksheet[1]]
+                na_fill = PatternFill(start_color='D9D9D9',
+                                      end_color='D9D9D9', fill_type='solid')
+                na_align = Alignment(horizontal='center')
                 for col_idx, header in enumerate(headers, 1):
                     if header is None: continue
 
@@ -7002,6 +7118,15 @@ class SpssProcessorApp(QMainWindow):
                     if format_str:
                         for row in range(2, worksheet.max_row + 1):
                             worksheet.cell(row=row, column=col_idx).number_format = format_str
+
+                    # Correlation ที่คำนวณไม่ได้ (ค่าว่าง) แสดง N/A พื้นเทา
+                    if header.startswith(('cor_', 'CorE_')):
+                        for row in range(2, worksheet.max_row + 1):
+                            cell = worksheet.cell(row=row, column=col_idx)
+                            if cell.value in (None, ''):
+                                cell.value = 'N/A'
+                                cell.fill = na_fill
+                                cell.alignment = na_align
 
                 color_scale_cols = ['Index', 'B.S', 'B.P', 'B.C', 'B.E']
                 max_row = worksheet.max_row
@@ -7024,8 +7149,24 @@ class SpssProcessorApp(QMainWindow):
                     if self.transformed_df is not None:
                         self.transformed_df.to_excel(writer, sheet_name='Sheet Dummy', index=False)
 
+                cal_df = self._rawdata_cal_df(results_dict, cross_filters)
+                rawdata_df = self._rawdata_with_index(rawdata_df, cal_df)
                 if rawdata_df is not None:
                     rawdata_df.to_excel(writer, sheet_name='Rawdata', index=False)
+                cal_df.rename(columns={'Index1': 'Code_Brand'}).to_excel(
+                    writer, sheet_name='Rawdata Cal', index=False)
+                cal_ws = writer.sheets['Rawdata Cal']
+                for col_idx, header in enumerate(cal_df.columns, 1):
+                    if header == 'Index':
+                        cal_ws.cell(row=1, column=col_idx).fill = PatternFill(
+                            start_color='92D050', end_color='92D050',
+                            fill_type='solid')
+                    if header in ('N_S', 'N_P', 'N_C', 'N_E', 'B.S', 'B.P',
+                                  'B.C', 'B.E', 'Index'):
+                        for (cell,) in cal_ws.iter_rows(
+                                min_row=2, min_col=col_idx,
+                                max_col=col_idx):
+                            cell.number_format = '0.00'
 
                 if self.qc_excluded_df is not None \
                         and not self.qc_excluded_df.empty:
@@ -7059,6 +7200,7 @@ class SpssProcessorApp(QMainWindow):
                     'Correspondence(S)',
                     'Correspondence(P)',
                     'Rawdata',
+                    'Rawdata Cal',
                     'QC Excluded']
                 for idx, name in enumerate(desired):
                     if name in workbook.sheetnames:
@@ -7067,7 +7209,7 @@ class SpssProcessorApp(QMainWindow):
                             - workbook.sheetnames.index(name))
 
             if summary_only:
-                final_message = f"บันทึก Excel (Summary + SandP + Rawdata) เรียบร้อยแล้วที่:\n{filepath}"
+                final_message = f"บันทึก Excel (Summary + SandP + Rawdata + Rawdata Cal) เรียบร้อยแล้วที่:\n{filepath}"
             else:
                 final_message = f"บันทึก Excel (Full Report) เรียบร้อยแล้วที่:\n{filepath}"
 
