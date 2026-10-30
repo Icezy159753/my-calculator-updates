@@ -6337,14 +6337,17 @@ class SpssProcessorApp(QMainWindow):
                  if share != 0 and f in df.columns]
         return sum(terms) if terms else None
 
-    def _rawdata_cal_df(self, results, cross_filters=()):
-        """ชีท Rawdata Cal: ข้อมูลแบบยาว (คน × Index1) ที่ใช้คำนวณจริง
+    def _rawdata_cal_sheets(self, results, cross_filters=()):
+        """ชีท Rawdata Cal-*: ข้อมูลแบบยาว (คน × Index1) ที่ใช้คำนวณจริง
 
-        เฉพาะแถวที่ผ่านเงื่อนไข Weight / S13 แล้วเติม B.S–B.E และ Index
-        รายคน โดยใช้ B.x ของกลุ่มย่อยที่แถวนั้นอยู่ (Index1+cross filter
-        เช่น Index1=131+S13_AUTO_1=Users) แถวที่ไม่มีค่า cross filter ใช้
-        กลุ่ม Index1 คอลัมน์ Filter บอกชื่อกลุ่มที่ใช้ ถ้ามีหลาย cross
-        filter แถวจะซ้ำ 1 ชุดต่อ filter กลุ่มที่ไม่มีผล Regression เว้นว่าง
+        แยก 1 ชีทต่อระดับของ B.x ที่ใช้ ตรงกับแถวใน Summary
+          Rawdata Cal-Overall       ทุกแถวใช้ B.x ของ Overall
+          Rawdata Cal-Brand         B.x ของ Index1=xxx
+          Rawdata Cal-Filter        B.x ของ cross filter เช่น S13_AUTO_1=Users
+          Rawdata Cal-Brand Filter  B.x ของ Index1=xxx+cross filter
+        เฉพาะแถวที่ผ่านเงื่อนไข Weight / S13 คอลัมน์ Filter บอกชื่อกลุ่ม
+        ถ้ามีหลาย cross filter แถวจะซ้ำ 1 ชุดต่อ filter
+        กลุ่มที่ไม่มีผล Regression เว้นว่าง
         """
         share_cols = {'N_S': 'B.S', 'N_P': 'B.P',
                       'N_C': 'B.C', 'N_E': 'B.E'}
@@ -6359,56 +6362,74 @@ class SpssProcessorApp(QMainWindow):
             return data[col].map(labels)
 
         index_names = names('Index1')
-        filter_sets = [index_names]
-        for cf in cross_filters:
-            if cf and cf in data.columns and cf != 'Index1':
-                filter_sets.append(
-                    (index_names + '+' + names(cf)).fillna(index_names))
-        if len(filter_sets) > 1:
-            filter_sets = filter_sets[1:]
+        cross_names = [names(cf) for cf in cross_filters
+                       if cf and cf in data.columns and cf != 'Index1']
+        levels = {
+            'Rawdata Cal-Overall': [
+                pd.Series('Overall', index=data.index)],
+            'Rawdata Cal-Brand': [index_names],
+        }
+        if cross_names:
+            levels['Rawdata Cal-Filter'] = cross_names
+            levels['Rawdata Cal-Brand Filter'] = [
+                index_names + '+' + c for c in cross_names]
 
         shares = pd.DataFrame({
             name: self._beta_shares(res['beta_sorted'])
             for name, res in results.items()
             if res and res.get('beta_sorted') is not None}).T
         factors = [f for f in share_cols if f in data.columns]
-        blocks = []
-        for filter_names in filter_sets:
-            block = data.assign(Filter=filter_names)
-            for factor, col in share_cols.items():
-                block[col] = filter_names.map(
-                    shares[factor]) if factor in shares else np.nan
-            # ปัจจัยที่ B.x = 0 ไม่นับ (เหมือน _person_index)
-            terms = pd.DataFrame({
-                f: block[f].where(block[share_cols[f]] != 0, 0)
-                * block[share_cols[f]] for f in factors})
-            block['Index'] = (terms.sum(axis=1, skipna=False)
-                              if factors else np.nan)
-            blocks.append(block)
-        data = pd.concat(blocks)
+        id_cols = None
+        sheets = OrderedDict()
+        for sheet, filter_sets in levels.items():
+            blocks = []
+            for filter_names in filter_sets:
+                filter_names = filter_names.dropna()
+                block = data.loc[filter_names.index].assign(
+                    Filter=filter_names)
+                for factor, col in share_cols.items():
+                    block[col] = filter_names.map(
+                        shares[factor]) if factor in shares else np.nan
+                # ปัจจัยที่ B.x = 0 ไม่นับ (เหมือน _person_index)
+                terms = pd.DataFrame({
+                    f: block[f].where(block[share_cols[f]] != 0, 0)
+                    * block[share_cols[f]] for f in factors})
+                block['Index'] = (terms.sum(axis=1, skipna=False)
+                                  if factors else np.nan)
+                blocks.append(block)
+            block = pd.concat(blocks)
 
-        # รหัสผู้ตอบ (เช่น KEY, SBJNUM) = id ที่ไม่ซ้ำภายใน Index1 เดียวกัน
-        slices = [rows for _, rows in data.groupby(['Filter', 'Index1'])]
-        id_cols = [c for c in self.id_vars
-                   if c in data.columns and c not in ('Filter', 'Index1')
-                   and data[c].notna().all()
-                   and not any(s[c].duplicated().any() for s in slices)]
-        front = id_cols + [c for c in ['Filter', 'Index1', *share_cols]
-                           if c in data.columns] + new_cols
-        return data[front + [c for c in data.columns if c not in front]]
+            if id_cols is None:
+                # รหัสผู้ตอบ (เช่น KEY, SBJNUM) = id ไม่ซ้ำภายใน Index1
+                slices = [r for _, r in block.groupby('Index1')]
+                id_cols = [c for c in self.id_vars
+                           if c in block.columns
+                           and c not in ('Filter', 'Index1')
+                           and block[c].notna().all()
+                           and not any(s[c].duplicated().any()
+                                       for s in slices)]
+            front = id_cols + [c for c in ['Filter', 'Index1', *share_cols]
+                               if c in block.columns] + new_cols
+            sheets[sheet] = block[
+                front + [c for c in block.columns if c not in front]]
+        return sheets
 
-    def _rawdata_with_index(self, rawdata_df, cal_df):
+    def _rawdata_with_index(self, rawdata_df, cal_sheets):
         """แทรกคอลัมน์ IndexScore_<Index1> ต่อจากคอลัมน์รหัสผู้ตอบ
 
-        ค่ามาจากคอลัมน์ Index ของ Rawdata Cal (ถ้ามีหลาย cross filter
-        ใช้ชุดของ filter แรก) แถวที่ไม่ได้ใช้จะเว้นว่าง
+        ใช้ Index ระดับย่อยที่สุด (Brand Filter ของ cross filter แรก
+        ถ้าไม่มีค่าใช้ Brand) แถวที่ไม่ได้ใช้จะเว้นว่าง
         """
         key = self._detect_respondent_key()
         if rawdata_df is None or key is None \
                 or key not in rawdata_df.columns \
                 or rawdata_df is self.transformed_df:
             return rawdata_df
-        scored = cal_df[~cal_df.index.duplicated()].dropna(subset=['Index'])
+        scored = pd.concat([
+            cal_sheets[s] for s in ('Rawdata Cal-Brand Filter',
+                                    'Rawdata Cal-Brand')
+            if s in cal_sheets]).dropna(subset=['Index'])
+        scored = scored.drop_duplicates(subset=[key, 'Index1'])
         if scored.empty:
             return rawdata_df
         wide = scored.pivot(index=key, columns='Index1', values='Index')
@@ -6931,7 +6952,10 @@ class SpssProcessorApp(QMainWindow):
             'Correspondence(S)': 'FF0000',
             'Correspondence(P)': 'FF0000',
             'Rawdata': '7030A0',
-            'Rawdata Cal': '7030A0',
+            'Rawdata Cal-Overall': '7030A0',
+            'Rawdata Cal-Brand': '7030A0',
+            'Rawdata Cal-Filter': '7030A0',
+            'Rawdata Cal-Brand Filter': '7030A0',
             'QC Excluded': 'FFC000'
         }
         for sname, color in tab_map.items():
@@ -7149,24 +7173,27 @@ class SpssProcessorApp(QMainWindow):
                     if self.transformed_df is not None:
                         self.transformed_df.to_excel(writer, sheet_name='Sheet Dummy', index=False)
 
-                cal_df = self._rawdata_cal_df(results_dict, cross_filters)
-                rawdata_df = self._rawdata_with_index(rawdata_df, cal_df)
+                cal_sheets = self._rawdata_cal_sheets(
+                    results_dict, cross_filters)
+                rawdata_df = self._rawdata_with_index(rawdata_df, cal_sheets)
                 if rawdata_df is not None:
                     rawdata_df.to_excel(writer, sheet_name='Rawdata', index=False)
-                cal_df.rename(columns={'Index1': 'Code_Brand'}).to_excel(
-                    writer, sheet_name='Rawdata Cal', index=False)
-                cal_ws = writer.sheets['Rawdata Cal']
-                for col_idx, header in enumerate(cal_df.columns, 1):
-                    if header == 'Index':
-                        cal_ws.cell(row=1, column=col_idx).fill = PatternFill(
-                            start_color='92D050', end_color='92D050',
-                            fill_type='solid')
-                    if header in ('N_S', 'N_P', 'N_C', 'N_E', 'B.S', 'B.P',
-                                  'B.C', 'B.E', 'Index'):
-                        for (cell,) in cal_ws.iter_rows(
-                                min_row=2, min_col=col_idx,
-                                max_col=col_idx):
-                            cell.number_format = '0.00'
+                for cal_name, cal_df in cal_sheets.items():
+                    cal_df.rename(columns={'Index1': 'Code_Brand'}).to_excel(
+                        writer, sheet_name=cal_name, index=False)
+                    cal_ws = writer.sheets[cal_name]
+                    for col_idx, header in enumerate(cal_df.columns, 1):
+                        if header == 'Index':
+                            cal_ws.cell(row=1, column=col_idx).fill = \
+                                PatternFill(start_color='92D050',
+                                            end_color='92D050',
+                                            fill_type='solid')
+                        if header in ('N_S', 'N_P', 'N_C', 'N_E', 'B.S',
+                                      'B.P', 'B.C', 'B.E', 'Index'):
+                            for (cell,) in cal_ws.iter_rows(
+                                    min_row=2, min_col=col_idx,
+                                    max_col=col_idx):
+                                cell.number_format = '0.00'
 
                 if self.qc_excluded_df is not None \
                         and not self.qc_excluded_df.empty:
@@ -7200,7 +7227,7 @@ class SpssProcessorApp(QMainWindow):
                     'Correspondence(S)',
                     'Correspondence(P)',
                     'Rawdata',
-                    'Rawdata Cal',
+                    *cal_sheets,
                     'QC Excluded']
                 for idx, name in enumerate(desired):
                     if name in workbook.sheetnames:
@@ -7209,7 +7236,7 @@ class SpssProcessorApp(QMainWindow):
                             - workbook.sheetnames.index(name))
 
             if summary_only:
-                final_message = f"บันทึก Excel (Summary + SandP + Rawdata + Rawdata Cal) เรียบร้อยแล้วที่:\n{filepath}"
+                final_message = f"บันทึก Excel (Summary + SandP + Rawdata + Rawdata Cal-*) เรียบร้อยแล้วที่:\n{filepath}"
             else:
                 final_message = f"บันทึก Excel (Full Report) เรียบร้อยแล้วที่:\n{filepath}"
 
