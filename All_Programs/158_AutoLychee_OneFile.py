@@ -474,7 +474,7 @@ def save_json(path: Path, value):
     temporary.replace(path)
 
 
-VERSION = '2026.11.10'  # shown in the title bar, the log and error files; bump with every delivered change
+VERSION = '2026.11.10.2'  # shown in the title bar, the log and error files; bump with every delivered change
 ON, OFF = 'เปิด', 'ปิด'
 CUT_MODE_LABELS = {'both': 'N + %', 'count': 'N Only', 'percent': '% Only'}
 EXPORT_MODE_LABELS = {'sheets': 'แยกชีท', 'onesheet': 'One Sheet'}
@@ -1660,7 +1660,7 @@ class HideLycheDialogs:
 
 
 class Lyche:
-    def __init__(self, handle: int, control_dir: Path, emit, timeout=900, background=True):
+    def __init__(self, handle: int, control_dir: Path, emit, timeout=2400, background=True):
         self.background = background  # UIA patterns only, Lyche kept off-screen (see background_session)
         self.hider = None
         self.muter = None  # sounds.SessionMute while background_session runs
@@ -1729,11 +1729,19 @@ class Lyche:
             win32gui.EnumWindows(collect_all, None)
         return found
 
-    def wait(self, fn, label, timeout=20, poll=.2):
+    def wait(self, fn, label, timeout=20, poll=.2, progress=None):
+        """progress: optional callable returning a value that changes while Lyche is still working
+        (its progress bars); every change restarts the clock, so `timeout` is the longest wait
+        WITHOUT progress (user request 2026-11-10: a big project must not be cut off mid-calculation)."""
         start = time.monotonic()
         last = None
+        seen = progress() if progress else None
         while time.monotonic() - start < timeout:
             self.checkpoint()
+            if progress:
+                now = progress()
+                if now != seen:
+                    seen, start = now, time.monotonic()
             error = self.lyche_error()
             if error:
                 raise RuntimeError(f'Lyche แจ้งข้อผิดพลาด: {error} — ตรวจการเชื่อมต่อ/ล็อกอินของ Lyche แล้วลองใหม่')
@@ -1746,7 +1754,8 @@ class Lyche:
                 # or paste' warning closing during the Saved. wait) — transient, keep polling
                 last = exc
             time.sleep(poll)
-        raise TimeoutError(f'รอ {label} เกิน {timeout} วินาที' + (f': {last}' if last else ''))
+        idle = ' โดยไม่มีความคืบหน้า' if progress else ''
+        raise TimeoutError(f'รอ {label} เกิน {timeout} วินาที{idle}' + (f': {last}' if last else ''))
 
     def wrapper(self, handle):
         return UIAWrapper(UIAElementInfo(self.api.ElementFromHandle(handle)))
@@ -3168,6 +3177,12 @@ class Lyche:
             except Exception:
                 return False
         report_at = [time.monotonic() + 20]
+        bar_values = [None]  # Lyche's busy progress bars, read by ready(): while they move the wait goes on
+        def bar_value(progress):
+            try:
+                return progress.iface_range_value.CurrentValue
+            except Exception:
+                return None
         def ready():
             self.ack_ok_warnings()  # the weighting warning can also come after the window turned into the result
             root = self.main()
@@ -3176,13 +3191,14 @@ class Lyche:
             else:
                 export = self.find(root, name='Export with Analysis Axis', kind=50000, required=False)
             busy_bars = [p for p in self.all(root, kind=50012) if busy(p)]
+            bar_values[0] = tuple(bar_value(p) for p in busy_bars)
             if export and export.is_enabled() and not busy_bars:
                 return export
             if time.monotonic() >= report_at[0]:  # live 2026-10-09: a 5-minute stall here left no clue
                 report_at[0] = time.monotonic() + 30
                 self.emit('log', text='ยังรอปุ่ม Export: ' + self.export_wait_state(export, busy_bars))
             return None
-        export = self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)  # long wait: poll gently
+        export = self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5, progress=lambda: bar_values[0])  # long wait: poll gently
         def open_prompt():
             self.ack_ok_warnings()
             for prefix in ('Question', 'Confirm', 'Information', 'Lyche'):
@@ -3203,10 +3219,10 @@ class Lyche:
                 if export_all:
                     # User's flow (2026-10-01): Export all → the item, the Export All Setting ticks,
                     # OK; from 'Open file?' on it is the same as Export with Analysis Axis.
-                    self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)
+                    self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5, progress=lambda: bar_values[0])
                     self.export_all(export_all)
                 else:
-                    self.click(self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5))
+                    self.click(self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5, progress=lambda: bar_values[0]))
             prompt = self.press_until_prompt(press, ready, open_prompt, 3 if self.background else 1)
             no = self.find(prompt, name='No', kind=50000, required=False) or self.find(prompt, name='&No', kind=50000, required=False)
             if no is None:
@@ -6776,7 +6792,7 @@ def main():
         closed = 0
         for item in windows():
             try:
-                Lyche(item['handle'], Path(config['control_dir']), emit, config.get('timeout', 900), background=True).close_leftover_dialogs()
+                Lyche(item['handle'], Path(config['control_dir']), emit, config.get('timeout', 2400), background=True).close_leftover_dialogs()
                 closed += 1
             except Exception as exc:
                 emit('log', text=f'ปิดกล่องค้างใน {item["title"][:40]} ไม่สำเร็จ: {exc}')
@@ -6805,7 +6821,7 @@ def main():
             return
         opened_for_this = not windows()  # no Cross Tabulation window yet: resolve_handle opens one
         bot = Lyche(resolve_handle(config, windows, open_cross_tabulation), Path(config['control_dir']), emit,
-                    config.get('timeout', 900),
+                    config.get('timeout', 2400),
                     # Reading Lyche's variable list / checking Banner Manual items only reads: always in the
                     # background, also in Preview mode (user request) — Preview would restore the window.
                     background=config.get('background', True) or config['action'] in ('items', 'check_items'))
@@ -7121,8 +7137,19 @@ class FreezeOverlay(QWidget):
         QPainter(self).drawPixmap(self.rect(), self.shot)
 
 
+# Longest wait per step WITHOUT progress (Lyche's progress bars restart the clock), in seconds.
+DEFAULT_TIMEOUT = 40 * 60  # user request 2026-11-10 (was 15 minutes)
+OLD_DEFAULT_TIMEOUT = 15 * 60
+
+
+def saved_timeout(data):
+    """Minutes for the spin box from a saved queue; the old 15-minute default becomes the new default."""
+    seconds = data.get('timeout', DEFAULT_TIMEOUT)
+    return (DEFAULT_TIMEOUT if seconds == OLD_DEFAULT_TIMEOUT else seconds) // 60
+
+
 # Per-row settings kept on the row's column-0 item: the Steps, plus Banner Manual (its own column/dialog).
-MANUAL_KEYS = ('banner_manual', 'banner_manual_items')
+MANUAL_KEYS =('banner_manual', 'banner_manual_items')
 POST_KEYS = ('total_na', 'total_na_empty_rows', 'del_sig', 'del_sig_groups', 'del_sig_mode', 'del_sig_beside',
              'cut_percent', 'cut_percent_mode', 'export_mode', 'report_type') + MANUAL_KEYS
 CUT_MODES = (('both', 'N + %'), ('count', 'N Only'), ('percent', '% Only'))
@@ -8883,7 +8910,9 @@ class App(MacWindowMixin, QMainWindow):
         row.addWidget(self.caption('รอสูงสุด/ขั้นตอน'))
         self.timeout = QSpinBox()
         self.timeout.setRange(1, 180)
-        self.timeout.setValue(15)
+        self.timeout.setValue(DEFAULT_TIMEOUT // 60)
+        self.timeout.setToolTip('รอได้นานสุดต่อขั้นตอนเมื่อ Lyche ไม่มีความคืบหน้า\n'
+                                'ระหว่างคำนวณตาราง ถ้า progress bar ของ Lyche ยังขยับ จะเริ่มนับใหม่ (ไม่ตัดกลางทาง)')
         self.timeout.setSuffix('  นาที')
         self.timeout.setFixedWidth(104)
         row.addWidget(self.timeout)
@@ -9576,7 +9605,7 @@ class App(MacWindowMixin, QMainWindow):
         try:
             data = json.loads(QUEUE.read_text(encoding='utf-8'))
             self.source.setCurrentText(data.get('source', 'Personal'))
-            self.timeout.setValue(data.get('timeout', 900) // 60)
+            self.timeout.setValue(saved_timeout(data))
             (self.bg_button if data.get('background', True) else self.preview_button).setChecked(True)
         except (OSError, ValueError, TypeError):
             pass
@@ -9588,7 +9617,7 @@ class App(MacWindowMixin, QMainWindow):
             data = json.loads(path.read_text(encoding='utf-8'))
             self.source.setCurrentText(data.get('source', 'Personal'))
             self.folder.setText(data.get('folder', ''))
-            self.timeout.setValue(data.get('timeout', 900) // 60)
+            self.timeout.setValue(saved_timeout(data))
             jobs = [Job(**value) for value in data['jobs']]
             for job in jobs:
                 if job.status == 'กำลังรัน':
