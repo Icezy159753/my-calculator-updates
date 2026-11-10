@@ -24,29 +24,164 @@ def natural_sort_key(s):
             key.append((0, part.lower()))
     return key
 
-def get_sort_key_for_vars(var_name):
+LOOP_VAR_RE = re.compile(r'^[Ii]_(\d+)_(.+)$')                  # I_1_q1_1_O2
+LOOP_OPTION_RE = re.compile(r'_(O\d+|oth\d*)$', re.IGNORECASE)   # _O1 (ตัวเลือก MA), _oth (ระบุอื่นๆ)
+LOOP_ATTR_RE = re.compile(r'_([A-Za-z]{1,3})\d+$')               # _l1, _r1 (Loop Attribute)
+OTH_RE = re.compile(r'_oth\d*$', re.IGNORECASE)                  # q1_1_oth
+SPEC_VAR_RE = re.compile(r'^S_\d+_\d+$', re.IGNORECASE)          # S_180_5 (ช่องระบุของระบบ)
+NUM_LOOP_RE = re.compile(r'^(.*\d.*?)_(\d+)$')                   # q1_1a_207 -> (q1_1a, 207)
+HASH_LOOP_RE = re.compile(r'^(.+?)#(\d+)(\$.*)?$')               # C1#3$2 -> (C1, 3)
+
+def loop_question_base(rest):
     """
-    ฟังก์ชันสร้าง "กุญแจ" สำหรับเรียงลำดับตัวแปรโดยเฉพาะ
+    หาชื่อข้อของตัวแปร I_ Loop:
+      p6_l3 -> p6_l (Attribute l1..ln คือข้อเดียวกัน), p6_l3_O1 -> p6_l
+      q1_1_O2 -> q1_1, na1_oth -> na1
+      p6_2 / p6_3 / b1_10 / Q_195 -> คงเดิม (เลขล้วนถือเป็นคนละข้อ)
     """
-    parts = str(var_name).split('_')
-    
-    if len(parts) < 3 or not parts[0].isalpha():
-        return ((2, var_name),) 
+    base = LOOP_OPTION_RE.sub('', rest) or rest
+    m = LOOP_ATTR_RE.search(base)
+    if m and m.start() > 0:
+        base = base[:m.start()] + '_' + m.group(1)
+    return base
 
-    try:
-        respondent_id = int(parts[1])
-    except (ValueError, IndexError):
-        return ((2, var_name),)
+def normalize_label(text):
+    """ตัดข้อความในวงเล็บ (มักเป็นชื่อแบรนด์/ชื่อ Loop) ตัวเลข และเครื่องหมายออก เหลือตัวโจทย์ไว้เทียบกัน"""
+    text = re.sub(r'\([^)]*\)|\[[^\]]*\]|\{[^}]*\}', '', str(text or ''))
+    return re.sub(r'[\W\d_]+', '', text).lower()
 
-    question_part_str = '_'.join(parts[2:])
+def classify_var(var):
+    """
+    คืน
+      ('member', family, loop, signature) = ตัวแปรของข้อ Loop
+      ('attach', base)                    = ตัวแปร _oth / S_<n>_<n> ที่ติดมากับข้อ
+      None                                = ตัวแปรทั่วไป
+    - I_<loop>_...  : ดูจากชื่ออย่างเดียว (ชัดเจนอยู่แล้ว)
+    - รูปแบบอื่น เช่น q1_1a_207_O1, q26f_1_O3, q5_2_r1, C1#2$5 : signature = (โจทย์, Value Labels)
+      ใช้ตรวจใน sort_loop_order ว่าทุกตัวในข้อเหมือนกันหมดจริงๆ
+    """
+    name = str(var['name'])
+    m = LOOP_VAR_RE.match(name)
+    if m:
+        return ('member', ('I', loop_question_base(m.group(2)).lower()), int(m.group(1)), None)
+    if SPEC_VAR_RE.match(name):
+        return ('attach', None)
+    if OTH_RE.search(name):
+        return ('attach', OTH_RE.sub('', name).lower())
+    m = HASH_LOOP_RE.match(name)
+    if not m:
+        base = LOOP_OPTION_RE.sub('', name)
+        attr = LOOP_ATTR_RE.search(base)
+        if attr and attr.start() > 0:
+            base = base[:attr.start()]
+        m = NUM_LOOP_RE.match(base)
+    if not m:
+        return None
+    stem, loop = m.group(1), m.group(2)
+    values = tuple(sorted((str(k), str(v)) for k, v in (var.get('values') or {}).items()))
+    return ('member', ('N', stem.lower()), loop, (normalize_label(var.get('label')), values))
 
-    match = re.search(r'(_O\d+)', question_part_str)
-    if match:
-        o_part_str = match.group(1)
-        stem_str = question_part_str[:match.start()]
-        return (natural_sort_key(stem_str), respondent_id, natural_sort_key(o_part_str))
-    else:
-        return (natural_sort_key(question_part_str), respondent_id, [])
+def loop_item_name(name):
+    """ชื่อข้อย่อยของตัวแปร (ตัด _O<n> ออก) ใช้จับคู่กับ _oth ของมันเอง"""
+    return LOOP_OPTION_RE.sub('', str(name)).lower()
+
+def sort_loop_order(variables):
+    """
+    variables: list ของ dict ที่มี 'name', 'label', 'values'
+    คืน (ลำดับ index ใหม่, จำนวนข้อ Loop ที่พบ, จำนวน _oth / S_ ที่ถูกย้ายไปท้ายข้อ)
+
+    ตัวแปรที่ติดกันเป็นบล็อก (ตัวแปร Loop + _oth/S_) จะถูกจัดเป็น:
+      ข้อ A: Loop 1 (ข้อย่อยตามลำดับเดิม) -> Loop 2 -> ... -> _oth/S_ ที่คั่นอยู่
+      ข้อ B: ...
+    ตัวแปรทั่วไปอยู่ที่เดิมและเป็นตัวคั่นบล็อก (ไม่ย้ายอะไรข้ามมัน)
+    """
+    infos = [classify_var(v) for v in variables]
+
+    loops_per_family, signatures = {}, {}
+    for info in infos:
+        if info and info[0] == 'member':
+            loops_per_family.setdefault(info[1], set()).add(info[2])
+            signatures.setdefault(info[1], set()).add(info[3])
+    # เป็นข้อ Loop ได้เมื่อ: มีมากกว่า 1 Loop และ (ถ้าไม่ใช่ I_) โจทย์ + Value Labels ต้องเหมือนกันทุกตัว
+    loop_families = {f for f, loops in loops_per_family.items()
+                     if len(loops) > 1 and (f[0] == 'I' or len(signatures[f]) == 1)}
+    infos = [None if info and info[0] == 'member' and info[1] not in loop_families else info
+             for info in infos]
+
+    # ข้อที่ไม่ใช่ I_ ต้องอยู่ในบล็อกเดียวครบทุกตัว ถ้าถูกตัวแปรอื่นคั่นแยกเป็นหลายช่วง -> ไม่แตะข้อนั้น
+    while True:
+        block_of, block_id = {}, 0
+        for info in infos:
+            if not info:
+                block_id += 1
+            elif info[0] == 'member' and info[1][0] == 'N':
+                block_of.setdefault(info[1], set()).add(block_id)
+        split = {f for f, blocks in block_of.items() if len(blocks) > 1}
+        if not split:
+            break
+        infos = [None if info and info[0] == 'member' and info[1] in split else info
+                 for info in infos]
+    loop_families -= {f for f in loop_families if f[0] == 'N' and f not in block_of}
+
+    result, block = [], []
+    n_moved = 0
+
+    def flush():
+        nonlocal n_moved
+        groups, tails, lead = {}, {}, []
+        ranks = {}
+        current = None   # (family, loop_key, ชื่อข้อของตัวล่าสุด)
+        for idx in block:
+            info = infos[idx]
+            if info[0] == 'member':
+                family, loop = info[1], info[2]
+                rank = ranks.setdefault(family, {})
+                rank.setdefault(loop, len(rank))
+                loop_key = loop if family[0] == 'I' else rank[loop]
+                groups.setdefault(family, []).append((loop_key, idx))
+                current = (family, loop_key, loop_item_name(variables[idx]['name']))
+            elif current is None:
+                lead.append(idx)
+            elif info[1] is not None and (info[1] == current[2] or info[1].startswith(current[2] + '_')):
+                # _oth ของข้อย่อยนี้เอง (q75_1 -> q75_1_oth, a1_1_1 -> a1_1_1_1001_oth) อยู่ติดกับ Loop ของมัน
+                groups[current[0]].append((current[1], idx))
+            else:
+                tails.setdefault(current[0], []).append(idx)
+        result.extend(lead)
+        for family, items in groups.items():
+            result.extend(idx for _, idx in sorted(items))
+            tail = tails.get(family, [])
+            last_member = max(idx for _, idx in items)
+            n_moved += sum(1 for idx in tail if idx < last_member)
+            result.extend(tail)
+        block.clear()
+
+    for i, info in enumerate(infos):
+        if info:
+            block.append(i)
+        else:
+            flush()
+            result.append(i)
+    flush()
+    return result, len(loop_families), n_moved
+
+
+def compute_auto_trim(names, start_var, end_var, head_anchor="Date", keep_vars=("Status",)):
+    """
+    คืน index ของตัวแปรที่ต้องตัด:
+    - หัว: ตั้งแต่ head_anchor (ถ้าไม่พบ เริ่มจากตัวแรก) จนถึงก่อน start_var โดยเว้น keep_vars ไว้
+    - ท้าย: ทุกตัวแปรหลัง end_var
+    """
+    start_idx = names.index(start_var)
+    end_idx = names.index(end_var)
+    if start_idx > end_idx:
+        raise ValueError(f"ตัวแปรเริ่มต้น '{start_var}' อยู่หลังตัวแปรสุดท้าย '{end_var}'")
+    lower = [n.lower() for n in names]
+    head_from = lower.index(head_anchor.lower()) if head_anchor.lower() in lower else 0
+    keep = {k.lower() for k in keep_vars}
+    head = [i for i in range(head_from, start_idx) if lower[i] not in keep]
+    tail = list(range(end_idx + 1, len(names)))
+    return head, tail
 
 # ==============================================================================
 #  ส่วนที่ 2: คลาสโปรแกรมหลัก SpssVariableEditor
@@ -75,6 +210,7 @@ class SpssVariableEditor:
         
         style.configure("White.TFrame", background="white")
         style.configure("TLabel", background="white", font=("Segoe UI", 9))
+        style.configure("TRadiobutton", background="white", font=("Segoe UI", 10))
         
         style.configure('Green.TButton', foreground='white', background=COLOR_GREEN, font=('Segoe UI', 9, 'bold'), borderwidth=0)
         style.map('Green.TButton', background=[('active', COLOR_GREEN_ACTIVE)])
@@ -200,10 +336,7 @@ class SpssVariableEditor:
             self.populate_treeview()
             self.save_button['state'] = tk.NORMAL
             self.sort_button['state'] = tk.NORMAL
-            messagebox.showinfo(
-                "สำเร็จ",
-                f"โหลดไฟล์ {os.path.basename(self.original_filepath)} เรียบร้อยแล้ว\n(ใช้ Encoding: {successful_encoding})"
-            )
+            self.ask_trim_option(successful_encoding)
         else:
             # ถ้าลองทุกตัวแล้วยังไม่สำเร็จ ให้แสดงข้อความแจ้งเตือน
             messagebox.showerror(
@@ -214,45 +347,131 @@ class SpssVariableEditor:
                 "กรุณาตรวจสอบไฟล์ หรือลองหา Encoding ที่ถูกต้อง"
             )
 
+    def ask_trim_option(self, encoding):
+        names = [v['name'] for v in self.variables_data]
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("ตัดตัวแปรหัว-ท้าย")
+        dlg.configure(background='white')
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+
+        frm = ttk.Frame(dlg, padding=15, style="White.TFrame")
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            frm,
+            text=f"โหลดไฟล์ {os.path.basename(self.original_filepath)} แล้ว "
+                 f"({len(names)} ตัวแปร, Encoding: {encoding})\n\nต้องการตัดตัวแปรหัว-ท้ายอย่างไร?",
+            font=("Segoe UI", 10)
+        ).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+
+        mode = tk.StringVar(value="auto")
+        input_frame = ttk.Frame(frm, padding=(20, 5, 0, 5), style="White.TFrame")
+
+        def toggle():
+            if mode.get() == "auto":
+                input_frame.grid()
+                start_combo.focus_set()
+            else:
+                input_frame.grid_remove()
+
+        ttk.Radiobutton(frm, text="1. ตัดอัตโนมัติ (หัว-ท้าย)", variable=mode, value="auto",
+                        command=toggle).grid(row=1, column=0, columnspan=2, sticky='w')
+        input_frame.grid(row=2, column=0, columnspan=2, sticky='w')
+        ttk.Radiobutton(frm, text="2. เลือกตัดเอง", variable=mode, value="manual",
+                        command=toggle).grid(row=3, column=0, columnspan=2, sticky='w', pady=(4, 0))
+
+        ttk.Label(input_frame, text="ตัวแปรเริ่มต้น:").grid(row=0, column=0, sticky='w', pady=3)
+        start_combo = ttk.Combobox(input_frame, values=names, width=30)
+        start_combo.grid(row=0, column=1, sticky='w', padx=5, pady=3)
+        ttk.Label(input_frame, text="ตัวแปรสุดท้าย:").grid(row=1, column=0, sticky='w', pady=3)
+        end_combo = ttk.Combobox(input_frame, values=names, width=30)
+        end_combo.grid(row=1, column=1, sticky='w', padx=5, pady=3)
+        if names:
+            end_combo.set(names[-1])
+        ttk.Label(
+            input_frame,
+            text="* ตัดตั้งแต่ Date จนถึงก่อนตัวแปรเริ่มต้น (เว้น Status ไว้)\n"
+                 "* ตัดทุกตัวแปรที่อยู่หลังตัวแปรสุดท้าย",
+            foreground="#666666"
+        ).grid(row=2, column=0, columnspan=2, sticky='w', pady=(5, 0))
+
+        def resolve(text):
+            text = text.strip()
+            if text in names:
+                return text
+            matches = [n for n in names if n.lower() == text.lower()]
+            return matches[0] if matches else None
+
+        def preview(label, idxs):
+            shown = [names[i] for i in idxs[:15]]
+            more = f" ... (+{len(idxs) - 15})" if len(idxs) > 15 else ""
+            return f"{label} {len(idxs)} ตัว: " + (", ".join(shown) + more if idxs else "-")
+
+        def on_ok():
+            if mode.get() == "manual":
+                dlg.destroy()
+                return
+            start_var = resolve(start_combo.get())
+            end_var = resolve(end_combo.get())
+            if not start_var or not end_var:
+                messagebox.showwarning("คำเตือน", "ไม่พบชื่อตัวแปรเริ่มต้นหรือตัวแปรสุดท้ายที่กรอก", parent=dlg)
+                return
+            try:
+                head, tail = compute_auto_trim(names, start_var, end_var)
+            except ValueError as e:
+                messagebox.showwarning("คำเตือน", str(e), parent=dlg)
+                return
+            if not head and not tail:
+                messagebox.showinfo("แจ้งเตือน", "ไม่มีตัวแปรที่ต้องตัด", parent=dlg)
+                dlg.destroy()
+                return
+            msg = (f"{preview('ตัดหัว', head)}\n\n{preview('ตัดท้าย', tail)}\n\n"
+                   f"รวมตัดทั้งหมด {len(head) + len(tail)} ตัวแปร ยืนยันหรือไม่?")
+            if not messagebox.askyesno("ยืนยันการตัดตัวแปร", msg, parent=dlg):
+                return
+            remove = set(head) | set(tail)
+            self.variables_data = [v for i, v in enumerate(self.variables_data) if i not in remove]
+            self.populate_treeview()
+            dlg.destroy()
+            messagebox.showinfo("สำเร็จ", f"ตัดตัวแปร {len(remove)} ตัวแล้ว เหลือ {len(self.variables_data)} ตัวแปร")
+
+        btn_frame = ttk.Frame(frm, style="White.TFrame")
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(12, 0))
+        ttk.Button(btn_frame, text="ตกลง", command=on_ok, style='Green.TButton', width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="ยกเลิก", command=dlg.destroy, width=10).pack(side=tk.LEFT, padx=5)
+
+        dlg.bind("<Return>", lambda e: on_ok())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+        dlg.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dlg.grab_set()
+        start_combo.focus_set()
+        self.root.wait_window(dlg)
+
     def sort_variables(self):
         if not self.variables_data:
             messagebox.showwarning("คำเตือน", "ยังไม่มีข้อมูลตัวแปรให้เรียงลำดับ")
             return
-        
-        try:
-            original_vars_data = self.variables_data
 
-            def is_sortable(var_info):
-                var_name = var_info['name']
-                key = get_sort_key_for_vars(var_name)
-                return key[0][0] != 2
+        names = [v['name'] for v in self.variables_data]
+        order, n_loops, n_moved = sort_loop_order(self.variables_data)
+        if order == list(range(len(names))):
+            messagebox.showinfo("แจ้งเตือน", "ลำดับตัวแปรถูกต้องอยู่แล้ว ไม่มีอะไรต้องเรียง")
+            return
 
-            final_ordered_list = []
-            current_sortable_block = []
-            
-            for var_info in original_vars_data:
-                if is_sortable(var_info):
-                    current_sortable_block.append(var_info)
-                else:
-                    if current_sortable_block:
-                        sorted_block = sorted(current_sortable_block, key=lambda v: get_sort_key_for_vars(v['name']))
-                        final_ordered_list.extend(sorted_block)
-                        current_sortable_block = []
-                    
-                    final_ordered_list.append(var_info)
-
-            if current_sortable_block:
-                sorted_block = sorted(current_sortable_block, key=lambda v: get_sort_key_for_vars(v['name']))
-                final_ordered_list.extend(sorted_block)
-
-            self.variables_data = final_ordered_list
-            self.populate_treeview()
-            messagebox.showinfo("สำเร็จ", "เรียงลำดับตัวแปรเรียบร้อยแล้ว")
-        
-        except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดขณะเรียงลำดับตัวแปร:\n{e}")
-            import traceback
-            traceback.print_exc()
+        self.variables_data = [self.variables_data[i] for i in order]
+        self.populate_treeview()
+        lines = []
+        if n_loops:
+            lines.append(f"- พบข้อ Loop {n_loops} ข้อ")
+        if n_moved:
+            lines.append(f"- ย้ายตัวแปร _oth / S_ ที่คั่นกลางชุดคำถาม ไปท้ายชุด {n_moved} ตัว")
+        messagebox.showinfo("สำเร็จ", "จัดเรียงตัวแปรเรียบร้อยแล้ว\n" + "\n".join(lines))
 
     def populate_treeview(self):
         selection = self.tree.selection()

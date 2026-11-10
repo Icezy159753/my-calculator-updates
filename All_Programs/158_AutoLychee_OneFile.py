@@ -474,7 +474,7 @@ def save_json(path: Path, value):
     temporary.replace(path)
 
 
-VERSION = '2026.10.10'  # shown in the title bar, the log and error files; bump with every delivered change
+VERSION = '2026.11.10'  # shown in the title bar, the log and error files; bump with every delivered change
 ON, OFF = 'เปิด', 'ปิด'
 CUT_MODE_LABELS = {'both': 'N + %', 'count': 'N Only', 'percent': '% Only'}
 EXPORT_MODE_LABELS = {'sheets': 'แยกชีท', 'onesheet': 'One Sheet'}
@@ -3154,7 +3154,9 @@ class Lyche:
         self.matrix = self.is_matrix()  # the result window's title no longer tells Matrix from Cross
         export_all = 'Excel(One Sheet)' if one_sheet else ('Excel(Separated Sheets)' if self.matrix else None)
         self.menu('rbnRun', 'Tabulate All')
-        self.wait(lambda: self.main().window_text().startswith('Tabulation Result'), 'Tabulation Result', self.timeout, poll=.5)
+        # Test set + Weighting On: 'Test results could be inaccurate in case of weighting tabulation.' → OK
+        self.wait(lambda: (self.ack_ok_warnings(), self.main().window_text().startswith('Tabulation Result'))[1],
+                  'Tabulation Result', self.timeout, poll=.5)
         self.emit('log', text='กำลังคำนวณตาราง รอปุ่ม Export พร้อม')
         def busy(progress):
             if not self.background:
@@ -3167,6 +3169,7 @@ class Lyche:
                 return False
         report_at = [time.monotonic() + 20]
         def ready():
+            self.ack_ok_warnings()  # the weighting warning can also come after the window turned into the result
             root = self.main()
             if export_all:  # Matrix ('Export with Analysis Axis' stays disabled) or One Sheet: Export all
                 export = self.find(root, aid='rbnOutputExcel', required=False)
@@ -3181,7 +3184,7 @@ class Lyche:
             return None
         export = self.wait(ready, 'คำนวณตารางเสร็จ', self.timeout, poll=.5)  # long wait: poll gently
         def open_prompt():
-            self.ack_copy_warning()
+            self.ack_ok_warnings()
             for prefix in ('Question', 'Confirm', 'Information', 'Lyche'):
                 dialog = self.dialog(prefix)
                 if dialog:
@@ -3211,7 +3214,7 @@ class Lyche:
             self.click(no)
             # Lyche can take a while to show Save As when the machine is busy (live 2026-10-03: ~20 s for a
             # Matrix export while the previous row's Delete Total + NA ran in Excel) — wait like for a step.
-            save = self.wait(lambda: (self.ack_copy_warning(), self.dialog('Save As'))[1], 'Save As',
+            save = self.wait(lambda: (self.ack_ok_warnings(), self.dialog('Save As'))[1], 'Save As',
                              max(120, min(self.timeout, 600)))
         self.fill_filename(save, str(destination.resolve()))
         if destination.exists():
@@ -3221,9 +3224,9 @@ class Lyche:
             self.click(save_button or self.find(save, name='Save', kind=50000))
             if export_all and self.background:  # One Sheet: 'Do not copy or paste…' follows within ~1 s
                 end = time.monotonic() + 3
-                while time.monotonic() < end and not self.ack_copy_warning() and not self.saved_dialogs():
+                while time.monotonic() < end and not self.ack_ok_warnings() and not self.saved_dialogs():
                     time.sleep(.1)
-        saved = self.wait(lambda: (self.ack_copy_warning(), (self.saved_dialogs() or [None])[0])[1],
+        saved = self.wait(lambda: (self.ack_ok_warnings(), (self.saved_dialogs() or [None])[0])[1],
                           'Saved.', self.timeout, poll=.5)
         self.close_saved(saved)
         self.settings()
@@ -3283,7 +3286,7 @@ class Lyche:
         else:
             self.menu('rbnOutputExcel', item)
         def next_dialog():
-            if self.ack_copy_warning():
+            if self.ack_ok_warnings():
                 return None
             warning = self.dialog('Warning')
             if warning:
@@ -3299,17 +3302,25 @@ class Lyche:
         setting = self.wait(next_dialog, 'Export All Setting', 15 if self.background else 20)
         self.export_all_setting(setting, item)
 
-    def ack_copy_warning(self):
-        """Lyche's 'Warning - * Do not copy or paste while in process.' (seen during the One Sheet export)
-        is modal and, parked off-screen, held the export until our time-out (the file was written the
-        moment the box closed). User rule: press OK. True when one was dismissed."""
+    OK_WARNINGS = {  # text in the box → log label; every one is answered with OK (user rule)
+        'Do not copy or paste while in process': 'Do not copy or paste while in process',
+        # Tabulate All with Test set + Weighting On (user request 2026-11-10: it held the run)
+        'Test results could be inaccurate': 'Test results could be inaccurate (weighting)',
+    }
+
+    def ack_ok_warnings(self):
+        """Lyche's informational 'Warning - …' boxes that only have OK (OK_WARNINGS), e.g. '* Do not copy
+        or paste while in process.' (One Sheet export) and 'Test results could be inaccurate in case of
+        weighting tabulation.' (Tabulate All). Modal and, parked off-screen, they hold the run until our
+        time-out. User rule: press OK. True when one was dismissed; other Warning boxes are left alone."""
         for handle in self.visible_dialogs('Warning'):
             dialog = self.wrapper(handle)
             text = ' '.join(x.window_text() for x in self.all(dialog, kind=50020))
-            if 'Do not copy or paste while in process' in text:
+            label = next((label for key, label in self.OK_WARNINGS.items() if key in text), None)
+            if label:
                 self.press(self.find(dialog, name='OK', kind=50000, required=False)
                            or self.find(dialog, name='&OK', kind=50000))
-                self.emit('log', text='Warning: Do not copy or paste while in process → กด OK')
+                self.emit('log', text=f'Warning: {label} → กด OK')
                 return True
         return False
 
@@ -4819,17 +4830,11 @@ def transfer_bottom_borders_before_delete(ws, rows_to_delete):
     del_set = set(rows_to_delete)
     max_col = ws.max_column
 
-    # Pre-map every merged non-anchor cell -> its anchor, so resolving the
-    # writable target is an O(1) lookup instead of rescanning all merged ranges
-    # for every border we move (sheets can have thousands of merges).
-    anchor_of = {}
-    for mr in ws.merged_cells.ranges:
-        anchor = (mr.min_row, mr.min_col)
-        for rr in range(mr.min_row, mr.max_row + 1):
-            for cc in range(mr.min_col, mr.max_col + 1):
-                if (rr, cc) != anchor:
-                    anchor_of[(rr, cc)] = anchor
-
+    # The border goes on the surviving cell itself, also when it is a merged non-anchor
+    # (the Column % row of an A/B label block). Excel draws a merged box's bottom edge from
+    # its bottom cells, so moving it to the anchor (the Count row) hid the line; within a
+    # table the next item's top edge covered that up, but each table's last item lost it
+    # (One Sheet: every table but the sheet's last one, which add_bottom_grid_to_last_used_row fixes).
     for r in sorted(del_set):
         t = r - 1
         while t in del_set and t >= 1:
@@ -4839,8 +4844,7 @@ def transfer_bottom_borders_before_delete(ws, rows_to_delete):
         for c in range(1, max_col + 1):
             src = ws.cell(row=r, column=c).border
             if src.bottom and src.bottom.style:
-                ar, ac = anchor_of.get((t, c), (t, c))
-                dst = ws.cell(row=ar, column=ac)
+                dst = ws.cell(row=t, column=c)
                 b = dst.border
                 dst.border = Border(
                     left=b.left,
@@ -6116,10 +6120,14 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
             pct_row = row + 1
             is_total_row = label_text.upper() == "TOTAL"
             sig_row = pct_row + 1
+            # A Sig row belongs to the item's A/B label merge or carries values; the blank row that
+            # separates tables (One Sheet) has neither. Taking that blank row as the group's last row
+            # copied its missing bottom border onto the table's last item (N file, 2026-11-10).
             has_sig_row = (
                 sig_row <= sheet_max_row
                 and str(sheet.cell(row=sig_row, column=1).value or "").strip() == ""
                 and str(sheet.cell(row=sig_row, column=2).value or "").strip() == ""
+                and (sig_row in vertically_merged_following_rows or has_data_values(sig_row))
             )
             last_group_row = sig_row if has_sig_row else pct_row
 
@@ -6131,7 +6139,10 @@ def process_workbook(input_path: Path, save_path: Path, keep_mode: str = KEEP_CO
             for col in range(1, max_col + 1):
                 target_cell = sheet.cell(row=keep_row, column=col)
                 bottom_source = sheet.cell(row=last_group_row, column=col)
-                bottom_border = bottom_source.border.bottom if col <= 2 else target_cell.border.bottom
+                # Data columns: a kept Sig row below keeps its own closing line, so the kept row keeps
+                # its own bottom; without one the deleted % row held the group's closing line.
+                bottom_border = (bottom_source.border.bottom if col <= 2 or not has_sig_row
+                                 else target_cell.border.bottom)
                 target_cell.border = Border(
                     left=target_cell.border.left,
                     right=target_cell.border.right,
