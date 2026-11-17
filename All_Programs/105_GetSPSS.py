@@ -203,23 +203,31 @@ class SpssVariableEditor:
         style = ttk.Style()
         style.theme_use("clam")
 
-        COLOR_GREEN = '#28a745'; COLOR_GREEN_ACTIVE = '#218838'
-        COLOR_BLUE = '#007bff'; COLOR_BLUE_ACTIVE = '#0069d9'
-        COLOR_RED = '#dc3545'; COLOR_RED_ACTIVE = '#c82333'
-        COLOR_ORANGE = '#fd7e14'; COLOR_ORANGE_ACTIVE = '#e67311' # <<< เพิ่ม: สีส้มสำหรับปุ่ม Sort
-        
         style.configure("White.TFrame", background="white")
         style.configure("TLabel", background="white", font=("Segoe UI", 9))
         style.configure("TRadiobutton", background="white", font=("Segoe UI", 10))
-        
-        style.configure('Green.TButton', foreground='white', background=COLOR_GREEN, font=('Segoe UI', 9, 'bold'), borderwidth=0)
-        style.map('Green.TButton', background=[('active', COLOR_GREEN_ACTIVE)])
-        style.configure('Blue.TButton', foreground='white', background=COLOR_BLUE, font=('Segoe UI', 10, 'bold'), padding=5)
-        style.map('Blue.TButton', background=[('active', COLOR_BLUE_ACTIVE)])
-        style.configure('Red.TButton', foreground='white', background=COLOR_RED, font=('Segoe UI', 9, 'bold'))
-        style.map('Red.TButton', background=[('active', COLOR_RED_ACTIVE)])
-        style.configure('Orange.TButton', foreground='white', background=COLOR_ORANGE, font=('Segoe UI', 9, 'bold'))
-        style.map('Orange.TButton', background=[('active', COLOR_ORANGE_ACTIVE)])
+
+        # --- ปุ่มแบบ Flat: (ปกติ, hover, กด, สีตัวอักษร) ---
+        BUTTON_COLORS = {
+            'Green.TButton':     ('#16a34a', '#15803d', '#166534', 'white'),
+            'Blue.TButton':      ('#2563eb', '#1d4ed8', '#1e40af', 'white'),
+            'Red.TButton':       ('#dc2626', '#b91c1c', '#991b1b', 'white'),
+            'Orange.TButton':    ('#f97316', '#ea580c', '#c2410c', 'white'),
+            'Secondary.TButton': ('#e5e7eb', '#d1d5db', '#9ca3af', '#1f2937'),
+        }
+        DISABLED_BG, DISABLED_FG = '#e9ecef', '#9ca3af'
+        for name, (bg, hover, pressed, fg) in BUTTON_COLORS.items():
+            style.configure(name, foreground=fg, background=bg,
+                            bordercolor=bg, lightcolor=bg, darkcolor=bg,
+                            focuscolor=bg, focusthickness=0, borderwidth=0, relief='flat',
+                            font=('Segoe UI', 10, 'bold'), padding=(14, 7))
+            state_bg = [('disabled', DISABLED_BG), ('pressed', pressed), ('active', hover)]
+            style.map(name,
+                      background=state_bg, bordercolor=state_bg,
+                      lightcolor=state_bg, darkcolor=state_bg, focuscolor=state_bg,
+                      foreground=[('disabled', DISABLED_FG)],
+                      relief=[('pressed', 'flat'), ('!pressed', 'flat')])
+        style.configure('Blue.TButton', padding=(6, 5), font=('Segoe UI', 11, 'bold'))
         style.configure("White.Vertical.TScrollbar", troughcolor='white', background='lightgrey', bordercolor='white')
         style.configure("White.Horizontal.TScrollbar", troughcolor='white', background='lightgrey', bordercolor='white')
         
@@ -234,7 +242,7 @@ class SpssVariableEditor:
         control_frame = ttk.Frame(self.root, padding="10", style="White.TFrame")
         control_frame.pack(fill=tk.X)
 
-        self.load_button = ttk.Button(control_frame, text="โหลดไฟล์ SPSS", command=self.load_file, style='Green.TButton')
+        self.load_button = ttk.Button(control_frame, text="📂  โหลดไฟล์ SPSS", command=self.load_file, style='Green.TButton', cursor='hand2')
         self.load_button.pack(side=tk.LEFT, padx=5)
         
         # <<< จุดที่แก้ไข: ลบ Combobox สำหรับเลือก Encoding ออก >>>
@@ -247,15 +255,15 @@ class SpssVariableEditor:
         manipulation_frame = ttk.Frame(control_frame, style="White.TFrame")
         manipulation_frame.pack(side=tk.LEFT, padx=(15, 2))
 
-        self.move_up_button = ttk.Button(manipulation_frame, text="▲", command=self.move_up, state=tk.DISABLED, style='Blue.TButton', width=3)
+        self.move_up_button = ttk.Button(manipulation_frame, text="▲", command=self.move_up, state=tk.DISABLED, style='Blue.TButton', width=3, cursor='hand2')
         self.move_up_button.pack(side=tk.LEFT, padx=2)
-        self.move_down_button = ttk.Button(manipulation_frame, text="▼", command=self.move_down, state=tk.DISABLED, style='Blue.TButton', width=3)
+        self.move_down_button = ttk.Button(manipulation_frame, text="▼", command=self.move_down, state=tk.DISABLED, style='Blue.TButton', width=3, cursor='hand2')
         self.move_down_button.pack(side=tk.LEFT, padx=2)
-        
-        self.sort_button = ttk.Button(manipulation_frame, text="Sort loop", command=self.sort_variables, state=tk.DISABLED, style='Orange.TButton')
+
+        self.sort_button = ttk.Button(manipulation_frame, text="⇅  Sort loop", command=self.sort_variables, state=tk.DISABLED, style='Orange.TButton', cursor='hand2')
         self.sort_button.pack(side=tk.LEFT, padx=(10,2))
-        
-        self.save_button = ttk.Button(control_frame, text="สร้าง Syntax...", command=self.save_syntax_file, state=tk.DISABLED, style='Red.TButton')
+
+        self.save_button = ttk.Button(control_frame, text="💾  สร้าง Syntax...", command=self.save_syntax_file, state=tk.DISABLED, style='Red.TButton', cursor='hand2')
         self.save_button.pack(side=tk.RIGHT, padx=5)
         
         instruction_label = ttk.Label(control_frame, text="เลือกแถวแล้วกด 'Delete' เพื่อลบ / ดับเบิลคลิกเพื่อดู Values")
@@ -439,8 +447,8 @@ class SpssVariableEditor:
 
         btn_frame = ttk.Frame(frm, style="White.TFrame")
         btn_frame.grid(row=4, column=0, columnspan=2, pady=(12, 0))
-        ttk.Button(btn_frame, text="ตกลง", command=on_ok, style='Green.TButton', width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="ยกเลิก", command=dlg.destroy, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="ตกลง", command=on_ok, style='Green.TButton', width=10, cursor='hand2').pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="ยกเลิก", command=dlg.destroy, style='Secondary.TButton', width=10, cursor='hand2').pack(side=tk.LEFT, padx=5)
 
         dlg.bind("<Return>", lambda e: on_ok())
         dlg.bind("<Escape>", lambda e: dlg.destroy())
@@ -507,7 +515,7 @@ class SpssVariableEditor:
             for key, value in var_info['values'].items(): formatted_text += f"{float(key):g} : {value}\n"
         text_widget.insert(tk.END, formatted_text); text_widget.config(state=tk.DISABLED)
         button_frame = ttk.Frame(popup, padding=(0, 0, 0, 10), style="White.TFrame")
-        button_frame.pack(fill=tk.X); close_button = ttk.Button(button_frame, text="Close", command=popup.destroy); close_button.pack()
+        button_frame.pack(fill=tk.X); close_button = ttk.Button(button_frame, text="Close", command=popup.destroy, style='Secondary.TButton', cursor='hand2'); close_button.pack()
         self.root.wait_window(popup)
 
     def delete_selected(self, event=None):
