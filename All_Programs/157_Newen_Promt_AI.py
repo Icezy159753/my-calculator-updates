@@ -1876,14 +1876,18 @@ class App:
         return format(number, ".15g")
 
     @classmethod
-    def _build_spss_label_syntax(cls, meta, source_name=""):
-        """สร้าง VARIABLE LABELS + VALUE LABELS จาก metadata ของไฟล์ .sav ทุกตัวแปร."""
+    def _build_spss_label_syntax(cls, meta, source_name="", column_labels=None, value_labels=None):
+        """สร้าง VARIABLE LABELS + VALUE LABELS ทุกตัวแปร (ส่ง labels ENG มาแทนต้นฉบับได้)."""
         column_names = list(getattr(meta, "column_names", []) or [])
-        column_labels = list(getattr(meta, "column_labels", []) or [])
+        if column_labels is None:
+            column_labels = getattr(meta, "column_labels", [])
+        column_labels = list(column_labels or [])
         readstat_types = getattr(meta, "readstat_variable_types", {}) or {}
         original_types = getattr(meta, "original_variable_types", {}) or {}
         variable_types = getattr(meta, "variable_types", {}) or {}
-        value_labels = getattr(meta, "variable_value_labels", {}) or {}
+        if value_labels is None:
+            value_labels = getattr(meta, "variable_value_labels", {})
+        value_labels = value_labels or {}
         # SPSS * comments จบที่จุดแรก จึงไม่ใส่จุดจากนามสกุลไฟล์ไว้กลาง comment
         safe_source_name = re.sub(r"[.\r\n]+", "_", str(source_name or "SPSS data file")).strip()
 
@@ -1980,22 +1984,29 @@ class App:
         if not syntax_path:
             return
 
+        collected = self._collect_eng_labels()
+        if collected is None:
+            return
+        column_labels, value_labels, has_eng = collected
+        language_note = "ENG (จากผล AI / Excel)" if has_eng else "ต้นฉบับ (ยังไม่มีผล ENG)"
+
         try:
             syntax, variable_count, value_label_count = self._build_spss_label_syntax(
-                self.spss_meta, source_name
+                self.spss_meta, source_name, column_labels, value_labels
             )
             with open(syntax_path, "w", encoding="utf-8-sig", newline="\n") as output_file:
                 output_file.write(syntax)
             self.log(
                 f"บันทึก SPSS Syntax: {os.path.basename(syntax_path)} "
-                f"(Var {variable_count:,}, Value {value_label_count:,})",
+                f"(Var {variable_count:,}, Value {value_label_count:,}) - {language_note}",
                 "ok"
             )
             messagebox.showinfo(
                 "บันทึก Syntax สำเร็จ",
                 f"บันทึกไฟล์ SPSS Syntax เรียบร้อยแล้ว\n\n{syntax_path}\n\n"
                 f"Variable Labels: {variable_count:,} ตัวแปร\n"
-                f"Value Labels: {value_label_count:,} ค่า"
+                f"Value Labels: {value_label_count:,} ค่า\n"
+                f"ภาษา: {language_note}"
             )
         except PermissionError:
             messagebox.showerror(
@@ -3675,6 +3686,49 @@ class App:
             messagebox.showerror("ไม่มีข้อมูล", "กรุณาโหลดไฟล์ SPSS ก่อนครับ")
             return
 
+        collected = self._collect_eng_labels()
+        if collected is None:
+            return
+        new_var_labels_list, new_value_labels, has_eng = collected
+        if not has_eng:
+            messagebox.showerror("ไม่มีข้อมูล", "กรุณา Gen ด้วย AI หรือโหลดไฟล์ Excel ผลลัพธ์ก่อน")
+            return
+
+        original_columns = list(self.spss_meta.column_names)
+        try:
+            df_to_save = self.original_spss_df[original_columns].copy()
+        except KeyError as e:
+            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่พบคอลัมน์: {e}")
+            return
+
+        var_labels = {c: ("" if pd.isna(l) else str(l))
+                      for c, l in zip(original_columns, new_var_labels_list)}
+        meta_out = {"var_labels": var_labels, "var_value_labels": new_value_labels}
+
+        default_name = "output_ENG.sav"
+        if self.spss_filepath:
+            default_name = os.path.splitext(os.path.basename(self.spss_filepath))[0] + "_ENG.sav"
+        new_file = filedialog.asksaveasfilename(
+            parent=self.root, title="บันทึกไฟล์ SPSS ใหม่ (pyspssio)",
+            defaultextension=".sav", initialfile=default_name,
+            filetypes=[("SPSS Files", "*.sav"), ("All Files", "*.*")]
+        )
+        if not new_file:
+            return
+
+        try:
+            pyspssio.write_sav(new_file, df_to_save, metadata=meta_out)
+            self.log(f"บันทึก SPSS: {os.path.basename(new_file)}", "ok")
+            messagebox.showinfo("บันทึกสำเร็จ", f"ไฟล์ถูกบันทึกเรียบร้อยแล้ว\n\n{new_file}")
+        except Exception as e:
+            messagebox.showerror("บันทึกไม่สำเร็จ", f"เขียนไฟล์ด้วย pyspssio ไม่สำเร็จ:\n{e}")
+
+    def _collect_eng_labels(self):
+        """รวม Var/Value labels ENG (จาก AI หรือ Excel ที่โหลด) เข้ากับ metadata ต้นฉบับ.
+
+        คืนค่า (var_labels_list, value_labels_dict, has_eng) หรือ None เมื่อเกิดข้อผิดพลาด
+        has_eng = False หมายถึงไม่มีผลลัพธ์ ENG เลย (labels ที่คืนคือต้นฉบับ)
+        """
         update_var_df = self.ai_result_var_df
         update_value_df = self.ai_result_value_df
 
@@ -3720,39 +3774,34 @@ class App:
                         update_value_df, _ = self._merge_value_result(df)
                 if update_var_df is None and update_value_df is None:
                     messagebox.showerror("Parse Error", f"อ่านข้อมูลจากกล่องข้อความไม่สำเร็จ:\n{note}")
-                    return
-
-        if update_var_df is None and update_value_df is None:
-            messagebox.showerror("ไม่มีข้อมูล", "กรุณา Gen ด้วย AI หรือโหลดไฟล์ Excel ผลลัพธ์ก่อน")
-            return
+                    return None
 
         delimiter = self.ma_var.get()
         meta = self.spss_meta
         blank_deletes = bool(self.blank_deletes.get())
 
-        try:
-            original_columns = list(meta.column_names)
-            df_to_save = self.original_spss_df[original_columns].copy()
-        except KeyError as e:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"ไม่พบคอลัมน์: {e}")
-            return
-
+        original_columns = list(meta.column_names)
+        original_column_set = set(original_columns)
         new_var_labels_list = list(meta.column_labels)
+        new_var_labels_list += [""] * (len(original_columns) - len(new_var_labels_list))
         new_value_labels = {k: dict(v) for k, v in meta.variable_value_labels.items()}
+
+        if update_var_df is None and update_value_df is None:
+            return new_var_labels_list, new_value_labels, False
 
         # ====== อัปเดต Value Labels ======
         if update_value_df is not None:
             lbl_en_col = find_col(update_value_df, ["Label_EN", "Label_En", "label_en"])
             if not lbl_en_col:
                 messagebox.showerror("ไม่พบคอลัมน์", "ไม่พบ 'Label_EN' ในชีท Value")
-                return
+                return None
 
             for _, r in update_value_df.iterrows():
                 var = r.get("Variable")
                 val = r.get("Value")
                 en_raw = r.get(lbl_en_col)
 
-                if var not in df_to_save.columns:
+                if var not in original_column_set:
                     continue
                 if pd.isna(val) or str(val).strip() == "":
                     continue
@@ -3780,7 +3829,7 @@ class App:
 
             # === ทำให้ Value labels ของชุด MA (_O1,_O2,...) เหมือนกันทุกตัว ===
             if delimiter:
-                vars_with_ma = [v for v in df_to_save.columns
+                vars_with_ma = [v for v in original_columns
                                 if re.search(rf'{re.escape(delimiter)}\d+$', v)]
                 groups = {}
                 for v in vars_with_ma:
@@ -3808,7 +3857,7 @@ class App:
             eng_col = find_col(update_var_df, ["VAR_ENG", "Var_Eng", "var_eng"])
             if not eng_col:
                 messagebox.showerror("ไม่พบคอลัมน์", "ไม่พบ 'VAR_ENG' ในชีท Var")
-                return
+                return None
             for _, r in update_var_df.iterrows():
                 name, eng = r.get("Name"), r.get(eng_col, None)
                 if pd.isna(eng) or name not in original_columns:
@@ -3822,7 +3871,7 @@ class App:
         # กระจาย var label ของ MA ให้ชุดเดียวกันเท่ากัน (อ้างอิงจาก {base}{delimiter}1)
         if delimiter:
             bases = {v.rsplit(delimiter, 1)[0]
-                     for v in df_to_save.columns
+                     for v in original_columns
                      if re.search(rf'{re.escape(delimiter)}\d+$', v)}
             for base in bases:
                 key = f"{base}{delimiter}1"
@@ -3830,31 +3879,11 @@ class App:
                     idx = original_columns.index(key)
                     lbl = new_var_labels_list[idx]
                     if pd.notna(lbl) and lbl != "":
-                        for v in [vv for vv in df_to_save.columns
+                        for v in [vv for vv in original_columns
                                   if re.search(rf'^{re.escape(base)}{re.escape(delimiter)}\d+$', vv)]:
                             new_var_labels_list[original_columns.index(v)] = lbl
 
-        var_labels = {c: ("" if pd.isna(l) else str(l))
-                      for c, l in zip(original_columns, new_var_labels_list)}
-        meta_out = {"var_labels": var_labels, "var_value_labels": new_value_labels}
-
-        default_name = "output_ENG.sav"
-        if self.spss_filepath:
-            default_name = os.path.splitext(os.path.basename(self.spss_filepath))[0] + "_ENG.sav"
-        new_file = filedialog.asksaveasfilename(
-            parent=self.root, title="บันทึกไฟล์ SPSS ใหม่ (pyspssio)",
-            defaultextension=".sav", initialfile=default_name,
-            filetypes=[("SPSS Files", "*.sav"), ("All Files", "*.*")]
-        )
-        if not new_file:
-            return
-
-        try:
-            pyspssio.write_sav(new_file, df_to_save, metadata=meta_out)
-            self.log(f"บันทึก SPSS: {os.path.basename(new_file)}", "ok")
-            messagebox.showinfo("บันทึกสำเร็จ", f"ไฟล์ถูกบันทึกเรียบร้อยแล้ว\n\n{new_file}")
-        except Exception as e:
-            messagebox.showerror("บันทึกไม่สำเร็จ", f"เขียนไฟล์ด้วย pyspssio ไม่สำเร็จ:\n{e}")
+        return new_var_labels_list, new_value_labels, True
 
     # -----------------------------------------------------------------
     #  แบบสอบถาม
