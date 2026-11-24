@@ -5,7 +5,8 @@ import sys
 import os
 import re
 import difflib
-from openpyxl.styles import PatternFill
+import itertools
+import threading
 
 print(f"Python ที่กำลังใช้งานอยู่ที่: {sys.executable}") 
 
@@ -210,7 +211,6 @@ class SPSSExcelMapper(tk.Tk):
         super().__init__()
         self.title("โปรแกรม แปลงCE Otherจาก Edit V2")
         self.geometry("850x650") 
-        self.spss_df = None
         self.spss_vars = []
         self.excel_df = None
         self.excel_file_path = None
@@ -223,7 +223,8 @@ class SPSSExcelMapper(tk.Tk):
         self.dropped_vars_log = []
         self.df_code_sheet = None
         self.vars_added_log = []
-        
+        self.excel_is_transposed = False
+
         self._create_widgets()
         self._configure_styles()
         
@@ -371,6 +372,7 @@ class SPSSExcelMapper(tk.Tk):
             self.dropped_vars_log = []
             self.df_code_sheet = None
             self.vars_added_log = []
+            self.excel_is_transposed = False
 
     def on_sheet_selected(self, *args):
         sheet_name = self.selected_sheet.get()
@@ -387,17 +389,18 @@ class SPSSExcelMapper(tk.Tk):
         file_path = filedialog.askopenfilename(filetypes=[("SPSS Data File", "*.sav")])
         if not file_path: return
         try:
-            self.spss_df = pd.read_spss(file_path)
-            self.spss_vars = list(self.spss_df.columns)
+            import pyreadstat
+            # ใช้แค่ชื่อตัวแปร จึงอ่านเฉพาะ metadata ไม่ต้องโหลดข้อมูลทั้งไฟล์
+            _, meta = pyreadstat.read_sav(file_path, metadataonly=True)
+            self.spss_vars = list(meta.column_names)
             if not self.spss_vars:
                 messagebox.showerror("ผิดพลาด", "ไฟล์ SPSS ไม่มีตัวแปร", parent=self)
                 return
-            self.key_column = self.spss_vars[0] 
-            self.lbl_spss_status.config(text=f"โหลดแล้ว ({len(self.spss_vars)} ตัวแปร)", foreground="green")
+            self.key_column = self.spss_vars[0]
+            self.lbl_spss_status.config(text=f"โหลดแล้ว ({len(self.spss_vars)} ตัวแปร, {meta.number_rows} ราย)", foreground="green")
             messagebox.showinfo("โหลด SPSS สำเร็จ", f"ไฟล์ SPSS โหลดสำเร็จ\nโปรแกรมจะใช้ '{self.key_column}' เป็นคอลัมน์หลัก (Key)", parent=self)
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดไฟล์ SPSS:\n{e}", parent=self)
-            self.spss_df = None
             self.spss_vars = []
 
     def load_excel(self):
@@ -419,33 +422,10 @@ class SPSSExcelMapper(tk.Tk):
         except Exception as e:
             messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดไฟล์ Excel:\n{e}", parent=self)
 
-    def load_spss_final(self):
-        file_path = filedialog.askopenfilename(filetypes=[("SPSS Data File", "*.sav")])
-        if not file_path: return
-        try:
-            self.spss_final_df = pd.read_spss(file_path)
-            self.spss_final_vars = list(self.spss_final_df.columns)
-            if not self.spss_final_vars:
-                messagebox.showerror("ผิดพลาด", "ไฟล์ SPSS Final ไม่มีตัวแปร", parent=self)
-                return
-            
-            if self.key_column not in self.spss_final_vars:
-                messagebox.showerror("ผิดพลาด", f"ไฟล์ SPSS Final ไม่มีคอลัมน์หลัก '{self.key_column}'\nกรุณาใช้ไฟล์ที่มีโครงสร้าง Key เดียวกัน", parent=self)
-                self.spss_final_df = None
-                self.spss_final_vars = []
-                return
-
-            self.lbl_spss_final_status.config(text=f"โหลดแล้ว ({len(self.spss_final_vars)} ตัวแปร)", foreground="green")
-            messagebox.showinfo("โหลด SPSS Final สำเร็จ", "ไฟล์ SPSS Final โหลดสำเร็จแล้ว", parent=self)
-        except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"ไม่สามารถโหลดไฟล์ SPSS Final:\n{e}", parent=self)
-            self.spss_final_df = None
-            self.spss_final_vars = []
-
     def perform_analysis(self, analyze_again=False):
         if not analyze_again:
             self.clear_analysis_results()
-        if not all([self.spss_df is not None, self.excel_file_path, self.selected_sheet.get()]):
+        if not all([self.spss_vars, self.excel_file_path, self.selected_sheet.get()]):
             messagebox.showwarning("ข้อมูลไม่ครบ", "กรุณาโหลดไฟล์ SPSS และเลือก Sheet ในไฟล์ Excel ให้เรียบร้อยก่อน", parent=self)
             return
         if not self.spss_vars:
@@ -457,18 +437,22 @@ class SPSSExcelMapper(tk.Tk):
         try:
             if not analyze_again:
                 sheet_name = self.selected_sheet.get()
-                temp_df = pd.read_excel(self.excel_file_path, sheet_name=sheet_name, header=None)
-                header_row_index = -1
-                for index, row in temp_df.head(10).iterrows():
-                    row_values_str = [str(c).strip().lower() for c in row.values]
-                    if self.key_column.lower() in row_values_str:
-                        header_row_index = index
-                        break
-                if header_row_index == -1:
-                    messagebox.showerror("ผิดพลาดร้ายแรง", f"ไม่พบคอลัมน์หลัก '{self.key_column}' ใน 10 แถวแรกของไฟล์ Excel\nกรุณาตรวจสอบ Header", parent=self)
-                    self.lbl_sheet_status.config(text="ผิดพลาด: หา Header ไม่พบ", foreground="red")
-                    return
-                self.excel_df = pd.read_excel(self.excel_file_path, sheet_name=sheet_name, header=header_row_index)
+                temp_df = pd.read_excel(self.excel_file_path, sheet_name=sheet_name, header=None, nrows=10)
+                self.excel_is_transposed = self._is_transposed_layout(temp_df)
+                if self.excel_is_transposed:
+                    self.excel_df = self._read_transposed_sheet(sheet_name)
+                else:
+                    header_row_index = -1
+                    for index, row in temp_df.iterrows():
+                        row_values_str = [str(c).strip().lower() for c in row.values]
+                        if self.key_column.lower() in row_values_str:
+                            header_row_index = index
+                            break
+                    if header_row_index == -1:
+                        messagebox.showerror("ผิดพลาดร้ายแรง", f"ไม่พบคอลัมน์หลัก '{self.key_column}' ใน 10 แถวแรกของไฟล์ Excel\nกรุณาตรวจสอบ Header", parent=self)
+                        self.lbl_sheet_status.config(text="ผิดพลาด: หา Header ไม่พบ", foreground="red")
+                        return
+                    self.excel_df = pd.read_excel(self.excel_file_path, sheet_name=sheet_name, header=header_row_index)
 
                 # ตัด 3 ตัวแปรเจ้าปัญหาออกไปโดยตรงแบบเงียบๆ
                 explicit_drop_list = [
@@ -519,9 +503,10 @@ class SPSSExcelMapper(tk.Tk):
                 self.excel_df = self.excel_df[cols_to_keep].copy()
 
             excel_vars_trimmed = list(self.excel_df.columns)
-            
+            layout_note = " [แนวตั้ง/Transposed]" if self.excel_is_transposed else ""
+
             self.lbl_excel_status.config(
-                text=f"วิเคราะห์แล้ว ({len(excel_vars_trimmed)} ตัวแปร)", 
+                text=f"วิเคราะห์แล้ว ({len(excel_vars_trimmed)} ตัวแปร, {len(self.excel_df)} ราย){layout_note}",
                 foreground="green"
             )
             
@@ -598,6 +583,45 @@ class SPSSExcelMapper(tk.Tk):
             messagebox.showerror("ผิดพลาด", f"เกิดข้อผิดพลาดขณะวิเคราะห์: {e}", parent=self)
             self.lbl_sheet_status.config(text="เกิดข้อผิดพลาดในการวิเคราะห์", foreground="red")
 
+    def _is_transposed_layout(self, sample_df):
+        """ไฟล์แนวตั้ง = คอลัมน์ A เป็นชื่อตัวแปร (แถวละ 1 ตัวแปร) และแต่ละคอลัมน์ถัดไปคือ 1 ราย"""
+        spss_lower = {str(v).strip().lower() for v in self.spss_vars}
+
+        def hits(values):
+            return len({str(v).strip().lower() for v in values if pd.notna(v)} & spss_lower)
+
+        col_a_values = [str(v).strip().lower() for v in sample_df.iloc[:, 0] if pd.notna(v)]
+        col_a_hits = hits(sample_df.iloc[:, 0])
+        best_row_hits = max(hits(row) for row in sample_df.itertuples(index=False))
+        return self.key_column.lower() in col_a_values and col_a_hits >= 3 and col_a_hits > best_row_hits
+
+    def _read_transposed_sheet(self, sheet_name):
+        """อ่านชีทแนวตั้งแล้วกลับเป็นแนวนอน (แถว = ราย, คอลัมน์ = ตัวแปร)"""
+        raw = pd.read_excel(self.excel_file_path, sheet_name=sheet_name, header=None, dtype=object)
+        raw = raw.dropna(how='all').dropna(axis=1, how='all')
+        raw = raw[raw.iloc[:, 0].notna()]
+        names = raw.iloc[:, 0].map(lambda v: str(v).strip())
+        duplicated = names[names.duplicated()].unique().tolist()
+        if duplicated:
+            raise ValueError(f"พบชื่อตัวแปรซ้ำในคอลัมน์ A ของชีทแนวตั้ง: {', '.join(duplicated[:10])}")
+        data = raw.iloc[:, 1:].T.reset_index(drop=True)
+        data.columns = names.tolist()
+        return self._convert_text_numbers(data)
+
+    @staticmethod
+    def _convert_text_numbers(df):
+        """แปลงคอลัมน์ที่เก็บตัวเลขเป็นข้อความให้เป็นตัวเลข (เว้นคอลัมน์ที่มีเลข 0 นำหน้า เช่น เบอร์โทร)"""
+        flat = pd.Series(df.to_numpy(dtype=object).ravel())
+        numeric = pd.DataFrame(
+            pd.to_numeric(flat, errors='coerce').to_numpy(dtype=float).reshape(df.shape),
+            index=df.index, columns=df.columns)
+        leading_zero = pd.DataFrame(
+            flat.astype(str).str.match(r'^\s*-?0\d').to_numpy().reshape(df.shape),
+            index=df.index, columns=df.columns)
+        convertible = (numeric.notna() | df.isna()).all() & ~leading_zero.any()
+        converted = pd.concat([numeric.loc[:, convertible], df.loc[:, ~convertible]], axis=1)
+        return converted[df.columns]
+
     def handle_code_columns(self):
         """
         ตรวจหาคอลัมน์ Code ทั้งหมด (ทั้งแบบทั่วไปและ AnswerCode),
@@ -669,16 +693,10 @@ class SPSSExcelMapper(tk.Tk):
             self.update_idletasks()
 
             try:
-                # --- [NEW] โหลด Metadata (การตั้งค่าตัวแปร) เก็บไว้ด้วย ---
                 import pyreadstat
-                # เราโหลด 2 รอบ: 
-                # 1. ใช้ pandas เพื่อความง่ายในการจัดการ Dataframe และ Logic เดิม
-                # 2. ใช้ pyreadstat เพื่อเอา Metadata (ค่า Setting ต่างๆ)
-                
-                spss_final_df = pd.read_spss(file_path)
-                _, self.spss_final_meta = pyreadstat.read_sav(file_path) # เก็บ Metadata ไว้ที่ตัวนี้
-                
-                spss_final_vars = list(spss_final_df.columns)
+                # ใช้แค่ชื่อตัวแปร + Metadata + คอลัมน์ Key จึงไม่ต้องโหลดข้อมูลทั้งไฟล์
+                _, self.spss_final_meta = pyreadstat.read_sav(file_path, metadataonly=True)
+                spss_final_vars = list(self.spss_final_meta.column_names)
                 
                 if not spss_final_vars:
                     messagebox.showerror("ผิดพลาด", "ไฟล์ SPSS Final ที่เลือกไม่มีตัวแปร", parent=self)
@@ -686,7 +704,8 @@ class SPSSExcelMapper(tk.Tk):
                 if self.key_column not in spss_final_vars:
                     messagebox.showerror("ผิดพลาด", f"ไฟล์ SPSS Final ไม่มีคอลัมน์หลัก '{self.key_column}'\nกรุณาใช้ไฟล์ที่มีโครงสร้าง Key เดียวกัน", parent=self)
                     return
-                    
+                spss_final_df, _ = pyreadstat.read_sav(file_path, usecols=[self.key_column])
+
                 excel_status_text = self.lbl_excel_status.cget("text")
                 new_combined_status_text = f"{excel_status_text} | SPSS Final: {len(spss_final_vars)} ตัวแปร"
                 self.lbl_excel_status.config(text=new_combined_status_text, foreground="green")
@@ -728,6 +747,16 @@ class SPSSExcelMapper(tk.Tk):
 
                 spss_indexed = spss_final_df.set_index(self.key_column)
                 excel_indexed = self.excel_df.set_index(self.key_column)
+                matched_count = int(spss_indexed.index.isin(excel_indexed.index).sum())
+                if matched_count == 0:
+                    messagebox.showerror(
+                        "Key ไม่ตรงกัน",
+                        f"ไม่พบค่า '{self.key_column}' ของ SPSS Final ในไฟล์ Excel เลยแม้แต่รายเดียว\n"
+                        f"ตัวอย่าง SPSS: {list(spss_indexed.index[:3])}\n"
+                        f"ตัวอย่าง Excel: {list(excel_indexed.index[:3])}",
+                        parent=self)
+                    self.lbl_sheet_status.config(text="ผิดพลาด: Key ไม่ตรงกัน", foreground="red")
+                    return
                 df_aligned = excel_indexed.reindex(index=spss_indexed.index)
                 df_aligned.reset_index(inplace=True)
                 df_aligned = df_aligned.reindex(columns=final_column_order)
@@ -752,6 +781,7 @@ class SPSSExcelMapper(tk.Tk):
                 
                 summary_message = "จัดเรียงข้อมูลสำเร็จ!\n"
                 summary_message += f"- ข้อมูลถูกจัดเรียงตามลำดับของไฟล์ SPSS Final\n"
+                summary_message += f"- พบข้อมูลใน Excel {matched_count} จาก {len(spss_indexed)} ราย\n"
                 summary_message += f"- เก็บการตั้งค่า (Metadata) จากไฟล์ Final ไว้เรียบร้อยแล้ว\n" # แจ้งให้ทราบ
                 if self.vars_added_log:
                     summary_message += f"- เพิ่มตัวแปรใหม่ {len(self.vars_added_log)} ตัว\n"
@@ -768,49 +798,147 @@ class SPSSExcelMapper(tk.Tk):
             messagebox.showwarning("ไม่มีข้อมูล", "กรุณากด 'จัดเรียงข้อมูล' ก่อน", parent=self)
             return
         save_path = filedialog.asksaveasfilename(
-            defaultextension=".xlsx", 
+            defaultextension=".xlsx",
             filetypes=[("Excel Files", "*.xlsx")],
             initialfile=f"Mapped_{self.selected_sheet.get()}.xlsx"
         )
         if not save_path: return
+
+        sheets = self._excel_sheet_specs()
+
+        def on_done(error):
+            if error is None:
+                messagebox.showinfo("บันทึกสำเร็จ", f"ไฟล์ Excel ที่จัดเรียงแล้วถูกบันทึกที่:\n{save_path}\n\n(ตัวแปรที่เพิ่มใหม่จะมีไฮไลท์สีฟ้า)", parent=self)
+                return
+            self.btn_save_excel.config(state=tk.NORMAL)
+            if isinstance(error, ImportError):
+                messagebox.showerror("Missing Library", "ไม่พบ Library 'xlsxwriter'\nกรุณาติดตั้ง: pip install xlsxwriter", parent=self)
+            else:
+                messagebox.showerror("บันทึกผิดพลาด", f"ไม่สามารถบันทึกไฟล์ได้:\n{error}", parent=self)
+
+        self.btn_save_excel.config(state=tk.DISABLED)
+        self._run_with_progress(
+            "กำลังบันทึก Excel",
+            lambda progress: self._write_excel_file(save_path, sheets, progress),
+            on_done)
+
+    def _excel_sheet_specs(self):
+        """เตรียมข้อมูลของแต่ละชีทเป็นแถว ๆ สำหรับเขียนแบบ streaming"""
+        added = set(self.vars_added_log)
+        sheets = [self._dataframe_sheet_spec(
+            self.df_ready_to_save, self.selected_sheet.get(), lambda v: v in added, '#EAF3FF')]
+        if self.df_code_sheet is not None:
+            sheets.append(self._dataframe_sheet_spec(
+                self.df_code_sheet, 'ข้อที่ทำ Code', lambda v: 'code' in str(v).lower(), '#FFFF00'))
+        if self.renamed_matches:
+            sheets.append(self._table_sheet_spec(
+                'Log_Renamed_Vars', ['ชื่อเดิมใน Excel', 'ชื่อใหม่ (จาก SPSS)'], self.renamed_matches))
+        if self.dropped_vars_log:
+            sheets.append(self._table_sheet_spec(
+                'Log_Dropped_Vars', ['ชื่อตัวแปรที่ถูกตัดทิ้ง'], [[v] for v in self.dropped_vars_log]))
+        return sheets
+
+    def _dataframe_sheet_spec(self, df, name, highlight, fill):
+        """ไฟล์แนวตั้งบันทึกกลับเป็นแนวตั้ง (ตัวแปรเยอะเกิน 16,384 คอลัมน์ของ Excel ได้)"""
+        values = df.to_numpy(dtype=object)
+        values[pd.isna(values)] = None
+        names = list(df.columns)
+        if self.excel_is_transposed:
+            rows = ([col_name, *col_values] for col_name, col_values in zip(names, values.T))
+            return dict(name=name, rows=rows, n_rows=len(names), header='col',
+                        highlight=highlight, fill=fill, freeze=True)
+        rows = itertools.chain([names], (list(r) for r in values))
+        return dict(name=name, rows=rows, n_rows=len(values) + 1, header='row',
+                    highlight=highlight, fill=fill, freeze=True)
+
+    @staticmethod
+    def _table_sheet_spec(name, header, records):
+        return dict(name=name, rows=itertools.chain([header], records), n_rows=len(records) + 1,
+                    header='row', highlight=None, fill=None, freeze=False)
+
+    @staticmethod
+    def _write_excel_file(save_path, sheets, progress):
+        """เขียน Excel ด้วย xlsxwriter (constant_memory) ทีละแถว และรายงานความคืบหน้า"""
+        import xlsxwriter
+        total = sum(s['n_rows'] for s in sheets)
+        done = 0
+        workbook = xlsxwriter.Workbook(save_path, {
+            'constant_memory': True,
+            'strings_to_formulas': False,
+            'strings_to_urls': False,
+            'strings_to_numbers': False,
+            'nan_inf_to_errors': True,
+            'default_date_format': 'yyyy-mm-dd hh:mm:ss',
+        })
         try:
-            light_blue_fill = PatternFill(start_color="EAF3FF", end_color="EAF3FF", fill_type="solid")
+            header_fmt = workbook.add_format({'bold': True, 'border': 1})
+            for sheet in sheets:
+                worksheet = workbook.add_worksheet(sheet['name'])
+                highlight = sheet['highlight'] or (lambda v: False)
+                fill_fmt = workbook.add_format({'bold': True, 'border': 1, 'bg_color': sheet['fill']}) if sheet['fill'] else header_fmt
+                for r, row in enumerate(sheet['rows']):
+                    if sheet['header'] == 'col':
+                        worksheet.write(r, 0, row[0], fill_fmt if highlight(row[0]) else header_fmt)
+                        worksheet.write_row(r, 1, row[1:])
+                    elif r == 0:
+                        for c, value in enumerate(row):
+                            worksheet.write(0, c, value, fill_fmt if highlight(value) else header_fmt)
+                    else:
+                        worksheet.write_row(r, 0, row)
+                    done += 1
+                    if done % 200 == 0:
+                        progress(done, total)
+                if sheet['freeze']:
+                    worksheet.freeze_panes(1, 1)
+            progress(total, total)
+        finally:
+            workbook.close()
 
-            with pd.ExcelWriter(save_path, engine='openpyxl') as writer:
-                main_sheet_name = self.selected_sheet.get()
-                self.df_ready_to_save.to_excel(writer, sheet_name=main_sheet_name, index=False)
-                worksheet_main = writer.sheets[main_sheet_name]
-                
-                if self.vars_added_log:
-                    for cell in worksheet_main[1]: 
-                        if cell.value in self.vars_added_log:
-                            cell.fill = light_blue_fill
+    def _run_with_progress(self, title, task, on_done):
+        """รัน task ใน thread แยก พร้อมหน้าต่างแถบความคืบหน้า แล้วเรียก on_done(error) บน main thread"""
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg='white')
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # ห้ามปิดระหว่างบันทึก
 
-                worksheet_main.freeze_panes = 'B2'
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        label = ttk.Label(frame, text="กำลังเตรียมข้อมูล...", width=50)
+        label.pack(anchor='w', pady=(0, 8))
+        bar = ttk.Progressbar(frame, orient='horizontal', length=380, mode='determinate', maximum=100)
+        bar.pack(fill=tk.X)
+        center_window(win)
 
-                if self.df_code_sheet is not None:
-                    sheet_name_code = 'ข้อที่ทำ Code'
-                    self.df_code_sheet.to_excel(writer, sheet_name=sheet_name_code, index=False)
-                    worksheet_code = writer.sheets[sheet_name_code]
-                    worksheet_code.freeze_panes = 'B2'
-                    yellow_fill = PatternFill(start_color='FFFFFF00', end_color='FFFFFF00', fill_type='solid')
-                    for cell in worksheet_code[1]:
-                        if 'code' in str(cell.value).lower():
-                            cell.fill = yellow_fill
+        state = {'done': 0, 'total': 0, 'error': None, 'finished': False}
 
-                if self.renamed_matches:
-                    df_renamed_log = pd.DataFrame(self.renamed_matches, columns=['ชื่อเดิมใน Excel', 'ชื่อใหม่ (จาก SPSS)'])
-                    df_renamed_log.to_excel(writer, sheet_name='Log_Renamed_Vars', index=False)
+        def progress(done, total):
+            state['done'], state['total'] = done, total
 
-                if self.dropped_vars_log:
-                    df_dropped_log = pd.DataFrame(self.dropped_vars_log, columns=['ชื่อตัวแปรที่ถูกตัดทิ้ง'])
-                    df_dropped_log.to_excel(writer, sheet_name='Log_Dropped_Vars', index=False)
-            
-            messagebox.showinfo("บันทึกสำเร็จ", f"ไฟล์ Excel ที่จัดเรียงแล้วถูกบันทึกที่:\n{save_path}\n\n(ตัวแปรที่เพิ่มใหม่จะมีไฮไลท์สีฟ้า)", parent=self)
-            self.btn_save_excel.config(state=tk.DISABLED)
-            
-        except Exception as e: 
-            messagebox.showerror("บันทึกผิดพลาด", f"ไม่สามารถบันทึกไฟล์ได้:\n{e}", parent=self)
+        def worker():
+            try:
+                task(progress)
+            except Exception as e:
+                state['error'] = e
+            finally:
+                state['finished'] = True
+
+        def poll():
+            if state['total']:
+                pct = state['done'] * 100 / state['total']
+                bar['value'] = pct
+                label.config(text=f"กำลังบันทึก... {state['done']:,} / {state['total']:,} แถว ({pct:.0f}%)")
+            if state['finished']:
+                win.grab_release()
+                win.destroy()
+                on_done(state['error'])
+            else:
+                self.after(100, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        poll()
 
 
     def save_spss(self):
