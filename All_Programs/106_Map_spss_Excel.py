@@ -20,6 +20,100 @@ def center_window(win):
     y = (win.winfo_screenheight() // 2) - (height // 2)
     win.geometry(f'{width}x{height}+{x}+{y}')
 
+def write_sav_shared_labels(df, save_path, meta, progress=lambda done, total: None):
+    """บันทึก .sav โดยให้ตัวแปรที่ใช้ value label ชุดเดียวกันอ้างอิง label ชุดเดียว (แบบที่ SPSS ทำ)
+
+    pyreadstat.write_sav จะเขียน value label แยกทุกตัวแปร ถ้า label ชุด 1,025 ค่าใช้กับ 1,025 ตัวแปร
+    ไฟล์จะบวมเป็นหลายร้อย MB จึงเขียนข้อมูลด้วย pyreadstat ก่อน (ไม่ใส่ value label)
+    แล้วแทรก record type 3/4 ของแต่ละชุดเข้าไปใน dictionary ของไฟล์เอง
+    """
+    import pyreadstat
+    import struct
+
+    numeric_cols = {c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])}
+    sets = {}  # label set name -> [variable names]
+    if meta is not None:
+        for var, set_name in meta.variable_to_label.items():
+            if var in numeric_cols and meta.value_labels.get(set_name):
+                sets.setdefault(set_name, []).append(var)
+
+    tmp_path = save_path + ".tmp"
+    pyreadstat.write_sav(
+        df, tmp_path, row_compress=True,
+        column_labels=meta.column_names_to_labels if meta is not None else None,
+        variable_measure=meta.variable_measure if meta is not None else None)
+    progress(1, 3)
+
+    try:
+        with open(tmp_path, 'rb') as f:
+            data = f.read()
+        endian = '<' if struct.unpack_from('<i', data, 64)[0] in (2, 3) else '>'
+
+        def i32(pos):
+            return struct.unpack_from(endian + 'i', data, pos)[0]
+
+        # อ่าน dictionary: หา slot index ของแต่ละตัวแปร, ชื่อยาว, และจุดที่จะแทรก record
+        pos, slot = 176, 0
+        short_name_slot, insert_at, long_names = {}, None, {}
+        while True:
+            rec_type = i32(pos)
+            if rec_type == 2:
+                slot += 1
+                var_type, has_label, n_missing = i32(pos + 4), i32(pos + 8), i32(pos + 12)
+                if var_type != -1:
+                    short_name_slot[data[pos + 24:pos + 32].decode('utf-8').rstrip()] = slot
+                pos += 32
+                if has_label:
+                    pos += 4 + (i32(pos) + 3) // 4 * 4
+                pos += abs(n_missing) * 8
+                continue
+            if insert_at is None and rec_type in (6, 7, 999):
+                insert_at = pos
+            if rec_type == 3:
+                pos += 8
+                for _ in range(i32(pos - 4)):
+                    pos += 8 + (data[pos + 8] + 1 + 7) // 8 * 8
+                pos += 8 + i32(pos + 4) * 4  # record type 4 ที่ตามมา
+            elif rec_type == 6:
+                pos += 8 + i32(pos + 4) * 80
+            elif rec_type == 7:
+                subtype, size, count = i32(pos + 4), i32(pos + 8), i32(pos + 12)
+                if subtype == 13:  # long variable names: SHORT=Long\tSHORT2=Long2
+                    text = data[pos + 16:pos + 16 + size * count].decode('utf-8')
+                    for pair in text.split('\t'):
+                        if '=' in pair:
+                            short, long = pair.split('=', 1)
+                            long_names[long] = short
+                pos += 16 + size * count
+            elif rec_type == 999:
+                break
+            else:
+                raise ValueError(f"พบ record type {rec_type} ที่ไม่รู้จักในไฟล์ .sav")
+
+        def slot_of(var):
+            return short_name_slot[long_names.get(var, var)]
+
+        records = bytearray()
+        for set_name, variables in sets.items():
+            labels = meta.value_labels[set_name]
+            records += struct.pack(endian + 'ii', 3, len(labels))
+            for value, label in labels.items():
+                raw = str(label).encode('utf-8')[:120].decode('utf-8', 'ignore').encode('utf-8')
+                entry = struct.pack(endian + 'dB', float(value), len(raw)) + raw
+                records += entry + b' ' * ((-(len(entry))) % 8)
+            records += struct.pack(endian + 'ii', 4, len(variables))
+            records += struct.pack(endian + f'{len(variables)}i', *(slot_of(v) for v in variables))
+        progress(2, 3)
+
+        with open(save_path, 'wb') as out:
+            out.write(data[:insert_at])
+            out.write(records)
+            out.write(data[insert_at:])
+        progress(3, 3)
+    finally:
+        os.remove(tmp_path)
+
+
 class RenameConfirmationWindow(tk.Toplevel):
     def __init__(self, parent, potential_matches):
         super().__init__(parent)
@@ -894,7 +988,7 @@ class SPSSExcelMapper(tk.Tk):
         finally:
             workbook.close()
 
-    def _run_with_progress(self, title, task, on_done):
+    def _run_with_progress(self, title, task, on_done, unit="แถว"):
         """รัน task ใน thread แยก พร้อมหน้าต่างแถบความคืบหน้า แล้วเรียก on_done(error) บน main thread"""
         win = tk.Toplevel(self)
         win.title(title)
@@ -929,7 +1023,7 @@ class SPSSExcelMapper(tk.Tk):
             if state['total']:
                 pct = state['done'] * 100 / state['total']
                 bar['value'] = pct
-                label.config(text=f"กำลังบันทึก... {state['done']:,} / {state['total']:,} แถว ({pct:.0f}%)")
+                label.config(text=f"กำลังบันทึก... {state['done']:,} / {state['total']:,} {unit} ({pct:.0f}%)")
             if state['finished']:
                 win.grab_release()
                 win.destroy()
@@ -954,38 +1048,25 @@ class SPSSExcelMapper(tk.Tk):
 
             if not save_path: return
 
-            try:
-                import pyreadstat
-                
-                # --- [NEW] การบันทึกแบบคงค่า Setting เดิม ---
-                # ใช้ข้อมูลจาก self.df_ready_to_save (ที่เป็นข้อมูลใหม่จาก Excel)
-                # แต่ใช้ Metadata จาก self.spss_final_meta (ที่เป็นค่า Setting จาก SPSS Final)
-                
-                column_labels = None
-                variable_value_labels = None
-                variable_measure = None
-                
-                if self.spss_final_meta:
-                    # ดึงค่า Label และ Values จากไฟล์ต้นฉบับ
-                    column_labels = self.spss_final_meta.column_names_to_labels
-                    variable_value_labels = self.spss_final_meta.variable_value_labels
-                    variable_measure = self.spss_final_meta.variable_measure
-                
-                pyreadstat.write_sav(
-                    self.df_ready_to_save, 
-                    save_path, 
-                    column_labels=column_labels, 
-                    variable_value_labels=variable_value_labels,
-                    variable_measure=variable_measure
-                )
-                
-                messagebox.showinfo("บันทึกสำเร็จ", f"บันทึกไฟล์ SPSS เรียบร้อยแล้วที่:\n{save_path}\n\n(คงค่า Label และ Value เดิมจากไฟล์ Final ไว้ทั้งหมด)", parent=self)
-                self.btn_save_spss.config(state=tk.DISABLED)
-                
-            except ImportError:
-                messagebox.showerror("Missing Library", "ไม่พบ Library 'pyreadstat'\nกรุณาติดตั้ง: pip install pyreadstat", parent=self)
-            except Exception as e:
-                messagebox.showerror("บันทึกผิดพลาด", f"ไม่สามารถบันทึกไฟล์ SPSS ได้:\n{e}", parent=self)
+            # ข้อมูลจาก Excel + Label/Value Label/Measure จาก SPSS Final
+            df, meta = self.df_ready_to_save, self.spss_final_meta
+
+            def on_done(error):
+                if error is None:
+                    size_mb = os.path.getsize(save_path) / 1e6
+                    messagebox.showinfo("บันทึกสำเร็จ", f"บันทึกไฟล์ SPSS เรียบร้อยแล้วที่:\n{save_path}\n\nขนาดไฟล์ {size_mb:,.1f} MB\n(คงค่า Label และ Value เดิมจากไฟล์ Final ไว้ทั้งหมด)", parent=self)
+                    return
+                self.btn_save_spss.config(state=tk.NORMAL)
+                if isinstance(error, ImportError):
+                    messagebox.showerror("Missing Library", "ไม่พบ Library 'pyreadstat'\nกรุณาติดตั้ง: pip install pyreadstat", parent=self)
+                else:
+                    messagebox.showerror("บันทึกผิดพลาด", f"ไม่สามารถบันทึกไฟล์ SPSS ได้:\n{error}", parent=self)
+
+            self.btn_save_spss.config(state=tk.DISABLED)
+            self._run_with_progress(
+                "กำลังบันทึก SPSS",
+                lambda progress: write_sav_shared_labels(df, save_path, meta, progress),
+                on_done, unit="ขั้นตอน")
 
 
 def run_this_app(working_dir=None):
