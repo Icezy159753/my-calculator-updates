@@ -29,6 +29,7 @@ import time
 # COMPATIBILITY SHIMS
 # ===================================================================
 _UNSET = object()   # ใช้แยก 'ยังไม่ได้ตรวจ' ออกจาก 'ตรวจแล้วไม่พบ'
+_SPE_VAR_PAT = re.compile(r"^(.+?)#(\d+)\$(\d+)$")   # PREFIX#ข้อ$แบรนด์
 
 
 def _patch_factor_analyzer_sklearn_compat():
@@ -3695,46 +3696,38 @@ class SpssProcessorApp(QMainWindow):
             raise RuntimeError(
                 "ไม่มีตัวแปรที่ถูกเลือกสำหรับคำนวณ C")
         try:
-            first_var = self.c_vars_to_compute[0]
-            if '#' not in first_var:
-                raise RuntimeError(
-                    f"ตัวแปรที่เลือก ({first_var}) ไม่มีรูปแบบที่ถูกต้อง "
-                    "(เช่น 'PREFIX#GROUP$ITEM')")
-            deduced_prefix = first_var.split('#')[0]
-            pattern = re.compile(rf"^{re.escape(deduced_prefix)}#(\d+)\$(\d+)")
-            groups = {}
+            self._require_setting_vars(
+                {'C': self.c_vars_to_compute}, _SPE_VAR_PAT,
+                'PREFIX#ข้อ$แบรนด์')
+
+            # คอลัมน์ C ใส่ได้หลายคำถาม (เช่น C1#... ต่อด้วย D1#...)
+            # เลขข้อ C เรียงต่อกัน: prefix ตามลำดับที่เจอในช่อง C
+            # และเลขข้อภายใน prefix เรียงจากน้อยไปมาก
+            prefix_groups = OrderedDict()
             for col in self.c_vars_to_compute:
-                match = pattern.match(col)
-                if match:
-                    group_num = int(match.group(1))
-                    if group_num not in groups:
-                        groups[group_num] = []
-                    groups[group_num].append(col)
-            if not groups:
-                raise RuntimeError(
-                    f"ไม่พบตัวแปรที่ตรงกับรูปแบบ '{deduced_prefix}#Group$Item' "
-                    "จากตัวแปรที่คุณเลือก")
+                prefix, grp, item = _SPE_VAR_PAT.match(col).groups()
+                prefix_groups.setdefault(prefix, {}).setdefault(
+                    int(grp), {})[int(item)] = col
+            groups = [
+                items
+                for by_grp in prefix_groups.values()
+                for _, items in sorted(by_grp.items())]
 
             self.computed_c_cols = []
             new_cols_data = {}
 
-            max_item_num = max((int(m.group(2)) for c in self.c_vars_to_compute if (m := pattern.match(c))), default=0)
-            if max_item_num == 0:
-                raise RuntimeError(
-                    "ไม่สามารถหา Item number สูงสุดจากตัวแปรที่เลือกสำหรับ C ได้")
-
+            max_item_num = max(
+                item for items in groups for item in items)
             for j in range(1, max_item_num + 1):
-                for i in sorted(groups.keys()):
-                    group_vars = groups[i]
-                    main_var = f"{deduced_prefix}#{i}${j}"
-                    if main_var in group_vars:
-                        other_vars = [v for v in group_vars if v != main_var]
-                        if not other_vars:
-                            continue
-                        new_c_name = f"C{j}.{i}"
-                        mean_of_others = self.df[other_vars].mean(axis=1)
-                        new_cols_data[new_c_name] = ((self.df[main_var] - mean_of_others) + 1) / 2
-                        self.computed_c_cols.append(new_c_name)
+                for seq, items in enumerate(groups, start=1):
+                    main_var = items.get(j)
+                    other_vars = [v for k, v in items.items() if k != j]
+                    if not main_var or not other_vars:
+                        continue
+                    new_c_name = f"C{j}.{seq}"
+                    mean_of_others = self.df[other_vars].mean(axis=1)
+                    new_cols_data[new_c_name] = ((self.df[main_var] - mean_of_others) + 1) / 2
+                    self.computed_c_cols.append(new_c_name)
 
             if not self.computed_c_cols:
                 raise RuntimeError(
@@ -3750,6 +3743,29 @@ class SpssProcessorApp(QMainWindow):
         except Exception as e:
             raise RuntimeError(
                 f"เกิดข้อผิดพลาดระหว่างคำนวณตัวแปร C: {e}") from e
+
+    def _require_setting_vars(self, var_lists, pattern, shape):
+        """หยุดเมื่อมีตัวแปรที่ไม่อยู่ในไฟล์ SPSS หรือชื่อผิดรูปแบบ
+
+        ถ้าปล่อยผ่าน ตัวแปรเหล่านี้จะถูกข้ามเงียบๆ แล้วไปพังทีหลัง
+        เป็น B.S–B.E = 0 ทั้งไฟล์ โดยไม่รู้ว่าต้นเหตุคือตัวแปรไหน
+        """
+        problems = []
+        for key, variables in var_lists.items():
+            bad_shape = [v for v in variables if not pattern.match(v)]
+            missing = [v for v in variables
+                       if pattern.match(v) and v not in self.df.columns]
+            if bad_shape:
+                problems.append(
+                    f"ช่อง {key}: ชื่อไม่ตรงรูปแบบ {shape} "
+                    f"{len(bad_shape)} ตัว เช่น {', '.join(bad_shape[:5])}")
+            if missing:
+                problems.append(
+                    f"ช่อง {key}: ไม่พบในไฟล์ SPSS "
+                    f"{len(missing)} ตัว เช่น {', '.join(missing[:5])}")
+        if problems:
+            raise RuntimeError(
+                "ตัวแปรใน Setting ใช้ไม่ได้\n" + "\n".join(problems))
 
     def _recode_a_variables_logic(self):
         a_vars_to_process = self.vars_to_transform.get('A', [])
@@ -3791,6 +3807,13 @@ class SpssProcessorApp(QMainWindow):
                     raise RuntimeError(
                         "ตัวแปร Weight ต้องไม่เป็นตัวแปรที่เลือกแปลงหรือ Agree")
                 self._case_weights(self.df)
+            self._require_setting_vars(
+                {'A': self.vars_to_transform.get('A', [])},
+                re.compile(r".*?#(\d+)$"), 'PREFIX#แบรนด์')
+            self._require_setting_vars(
+                {k: self.vars_to_transform.get(k, [])
+                 for k in ('S', 'P', 'E')},
+                _SPE_VAR_PAT, 'PREFIX#ข้อ$แบรนด์')
             temp_df = self.df.copy()
             all_transform_vars = set(self.computed_c_cols)
             for key, var_list in self.vars_to_transform.items():
